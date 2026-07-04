@@ -1,18 +1,16 @@
 // Humble Object shell -- the Qt + hand-written OpenGL boundary.
 //
-// NO domain logic lives here (docs/ARCHITECTURE.md): the electron wavepacket
-// evolves in core's WavepacketSimulation (split-operator TDSE), the
-// isosurface mesh comes from core's marching cubes, matrices from core's
-// camera math, colors from core's colormaps. This file owns the window, the
-// GL context, buffer uploads, shaders, the frame timer, and input glue. It
-// is verified by eye, not by unit tests (the Humble Object pattern).
+// NO domain logic lives here (docs/ARCHITECTURE.md). The TDSE runs in core's
+// WavepacketSimulation; matrices, colormaps, marching cubes, and ALL the
+// volume-rendering math (ray_box, Beer-Lambert alpha, front-to-back
+// compositing, phase LUT) live in core and are unit-tested -- the GLSL below
+// is a line-by-line transcription of those verified formulas.
 //
-// v3 deliverable: REAL-TIME DYNAMICS WITH PHASE COLORING -- a Gaussian
-// electron wavepacket released beside a soft-Coulomb nucleus, re-meshed
-// every frame, with arg(psi) painted on the surface through the cyclic
-// colormap: the packet's momentum shows up as color stripes, and the
-// stationary parts cycle hue at the local energy (e^{-iEt}).
-// Controls: drag = orbit, wheel = zoom, space = pause/resume.
+// v4 deliverable: THE ELECTRON CLOUD ITSELF -- direct volume rendering by
+// GPU ray marching with opacity proportional to |psi|^2 and hue from
+// arg(psi). The isosurface view remains as a second mode.
+// Controls: drag = orbit, wheel = zoom, space = pause, Tab = cloud/surface,
+// [ ] = thinner/denser cloud.
 
 #include <core/camera.hpp>
 #include <core/colormap.hpp>
@@ -23,6 +21,7 @@
 #include <core/sampling.hpp>
 #include <core/simulation.hpp>
 #include <core/vec.hpp>
+#include <core/volume.hpp>
 
 #include <QApplication>
 #include <QKeyEvent>
@@ -45,9 +44,6 @@
 
 namespace {
 
-// Fatal GL-setup failure: log to stderr (terminal launches) AND show a modal
-// dialog (double-click launches, where the console vanishes with the abort),
-// then exit. A QApplication is always live by the time GL init runs.
 [[noreturn]] void fatal_gl_error(const char* stage, const QString& detail) {
     qCritical("%s: %s", stage, qPrintable(detail));
     QMessageBox::critical(nullptr, QStringLiteral("OpenGL error"),
@@ -55,8 +51,6 @@ namespace {
     std::exit(EXIT_FAILURE);
 }
 
-// The scenario, built entirely from core pieces: a bound-ish packet released
-// 3 Bohr from a soft-Coulomb nucleus with a little tangential momentum.
 ses::WavepacketSimulation make_simulation() {
     const ses::Grid1D axis{-12.0, 12.0, 32};
     const ses::Grid3D grid{axis, axis, axis};
@@ -73,8 +67,11 @@ ses::WavepacketSimulation make_simulation() {
 constexpr int kStepsPerTick = 2;
 constexpr int kTickMs = 16;
 constexpr double kIsoFraction = 0.25;
+constexpr int kPhaseLutSize = 256;
 
-const char* kVertexShader = R"(#version 430 core
+// ---- isosurface (mesh) shaders ----
+
+const char* kMeshVertexShader = R"(#version 430 core
 layout(location = 0) in vec3 pos;
 layout(location = 1) in vec3 normal;
 layout(location = 2) in vec3 color;
@@ -90,7 +87,7 @@ void main() {
 }
 )";
 
-const char* kFragmentShader = R"(#version 430 core
+const char* kMeshFragmentShader = R"(#version 430 core
 in vec3 v_normal;
 in vec3 v_pos;
 in vec3 v_color;
@@ -99,29 +96,99 @@ out vec4 frag;
 void main() {
     vec3 n = normalize(v_normal);
     vec3 vdir = normalize(eye - v_pos);
-    float diffuse = abs(dot(n, vdir));               // two-sided headlight
-    float spec = pow(max(dot(n, vdir), 0.0), 32.0);  // light rides the camera
+    float diffuse = abs(dot(n, vdir));
+    float spec = pow(max(dot(n, vdir), 0.0), 32.0);
     vec3 c = v_color * (0.20 + 0.80 * diffuse) + vec3(0.25) * spec;
     frag = vec4(c, 1.0);
 }
 )";
 
+// ---- volume (ray-marching) shaders ----
+
+const char* kVolumeVertexShader = R"(#version 430 core
+layout(location = 0) in vec3 pos;
+uniform mat4 mvp;
+out vec3 v_world;
+void main() {
+    gl_Position = mvp * vec4(pos, 1.0);
+    v_world = pos;
+}
+)";
+
+// Transcription of the TESTED core formulas (core/volume.hpp):
+// ray_box (slab), sample_alpha (Beer-Lambert), front-to-back compositing.
+// Colors come from the tested phase_lut via a 1D texture; density and phase
+// are derived from the complex psi stored in an RG 3D texture, so the GPU
+// interpolates re/im exactly like core's sample_trilinear.
+const char* kVolumeFragmentShader = R"(#version 430 core
+in vec3 v_world;
+uniform vec3 eye;
+uniform vec3 box_min;
+uniform vec3 box_max;
+uniform float inv_peak;
+uniform float absorbance;
+uniform sampler3D psi_tex;
+uniform sampler1D phase_tex;
+out vec4 frag;
+
+vec2 ray_box(vec3 o, vec3 d) {
+    vec3 inv = 1.0 / d;
+    vec3 t1 = (box_min - o) * inv;
+    vec3 t2 = (box_max - o) * inv;
+    vec3 tmin = min(t1, t2);
+    vec3 tmax = max(t1, t2);
+    return vec2(max(max(tmin.x, tmin.y), tmin.z),
+                min(min(tmax.x, tmax.y), tmax.z));
+}
+
+void main() {
+    vec3 dir = normalize(v_world - eye);
+    vec2 t = ray_box(eye, dir);
+    float tn = max(t.x, 0.0);
+    if (t.y <= tn) {
+        discard;
+    }
+    const int kSteps = 160;
+    float step_len = (t.y - tn) / float(kSteps);
+    // Per-pixel jitter of the ray start kills wood-grain banding.
+    float jitter = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+
+    vec3 C = vec3(0.0);
+    float A = 0.0;
+    for (int i = 0; i < kSteps; ++i) {
+        vec3 p = eye + (tn + (float(i) + jitter) * step_len) * dir;
+        vec3 uvw = (p - box_min) / (box_max - box_min);
+        vec2 s = texture(psi_tex, uvw).rg;
+        float dens = dot(s, s) * inv_peak;
+        float alpha = 1.0 - exp(-absorbance * dens * step_len);
+        float phase01 = (atan(s.g, s.r) + 3.14159265358979) / 6.28318530717959;
+        vec3 col = texture(phase_tex, phase01).rgb;
+        float w = (1.0 - A) * alpha;
+        C += w * col;
+        A += w;
+        if (A >= 0.999) {
+            break;
+        }
+    }
+    frag = vec4(C, A);  // premultiplied; blended over the clear color
+}
+)";
+
+enum class ViewMode { Cloud, Surface };
+
 class Viewport : public QOpenGLWidget, protected QOpenGLFunctions_4_3_Core {
 public:
     explicit Viewport(QWidget* parent = nullptr)
         : QOpenGLWidget(parent), sim_(make_simulation()) {
-        setFocusPolicy(Qt::StrongFocus);  // receive the spacebar
+        setFocusPolicy(Qt::StrongFocus);
         remesh();
+        stage_volume();
         connect(&timer_, &QTimer::timeout, this, &Viewport::tick);
         timer_.start(kTickMs);
     }
 
 protected:
     void initializeGL() override {
-        // setVersion(4,3) is only a REQUEST: drivers without 4.3 core (RDP,
-        // VMs, old iGPUs) silently deliver less, initializeOpenGLFunctions()
-        // returns false, and every wrapped GL call would then dereference a
-        // null backend pointer. Fail loudly instead.
         if (!initializeOpenGLFunctions()) {
             const QSurfaceFormat got = context()->format();
             fatal_gl_error("OpenGL 4.3 core profile is required",
@@ -130,20 +197,18 @@ protected:
                                .arg(got.majorVersion())
                                .arg(got.minorVersion()));
         }
-        glEnable(GL_DEPTH_TEST);
         glClearColor(0.04f, 0.05f, 0.09f, 1.0f);
 
-        program_ = link_program(kVertexShader, kFragmentShader);
-        mvp_loc_ = glGetUniformLocation(program_, "mvp");
-        eye_loc_ = glGetUniformLocation(program_, "eye");
-
-        glGenVertexArrays(1, &vao_);
-        glBindVertexArray(vao_);
-        glGenBuffers(1, &vbo_);
-        glBindBuffer(GL_ARRAY_BUFFER, vbo_);
-        constexpr GLsizei kStride = 9 * sizeof(float);  // pos3 + normal3 + color3
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, kStride,
-                              reinterpret_cast<void*>(0));
+        // -- mesh pipeline --
+        mesh_program_ = link_program(kMeshVertexShader, kMeshFragmentShader);
+        mesh_mvp_loc_ = glGetUniformLocation(mesh_program_, "mvp");
+        mesh_eye_loc_ = glGetUniformLocation(mesh_program_, "eye");
+        glGenVertexArrays(1, &mesh_vao_);
+        glBindVertexArray(mesh_vao_);
+        glGenBuffers(1, &mesh_vbo_);
+        glBindBuffer(GL_ARRAY_BUFFER, mesh_vbo_);
+        constexpr GLsizei kStride = 9 * sizeof(float);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, kStride, reinterpret_cast<void*>(0));
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, kStride,
                               reinterpret_cast<void*>(3 * sizeof(float)));
@@ -152,38 +217,88 @@ protected:
                               reinterpret_cast<void*>(6 * sizeof(float)));
         glEnableVertexAttribArray(2);
         glBindVertexArray(0);
+
+        // -- volume pipeline --
+        volume_program_ = link_program(kVolumeVertexShader, kVolumeFragmentShader);
+        vol_mvp_loc_ = glGetUniformLocation(volume_program_, "mvp");
+        vol_eye_loc_ = glGetUniformLocation(volume_program_, "eye");
+        vol_boxmin_loc_ = glGetUniformLocation(volume_program_, "box_min");
+        vol_boxmax_loc_ = glGetUniformLocation(volume_program_, "box_max");
+        vol_invpeak_loc_ = glGetUniformLocation(volume_program_, "inv_peak");
+        vol_absorb_loc_ = glGetUniformLocation(volume_program_, "absorbance");
+        glUseProgram(volume_program_);
+        glUniform1i(glGetUniformLocation(volume_program_, "psi_tex"), 0);
+        glUniform1i(glGetUniformLocation(volume_program_, "phase_tex"), 1);
+
+        upload_box_cube();
+        create_textures();
+
         mesh_dirty_ = true;
+        volume_dirty_ = true;
     }
 
     void paintGL() override {
-        if (mesh_dirty_) {
-            upload_mesh();
-            mesh_dirty_ = false;
-        }
-
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        const double aspect =
-            static_cast<double>(width()) / std::max(1, height());
-        const ses::Mat4 proj = ses::perspective(45.0 * 3.14159265358979323846 / 180.0,
-                                                aspect, 0.1, 200.0);
+        const double aspect = static_cast<double>(width()) / std::max(1, height());
+        const ses::Mat4 proj =
+            ses::perspective(45.0 * 3.14159265358979323846 / 180.0, aspect, 0.1, 200.0);
         const ses::Vec3d eye = ses::orbit_eye(azimuth_, elevation_, distance_, ses::Vec3d{});
         const ses::Mat4 view = ses::look_at(eye, ses::Vec3d{}, ses::Vec3d{0.0, 1.0, 0.0});
         const ses::Mat4 mvp = proj * view;
-
         float mvp_f[16];
         for (int i = 0; i < 16; ++i) {
             mvp_f[i] = static_cast<float>(mvp.m[i]);
         }
 
-        glUseProgram(program_);
-        glUniformMatrix4fv(mvp_loc_, 1, GL_FALSE, mvp_f);  // column-major, no transpose
-        glUniform3f(eye_loc_, static_cast<float>(eye.x), static_cast<float>(eye.y),
-                    static_cast<float>(eye.z));
+        if (mode_ == ViewMode::Cloud) {
+            if (volume_dirty_) {
+                upload_volume();
+                volume_dirty_ = false;
+            }
+            glDisable(GL_DEPTH_TEST);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);  // premultiplied over clear color
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_FRONT);  // raster the BACK faces: works from inside too
 
-        glBindVertexArray(vao_);
-        glDrawArrays(GL_TRIANGLES, 0, vertex_count_);
-        glBindVertexArray(0);
+            glUseProgram(volume_program_);
+            glUniformMatrix4fv(vol_mvp_loc_, 1, GL_FALSE, mvp_f);
+            glUniform3f(vol_eye_loc_, static_cast<float>(eye.x), static_cast<float>(eye.y),
+                        static_cast<float>(eye.z));
+            const ses::Grid3D& g = sim_.grid();
+            glUniform3f(vol_boxmin_loc_, static_cast<float>(g.x.xmin),
+                        static_cast<float>(g.y.xmin), static_cast<float>(g.z.xmin));
+            glUniform3f(vol_boxmax_loc_, static_cast<float>(g.x.xmax),
+                        static_cast<float>(g.y.xmax), static_cast<float>(g.z.xmax));
+            glUniform1f(vol_invpeak_loc_, static_cast<float>(peak_ > 0.0 ? 1.0 / peak_ : 0.0));
+            glUniform1f(vol_absorb_loc_, static_cast<float>(absorbance_));
+
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_3D, psi_tex_);
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_1D, phase_tex_);
+
+            glBindVertexArray(cube_vao_);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
+            glBindVertexArray(0);
+
+            glDisable(GL_CULL_FACE);
+            glDisable(GL_BLEND);
+        } else {
+            if (mesh_dirty_) {
+                upload_mesh();
+                mesh_dirty_ = false;
+            }
+            glEnable(GL_DEPTH_TEST);
+            glUseProgram(mesh_program_);
+            glUniformMatrix4fv(mesh_mvp_loc_, 1, GL_FALSE, mvp_f);
+            glUniform3f(mesh_eye_loc_, static_cast<float>(eye.x), static_cast<float>(eye.y),
+                        static_cast<float>(eye.z));
+            glBindVertexArray(mesh_vao_);
+            glDrawArrays(GL_TRIANGLES, 0, vertex_count_);
+            glBindVertexArray(0);
+        }
     }
 
     void mousePressEvent(QMouseEvent* e) override { last_pos_ = e->position(); }
@@ -193,7 +308,7 @@ protected:
         last_pos_ = e->position();
         azimuth_ -= 0.01 * delta.x();
         elevation_ += 0.01 * delta.y();
-        elevation_ = std::clamp(elevation_, -1.5, 1.5);  // stay off the poles
+        elevation_ = std::clamp(elevation_, -1.5, 1.5);
         update();
     }
 
@@ -204,12 +319,34 @@ protected:
     }
 
     void keyPressEvent(QKeyEvent* e) override {
-        if (e->key() == Qt::Key_Space) {
-            paused_ = !paused_;
-            refresh_title();
-        } else {
-            QOpenGLWidget::keyPressEvent(e);
+        switch (e->key()) {
+            case Qt::Key_Space:
+                paused_ = !paused_;
+                break;
+            case Qt::Key_Tab:
+                mode_ = (mode_ == ViewMode::Cloud) ? ViewMode::Surface : ViewMode::Cloud;
+                // Re-stage for the newly selected mode: its data may be stale
+                // (tick only stages the active mode, and we may be paused).
+                if (mode_ == ViewMode::Cloud) {
+                    stage_volume();
+                    volume_dirty_ = true;
+                } else {
+                    remesh();
+                    mesh_dirty_ = true;
+                }
+                break;
+            case Qt::Key_BracketLeft:
+                absorbance_ = std::max(0.1, absorbance_ / 1.3);
+                break;
+            case Qt::Key_BracketRight:
+                absorbance_ = std::min(50.0, absorbance_ * 1.3);
+                break;
+            default:
+                QOpenGLWidget::keyPressEvent(e);
+                return;
         }
+        refresh_title();
+        update();
     }
 
 private:
@@ -218,31 +355,124 @@ private:
             return;
         }
         sim_.advance(kStepsPerTick);
-        remesh();
-        mesh_dirty_ = true;
+        if (mode_ == ViewMode::Cloud) {
+            stage_volume();
+            volume_dirty_ = true;
+        } else {
+            remesh();
+            mesh_dirty_ = true;
+        }
         if (++ticks_ % 10 == 0) {
             refresh_title();
         }
         update();
     }
 
-    // CPU side only -- safe to call with no GL context current.
+    // ---- CPU staging (no GL context needed) ----
+
     void remesh() {
         mesh_ = ses::marching_cubes_at_fraction(sim_.density(), sim_.grid(), kIsoFraction);
         colors_ = ses::phase_colors(mesh_, sim_.psi());
     }
 
+    // Pack complex psi into RG float pairs and track the density peak.
+    void stage_volume() {
+        const auto& data = sim_.psi().data();
+        psi_staging_.resize(data.size() * 2);
+        double peak = 0.0;
+        for (std::size_t i = 0; i < data.size(); ++i) {
+            psi_staging_[2 * i] = static_cast<float>(data[i].re);
+            psi_staging_[2 * i + 1] = static_cast<float>(data[i].im);
+            peak = std::max(peak, ses::norm_sq(data[i]));
+        }
+        peak_ = peak;
+    }
+
     void refresh_title() {
         window()->setWindowTitle(
             QStringLiteral("Electron wavepacket near a soft-Coulomb nucleus   "
-                           "t = %1 a.u.   norm = %2   %3")
+                           "t = %1 a.u.   norm = %2   [%3]  space=pause tab=view [ ]=density")
                 .arg(sim_.time(), 0, 'f', 2)
                 .arg(ses::norm_sq(sim_.psi()), 0, 'f', 9)
-                .arg(paused_ ? QStringLiteral("[paused - space resumes]")
-                             : QStringLiteral("[space pauses]")));
+                .arg(mode_ == ViewMode::Cloud ? QStringLiteral("cloud")
+                                              : QStringLiteral("surface")));
     }
 
-    // Requires a current GL context (called from paintGL only).
+    // ---- GL uploads (current context required: called from initializeGL/paintGL) ----
+
+    void upload_box_cube() {
+        const ses::Grid3D& g = sim_.grid();
+        const float lo[3] = {static_cast<float>(g.x.xmin), static_cast<float>(g.y.xmin),
+                             static_cast<float>(g.z.xmin)};
+        const float hi[3] = {static_cast<float>(g.x.xmax), static_cast<float>(g.y.xmax),
+                             static_cast<float>(g.z.xmax)};
+        // 12 triangles, CCW seen from OUTSIDE (verified per-face normals).
+        const float v[] = {
+            lo[0],lo[1],lo[2], lo[0],lo[1],hi[2], lo[0],hi[1],hi[2],
+            lo[0],lo[1],lo[2], lo[0],hi[1],hi[2], lo[0],hi[1],lo[2],
+            hi[0],lo[1],lo[2], hi[0],hi[1],lo[2], hi[0],hi[1],hi[2],
+            hi[0],lo[1],lo[2], hi[0],hi[1],hi[2], hi[0],lo[1],hi[2],
+            lo[0],lo[1],lo[2], hi[0],lo[1],lo[2], hi[0],lo[1],hi[2],
+            lo[0],lo[1],lo[2], hi[0],lo[1],hi[2], lo[0],lo[1],hi[2],
+            lo[0],hi[1],lo[2], lo[0],hi[1],hi[2], hi[0],hi[1],hi[2],
+            lo[0],hi[1],lo[2], hi[0],hi[1],hi[2], hi[0],hi[1],lo[2],
+            lo[0],lo[1],lo[2], lo[0],hi[1],lo[2], hi[0],hi[1],lo[2],
+            lo[0],lo[1],lo[2], hi[0],hi[1],lo[2], hi[0],lo[1],lo[2],
+            lo[0],lo[1],hi[2], hi[0],lo[1],hi[2], hi[0],hi[1],hi[2],
+            lo[0],lo[1],hi[2], hi[0],hi[1],hi[2], lo[0],hi[1],hi[2],
+        };
+        glGenVertexArrays(1, &cube_vao_);
+        glBindVertexArray(cube_vao_);
+        glGenBuffers(1, &cube_vbo_);
+        glBindBuffer(GL_ARRAY_BUFFER, cube_vbo_);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(v), v, GL_STATIC_DRAW);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float),
+                              reinterpret_cast<void*>(0));
+        glEnableVertexAttribArray(0);
+        glBindVertexArray(0);
+    }
+
+    void create_textures() {
+        const ses::Grid3D& g = sim_.grid();
+
+        glGenTextures(1, &psi_tex_);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_3D, psi_tex_);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+        glTexImage3D(GL_TEXTURE_3D, 0, GL_RG32F, g.x.n, g.y.n, g.z.n, 0, GL_RG, GL_FLOAT,
+                     nullptr);
+
+        // The TESTED cyclic phase colormap, baked to a repeating 1D texture.
+        const std::vector<ses::Rgb> lut = ses::phase_lut(kPhaseLutSize);
+        std::vector<float> lut_f;
+        lut_f.reserve(lut.size() * 3);
+        for (const ses::Rgb& c : lut) {
+            lut_f.push_back(static_cast<float>(c.r));
+            lut_f.push_back(static_cast<float>(c.g));
+            lut_f.push_back(static_cast<float>(c.b));
+        }
+        glGenTextures(1, &phase_tex_);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_1D, phase_tex_);
+        glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_WRAP_S, GL_REPEAT);  // cyclic!
+        glTexImage1D(GL_TEXTURE_1D, 0, GL_RGB32F, kPhaseLutSize, 0, GL_RGB, GL_FLOAT,
+                     lut_f.data());
+    }
+
+    void upload_volume() {
+        const ses::Grid3D& g = sim_.grid();
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_3D, psi_tex_);
+        glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, g.x.n, g.y.n, g.z.n, GL_RG, GL_FLOAT,
+                        psi_staging_.data());
+    }
+
     void upload_mesh() {
         std::vector<float> interleaved;
         interleaved.reserve(mesh_.vertices.size() * 9);
@@ -261,7 +491,7 @@ private:
             interleaved.push_back(static_cast<float>(c.b));
         }
         vertex_count_ = static_cast<int>(mesh_.vertices.size());
-        glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+        glBindBuffer(GL_ARRAY_BUFFER, mesh_vbo_);
         glBufferData(GL_ARRAY_BUFFER,
                      static_cast<GLsizeiptr>(interleaved.size() * sizeof(float)),
                      interleaved.data(), GL_DYNAMIC_DRAW);
@@ -301,19 +531,38 @@ private:
     }
 
     ses::WavepacketSimulation sim_;
+    ViewMode mode_ = ViewMode::Cloud;
+
     ses::Mesh mesh_;
     std::vector<ses::Rgb> colors_;
+    std::vector<float> psi_staging_;
+    double peak_ = 0.0;
+    double absorbance_ = 1.5;
+
     QTimer timer_;
     bool paused_ = false;
     bool mesh_dirty_ = false;
+    bool volume_dirty_ = false;
     long long ticks_ = 0;
 
-    GLuint program_ = 0;
-    GLuint vao_ = 0;
-    GLuint vbo_ = 0;
-    GLint mvp_loc_ = -1;
-    GLint eye_loc_ = -1;
+    GLuint mesh_program_ = 0;
+    GLuint mesh_vao_ = 0;
+    GLuint mesh_vbo_ = 0;
+    GLint mesh_mvp_loc_ = -1;
+    GLint mesh_eye_loc_ = -1;
     int vertex_count_ = 0;
+
+    GLuint volume_program_ = 0;
+    GLuint cube_vao_ = 0;
+    GLuint cube_vbo_ = 0;
+    GLuint psi_tex_ = 0;
+    GLuint phase_tex_ = 0;
+    GLint vol_mvp_loc_ = -1;
+    GLint vol_eye_loc_ = -1;
+    GLint vol_boxmin_loc_ = -1;
+    GLint vol_boxmax_loc_ = -1;
+    GLint vol_invpeak_loc_ = -1;
+    GLint vol_absorb_loc_ = -1;
 
     double azimuth_ = 0.6;
     double elevation_ = 0.4;
