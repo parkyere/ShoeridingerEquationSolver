@@ -528,6 +528,16 @@ public:
         return make_buffer(gl, to_rg32f(state.data()));
     }
 
+    // psi <- contents of another state buffer (e.g. the quantum-jump
+    // collapse onto a cached eigenstate).
+    void copy_into_psi(Gl& gl, GLuint src_buf) {
+        gl.glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+        gl.glBindBuffer(GL_COPY_READ_BUFFER, src_buf);
+        gl.glBindBuffer(GL_COPY_WRITE_BUFFER, psi_buf_);
+        gl.glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0,
+                               static_cast<GLsizeiptr>(2 * cells_ * sizeof(float)));
+    }
+
     // GPU-reduced norm (sum |psi|^2 * dV) and peak density -- a 2 KB readback
     // instead of the full field.
     NormPeak norm_and_peak(Gl& gl) {

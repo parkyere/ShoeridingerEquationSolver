@@ -334,7 +334,20 @@ bool check_deflation(Gl& gl) {
     const bool e_ok = std::abs(stats.energy - 2.5) < 0.02;
     std::printf("deflated energy estimator: E = %.4f (expect 2.5)  [%s]\n", stats.energy,
                 e_ok ? "PASS" : "FAIL");
-    return ip_ok && ok && e_ok;
+
+    // copy_into_psi (quantum-jump collapse path): bitwise buffer copy.
+    engine.copy_into_psi(gl, ground_buf);
+    std::vector<float> copied;
+    engine.readback(gl, copied);
+    const std::vector<float> ground_staged = ses_gpu::to_rg32f(ground.data());
+    double copy_err = 0.0;
+    for (std::size_t i = 0; i < copied.size(); ++i) {
+        copy_err = std::max(copy_err,
+                            static_cast<double>(std::abs(copied[i] - ground_staged[i])));
+    }
+    const bool copy_ok = copy_err == 0.0;
+    std::printf("copy_into_psi: max err %.3e  [%s]\n", copy_err, copy_ok ? "PASS" : "FAIL");
+    return ip_ok && ok && e_ok && copy_ok;
 }
 
 }  // namespace

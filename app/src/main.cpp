@@ -18,6 +18,7 @@
 
 #include <core/camera.hpp>
 #include <core/colormap.hpp>
+#include <core/decay.hpp>
 #include <core/field.hpp>
 #include <core/grid.hpp>
 #include <core/imaginary_time.hpp>
@@ -87,6 +88,10 @@ constexpr int kTickMs = 16;
 constexpr double kIsoFraction = 0.25;
 constexpr int kPhaseLutSize = 256;
 constexpr double kMeasureSigma = 0.8;  // measurement resolution (Bohr)
+// Display decay rate: the TRUE Einstein-A lifetime is ~1e8 a.u. (unwatchable);
+// this gives tau_display ~ 8 a.u. (~3 s of wall time). The title reports the
+// true lifetime and the acceleration factor honestly.
+constexpr double kDecayGammaDisplay = 0.125;
 constexpr double kProtonMarkerRadius = 0.35;  // symbolic (a real proton is ~1e-5 Bohr)
 
 // ---- isosurface (mesh) shaders ----
@@ -323,6 +328,14 @@ protected:
     }
 
     void paintGL() override {
+        // Photon flash: a brief warm background right after a quantum jump.
+        if (flash_ticks_ > 0) {
+            const float w = static_cast<float>(flash_ticks_) / 25.0f;
+            glClearColor(0.04f + 0.55f * w, 0.05f + 0.42f * w, 0.09f + 0.18f * w, 1.0f);
+            --flash_ticks_;
+        } else {
+            glClearColor(0.04f, 0.05f, 0.09f, 1.0f);
+        }
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         const double aspect = static_cast<double>(width()) / std::max(1, height());
@@ -379,6 +392,26 @@ protected:
                     // Time is credited where steps EXECUTE, so a stalled or
                     // occluded paint cannot desync the clock from the state.
                     gpu_time_ += pending_gpu_steps_ * sim_.dt();
+
+                    // T4: one Poisson decay trial per executed batch. The
+                    // jump probability is weighted by the LIVE excited
+                    // population (GPU inner product); on a jump the state
+                    // collapses onto the cached ground state ("photon out").
+                    if (decay_on_ && excited_buf_ != 0) {
+                        const ses_gpu::NormPeak ip =
+                            engine_.inner_with_psi(*this, excited_buf_);
+                        const double p_e = ip.sum * ip.sum + ip.peak * ip.peak;
+                        const double p_jump =
+                            1.0 - std::exp(-kDecayGammaDisplay * p_e *
+                                           pending_gpu_steps_ * sim_.dt());
+                        std::uniform_real_distribution<double> uniform(0.0, 1.0);
+                        if (uniform(rng_) < p_jump) {
+                            engine_.copy_into_psi(*this, ground_buf_);
+                            flash_ticks_ = 25;
+                            ++photon_count_;
+                            refresh_title();
+                        }
+                    }
                 } else {
                     // GPU imaginary time (G7/T1): renormalized every step;
                     // the ITP estimator gives the convergence readout free.
@@ -555,6 +588,36 @@ public:
         if (!prepare_ground_cache()) {
             return;
         }
+        sim_.set_psi(make_z_odd_seed());
+        cpu_is_truth_ = true;
+        stepping_ = Stepping::RelaxingExcited;
+        after_control();
+    }
+
+    // Transitions arc T4: toggle spontaneous decay (quantum jumps). The
+    // decay rate comes from OUR spectrum: Gamma = einstein_a(gap, |<f|r|i>|^2)
+    // with both eigenstates cached; the true lifetime is ~1e8 a.u., so the
+    // display runs an accelerated Gamma (title shows both, honestly).
+    void toggle_decay() {
+        if (!gpu_ok_) {
+            return;
+        }
+        if (!decay_on_ && !prepare_excited_cache()) {
+            return;
+        }
+        decay_on_ = !decay_on_;
+        after_control();
+    }
+
+    long long photon_count() const { return photon_count_; }
+
+protected:
+    void after_control() {
+        refresh_title();
+        update();
+    }
+
+    ses::Field3D make_z_odd_seed() const {
         const ses::Grid3D& g = sim_.grid();
         ses::Field3D seed{g};
         for (int k = 0; k < g.z.n; ++k) {
@@ -570,16 +633,7 @@ public:
             }
         }
         ses::normalize(seed);
-        sim_.set_psi(seed);
-        cpu_is_truth_ = true;
-        stepping_ = Stepping::RelaxingExcited;
-        after_control();
-    }
-
-protected:
-    void after_control() {
-        refresh_title();
-        update();
+        return seed;
     }
 
     // One-time ground-state computation into a cached GPU buffer (and a CPU
@@ -595,7 +649,7 @@ protected:
                                               ses::Vec3d{2.0, 2.0, 2.0}, ses::Vec3d{}));
         makeCurrent();
         engine_.upload_state(*this, sim_.psi());
-        engine_.relax_step(*this, 700);
+        ground_energy_ = engine_.relax_step(*this, 700).energy;
         engine_.readback(*this, readback_buf_);
         ses::Field3D ground{sim_.grid()};
         for (std::size_t i = 0; i < ground.data().size(); ++i) {
@@ -610,6 +664,45 @@ protected:
         sim_.set_psi(user_state);  // restore; next paint re-uploads
         cpu_is_truth_ = true;
         return ground_buf_ != 0;
+    }
+
+    // One-time excited-state (2p_z) cache + first-principles decay rate:
+    // gap from the two ITP energy estimates, dipole strength from the cached
+    // wavefunctions, Gamma_true = einstein_a(gap, strength).
+    bool prepare_excited_cache() {
+        if (excited_buf_ != 0) {
+            return true;
+        }
+        if (!prepare_ground_cache()) {
+            return false;
+        }
+        ensure_cpu_current();
+        const ses::Field3D user_state = sim_.psi();
+
+        sim_.set_psi(make_z_odd_seed());
+        makeCurrent();
+        engine_.upload_state(*this, sim_.psi());
+        excited_energy_ =
+            engine_.relax_deflated_step(*this, {ground_buf_}, 700).energy;
+        engine_.readback(*this, readback_buf_);
+        ses::Field3D excited{sim_.grid()};
+        for (std::size_t i = 0; i < excited.data().size(); ++i) {
+            excited.data()[i] =
+                ses::Complex<double>{readback_buf_[2 * i], readback_buf_[2 * i + 1]};
+        }
+        ses::normalize(excited);
+        excited_buf_ = engine_.create_state_buffer(*this, excited);
+        doneCurrent();
+        excited_cpu_.emplace(std::move(excited));
+
+        const double gap = excited_energy_ - ground_energy_;
+        const ses::DipoleMatrixElement d =
+            ses::dipole_matrix_element(*excited_cpu_, *ground_cpu_);
+        gamma_true_ = ses::einstein_a(gap, ses::dipole_strength_sq(d));
+
+        sim_.set_psi(user_state);
+        cpu_is_truth_ = true;
+        return excited_buf_ != 0;
     }
 
     void keyPressEvent(QKeyEvent* e) override {
@@ -631,6 +724,9 @@ protected:
                 break;
             case Qt::Key_M:
                 measure_now();
+                break;
+            case Qt::Key_D:
+                toggle_decay();
                 break;
             case Qt::Key_Tab:
                 toggle_view_mode();
@@ -760,7 +856,14 @@ private:
                                 ? QStringLiteral("relaxing->1s")
                                 : QStringLiteral("relaxing->2p")))
                 .arg(use_gpu_path() ? QStringLiteral("gpu 128^3")
-                                    : QStringLiteral("cpu 128^3")));
+                                    : QStringLiteral("cpu 128^3")) +
+            (decay_on_
+                 ? QStringLiteral("  decay ON: tau_true %1 au, x%2, photons %3")
+                       .arg(gamma_true_ > 0.0 ? 1.0 / gamma_true_ : 0.0, 0, 'e', 2)
+                       .arg(gamma_true_ > 0.0 ? kDecayGammaDisplay / gamma_true_ : 0.0,
+                            0, 'e', 1)
+                       .arg(photon_count_)
+                 : QString()));
     }
 
     // ---- GL uploads (current context required: called from initializeGL/paintGL) ----
@@ -950,9 +1053,17 @@ private:
     double relax_energy_display_ = 0.0;
     std::vector<float> readback_buf_;
 
-    // Transitions arc T1: cached ground state for deflation.
+    // Transitions arc T1/T4: cached eigenstates and decay bookkeeping.
     GLuint ground_buf_ = 0;
     std::optional<ses::Field3D> ground_cpu_;
+    GLuint excited_buf_ = 0;
+    std::optional<ses::Field3D> excited_cpu_;
+    double ground_energy_ = 0.0;
+    double excited_energy_ = 0.0;
+    double gamma_true_ = 0.0;
+    bool decay_on_ = false;
+    int flash_ticks_ = 0;
+    long long photon_count_ = 0;
 
     ses::Mesh mesh_;
     std::vector<ses::Rgb> colors_;
@@ -1029,6 +1140,8 @@ int main(int argc, char** argv) {
                         [viewport] { viewport->set_relaxing(); });
     controls->addAction(QStringLiteral("Relax to 2p (3)"), viewport,
                         [viewport] { viewport->relax_to_excited(); });
+    controls->addAction(QStringLiteral("Decay (D)"), viewport,
+                        [viewport] { viewport->toggle_decay(); });
     controls->addSeparator();
     controls->addAction(QStringLiteral("Reset packet (R)"), viewport,
                         [viewport] { viewport->reset_simulation(); });
@@ -1042,6 +1155,22 @@ int main(int argc, char** argv) {
     // StrongFocus only ACCEPTS focus; grab it so the 1/2/R/M/space keys work
     // immediately without a click.
     viewport->setFocus();
+
+    // Headless-ish regression of the decay demo arc: prepare 2p, return to
+    // real time, enable decay, and require at least one quantum jump.
+    // (After the first jump the atom sits in 1s with P_e ~ 0, so exactly one
+    // photon is the physically expected outcome without a re-pump laser.)
+    if (app.arguments().contains(QStringLiteral("--selftest-decay"))) {
+        QTimer::singleShot(500, viewport, [viewport] { viewport->relax_to_excited(); });
+        QTimer::singleShot(14000, viewport, [viewport] { viewport->set_real_time(); });
+        QTimer::singleShot(15000, viewport, [viewport] { viewport->toggle_decay(); });
+        QTimer::singleShot(45000, viewport, [viewport, &app] {
+            const long long photons = viewport->photon_count();
+            std::fprintf(stderr, "selftest-decay: photons = %lld  [%s]\n", photons,
+                         photons >= 1 ? "PASS" : "FAIL");
+            app.exit(photons >= 1 ? 0 : 1);
+        });
+    }
 
     return app.exec();
 }
