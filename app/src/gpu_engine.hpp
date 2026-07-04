@@ -167,6 +167,59 @@ void main() {
 }
 )";
 
+// Partial reduction of the complex inner product <phi|psi> = sum conj(phi)*psi:
+// phi at binding 3 (conjugated side), psi at binding 0, vec2 partial sums to
+// binding 2 (same partials buffer as the norm/peak kernel).
+inline const char* kInnerProductSrc = R"(#version 430 core
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer PsiBuf { vec2 psi[]; };
+layout(std430, binding = 3) readonly buffer PhiBuf { vec2 phi[]; };
+layout(std430, binding = 2) writeonly buffer PartialsBuf { vec2 partials[]; };
+uniform uint n;
+
+shared vec2 s_sum[256];
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint stride = gl_NumWorkGroups.x * 256u;
+    vec2 acc = vec2(0.0);
+    for (uint i = gl_GlobalInvocationID.x; i < n; i += stride) {
+        vec2 a = phi[i];
+        vec2 b = psi[i];
+        // conj(a) * b
+        acc += vec2(a.x * b.x + a.y * b.y, a.x * b.y - a.y * b.x);
+    }
+    s_sum[tid] = acc;
+    barrier();
+    for (uint half_len = 128u; half_len > 0u; half_len >>= 1u) {
+        if (tid < half_len) {
+            s_sum[tid] += s_sum[tid + half_len];
+        }
+        barrier();
+    }
+    if (tid == 0u) {
+        partials[gl_WorkGroupID.x] = s_sum[0];
+    }
+}
+)";
+
+// psi <- psi - c * phi (complex c): the deflation projection update.
+inline const char* kAxpySrc = R"(#version 430 core
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) buffer PsiBuf { vec2 psi[]; };
+layout(std430, binding = 3) readonly buffer PhiBuf { vec2 phi[]; };
+uniform uint n;
+uniform vec2 c;
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= n) {
+        return;
+    }
+    vec2 q = phi[i];
+    psi[i] -= vec2(c.x * q.x - c.y * q.y, c.x * q.y + c.y * q.x);
+}
+)";
+
 // SSBO psi -> RG32F 3D image (the volume renderer's texture), no CPU trip.
 inline const char* kBridgeSrc = R"(#version 430 core
 layout(local_size_x = 256) in;
@@ -369,9 +422,12 @@ public:
         bridge_prog_ = build_program(gl, kBridgeSrc, "texture bridge");
         norm_prog_ = build_program(gl, kNormPeakSrc, "norm/peak reduce");
         scale_prog_ = build_program(gl, kScaleSrc, "scale");
+        inner_prog_ = build_program(gl, kInnerProductSrc, "inner product");
+        axpy_prog_ = build_program(gl, kAxpySrc, "axpy");
         fft_progs_ = build_fft_programs(gl, grid);
         if (mul_prog_ == 0 || conj_prog_ == 0 || bridge_prog_ == 0 || norm_prog_ == 0 ||
-            scale_prog_ == 0 || fft_progs_.axis[0] == 0 || fft_progs_.axis[1] == 0 ||
+            scale_prog_ == 0 || inner_prog_ == 0 || axpy_prog_ == 0 ||
+            fft_progs_.axis[0] == 0 || fft_progs_.axis[1] == 0 ||
             fft_progs_.axis[2] == 0) {
             return false;
         }
@@ -404,22 +460,72 @@ public:
         RelaxStats stats;
         gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, psi_buf_);
         for (int s = 0; s < nsteps; ++s) {
-            multiply(gl, relax_half_buf_);
-            run_fft3(gl, grid_, fft_progs_);
-            multiply(gl, relax_kin_buf_);
-            run_conj_scale(gl, conj_prog_, cells_, 1.0f);
-            run_fft3(gl, grid_, fft_progs_);
-            run_conj_scale(gl, conj_prog_, cells_, 1.0f / static_cast<float>(cells_));
-            multiply(gl, relax_half_buf_);
-
-            const NormPeak np = run_norm_peak(gl, norm_prog_, partials_buf_, cells_);
-            const double norm_sq = np.sum * grid_.cell_volume();
-            stats.energy = -std::log(norm_sq) / (2.0 * relax_dtau_);
-            stats.peak = np.peak / norm_sq;
-            run_scale(gl, scale_prog_, cells_,
-                      static_cast<float>(1.0 / std::sqrt(norm_sq)));
+            strang_imaginary(gl);
+            stats = renormalize_and_estimate(gl);
         }
         return stats;
+    }
+
+    // Deflated variant (transitions arc T1-GPU): after each Strang step the
+    // given lower eigenstates (as state buffers) are projected out, so the
+    // flow converges to the next EXCITED state; the free energy estimator
+    // then reads that state's energy.
+    RelaxStats relax_deflated_step(Gl& gl, const std::vector<GLuint>& lower, int nsteps) {
+        RelaxStats stats;
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, psi_buf_);
+        for (int s = 0; s < nsteps; ++s) {
+            strang_imaginary(gl);
+            for (const GLuint phi : lower) {
+                const NormPeak ip = inner_with_psi(gl, phi);  // (re, im) in sum/peak
+                subtract_projection(gl, phi, ip.sum, ip.peak);
+            }
+            stats = renormalize_and_estimate(gl);
+        }
+        return stats;
+    }
+
+    // <phi|psi> via the GPU reduction; returned as NormPeak{re, im} (the
+    // partials pair is reused as a complex accumulator). Includes dV.
+    NormPeak inner_with_psi(Gl& gl, GLuint phi_buf) {
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, psi_buf_);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, partials_buf_);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, phi_buf);
+        gl.glUseProgram(inner_prog_);
+        gl.glUniform1ui(gl.glGetUniformLocation(inner_prog_, "n"),
+                        static_cast<GLuint>(cells_));
+        gl.glDispatchCompute(kNormPeakGroups, 1, 1);
+        gl.glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+
+        float partials[2 * kNormPeakGroups];
+        gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, partials_buf_);
+        gl.glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(partials), partials);
+        double re = 0.0;
+        double im = 0.0;
+        for (int g = 0; g < kNormPeakGroups; ++g) {
+            re += partials[2 * g];
+            im += partials[2 * g + 1];
+        }
+        const double dv = grid_.cell_volume();
+        return NormPeak{re * dv, im * dv};
+    }
+
+    // psi <- psi - c * phi (complex c = (cre, cim)): projects phi out when
+    // c is the overlap <phi|psi>.
+    void subtract_projection(Gl& gl, GLuint phi_buf, double cre, double cim) {
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, psi_buf_);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, phi_buf);
+        gl.glUseProgram(axpy_prog_);
+        gl.glUniform1ui(gl.glGetUniformLocation(axpy_prog_, "n"),
+                        static_cast<GLuint>(cells_));
+        gl.glUniform2f(gl.glGetUniformLocation(axpy_prog_, "c"), static_cast<float>(cre),
+                       static_cast<float>(cim));
+        gl.glDispatchCompute(static_cast<GLuint>((cells_ + 255) / 256), 1, 1);
+        gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    }
+
+    // Upload an auxiliary state (e.g. a cached eigenstate) into its own SSBO.
+    GLuint create_state_buffer(Gl& gl, const ses::Field3D& state) {
+        return make_buffer(gl, to_rg32f(state.data()));
     }
 
     // GPU-reduced norm (sum |psi|^2 * dV) and peak density -- a 2 KB readback
@@ -490,6 +596,27 @@ public:
     }
 
 private:
+    // One e^{-H dtau} Strang pass over psi (no normalization).
+    void strang_imaginary(Gl& gl) {
+        multiply(gl, relax_half_buf_);
+        run_fft3(gl, grid_, fft_progs_);
+        multiply(gl, relax_kin_buf_);
+        run_conj_scale(gl, conj_prog_, cells_, 1.0f);
+        run_fft3(gl, grid_, fft_progs_);
+        run_conj_scale(gl, conj_prog_, cells_, 1.0f / static_cast<float>(cells_));
+        multiply(gl, relax_half_buf_);
+    }
+
+    RelaxStats renormalize_and_estimate(Gl& gl) {
+        const NormPeak np = run_norm_peak(gl, norm_prog_, partials_buf_, cells_);
+        const double norm_sq = np.sum * grid_.cell_volume();
+        RelaxStats stats;
+        stats.energy = -std::log(norm_sq) / (2.0 * relax_dtau_);
+        stats.peak = np.peak / norm_sq;
+        run_scale(gl, scale_prog_, cells_, static_cast<float>(1.0 / std::sqrt(norm_sq)));
+        return stats;
+    }
+
     static GLuint make_buffer(Gl& gl, const std::vector<float>& data) {
         GLuint buf = 0;
         gl.glGenBuffers(1, &buf);
@@ -523,6 +650,8 @@ private:
     GLuint bridge_prog_ = 0;
     GLuint norm_prog_ = 0;
     GLuint scale_prog_ = 0;
+    GLuint inner_prog_ = 0;
+    GLuint axpy_prog_ = 0;
     FftPrograms fft_progs_;
 };
 

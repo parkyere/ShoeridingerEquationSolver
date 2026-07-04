@@ -16,7 +16,9 @@
 //  G6: norm/peak tree reduction vs CPU double sums, and the scale kernel
 //      (fp32 renormalization) scaling the reduced norm exactly by s^2;
 //  G7: GPU imaginary-time relax x50 vs ImaginaryTimePropagator3D x50, and
-//      the free ITP energy estimator converging to the harmonic 3w/2.
+//      the free ITP energy estimator converging to the harmonic 3w/2;
+//  T1: complex inner-product reduction vs ses::inner_product, and the
+//      deflated relax vs the CPU relax_deflated, converging to E1 = 5w/2.
 
 #include "gpu_engine.hpp"
 
@@ -283,6 +285,58 @@ bool check_relax(Gl& gl) {
     return ok && e_ok;
 }
 
+// T1-GPU: the inner-product kernel and the deflated relaxation vs CPU.
+bool check_deflation(Gl& gl) {
+    const ses::Grid1D axis{-8.0, 8.0, 32};
+    const ses::Grid3D g{axis, axis, axis};
+    const std::vector<double> v = ses::harmonic_potential(g, 1.0, ses::Vec3d{});
+    const double dtau = 0.05;
+    const ses::SplitOperator3D real_prop{g, v, 0.02};
+    const ses::ImaginaryTimePropagator3D cpu_relaxer{g, v, dtau};
+
+    // CPU ground state (the deflation target), plus a mixed-parity guess.
+    ses::Field3D ground = ses::gaussian_wavepacket(g, ses::Vec3d{},
+                                                   ses::Vec3d{1.2, 1.2, 1.2}, ses::Vec3d{});
+    cpu_relaxer.relax(ground, 600);
+    const ses::Field3D guess = ses::gaussian_wavepacket(
+        g, ses::Vec3d{1.0, 0.5, 0.0}, ses::Vec3d{1.2, 1.2, 1.2}, ses::Vec3d{});
+
+    ses_gpu::GpuEngine engine;
+    if (!engine.initialize(gl, g, real_prop.half_potential_phase(),
+                           real_prop.kinetic_phase(), guess)) {
+        std::printf("engine init: FAIL\n");
+        return false;
+    }
+    engine.set_relax_tables(gl, cpu_relaxer.half_potential_weight(),
+                            cpu_relaxer.kinetic_weight(), dtau);
+    const GLuint ground_buf = engine.create_state_buffer(gl, ground);
+
+    // Inner-product kernel vs the CPU double reference.
+    const ses::Complex<double> cpu_ip = ses::inner_product(ground, guess);
+    const ses_gpu::NormPeak gpu_ip = engine.inner_with_psi(gl, ground_buf);
+    const double ip_err = std::max(std::abs(gpu_ip.sum - cpu_ip.real()),
+                                   std::abs(gpu_ip.peak - cpu_ip.imag()));
+    const bool ip_ok = ip_err < 1e-6;
+    std::printf("inner-product kernel: max err %.3e  [%s]\n", ip_err,
+                ip_ok ? "PASS" : "FAIL");
+
+    // Deflated relax: 50 GPU steps vs 50 CPU steps.
+    engine.relax_deflated_step(gl, {ground_buf}, 50);
+    ses::Field3D cpu = guess;
+    cpu_relaxer.relax_deflated(cpu, {&ground}, 50);
+    std::vector<float> gpu_out;
+    engine.readback(gl, gpu_out);
+    bool ok = compare("deflated relax 50 steps", gpu_out, cpu, 1e-4);
+
+    // Convergence: the estimator must land on the first excited level 5w/2.
+    const ses_gpu::GpuEngine::RelaxStats stats =
+        engine.relax_deflated_step(gl, {ground_buf}, 550);
+    const bool e_ok = std::abs(stats.energy - 2.5) < 0.02;
+    std::printf("deflated energy estimator: E = %.4f (expect 2.5)  [%s]\n", stats.energy,
+                e_ok ? "PASS" : "FAIL");
+    return ip_ok && ok && e_ok;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -326,6 +380,7 @@ int main(int argc, char** argv) {
     ok = check_engine_step(gl) && ok;
     ok = check_norm_reduction(gl) && ok;
     ok = check_relax(gl) && ok;
+    ok = check_deflation(gl) && ok;
 
     return ok ? 0 : 1;
 }

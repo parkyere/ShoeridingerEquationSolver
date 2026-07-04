@@ -49,6 +49,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
+#include <optional>
 #include <random>
 #include <utility>
 #include <vector>
@@ -234,7 +235,7 @@ void main() {
 )";
 
 enum class ViewMode { Cloud, Surface };
-enum class Stepping { RealTime, Relaxing };
+enum class Stepping { RealTime, Relaxing, RelaxingExcited };
 
 class Viewport : public QOpenGLWidget, protected QOpenGLFunctions_4_3_Core {
 public:
@@ -379,10 +380,14 @@ protected:
                     // occluded paint cannot desync the clock from the state.
                     gpu_time_ += pending_gpu_steps_ * sim_.dt();
                 } else {
-                    // GPU imaginary time (G7): renormalized every step; the
-                    // ITP estimator gives the convergence readout for free.
+                    // GPU imaginary time (G7/T1): renormalized every step;
+                    // the ITP estimator gives the convergence readout free.
+                    // The excited flavor deflates the cached ground state.
                     const ses_gpu::GpuEngine::RelaxStats stats =
-                        engine_.relax_step(*this, pending_gpu_steps_);
+                        (stepping_ == Stepping::RelaxingExcited && ground_buf_ != 0)
+                            ? engine_.relax_deflated_step(*this, {ground_buf_},
+                                                          pending_gpu_steps_)
+                            : engine_.relax_step(*this, pending_gpu_steps_);
                     relax_energy_display_ = stats.energy;
                     if (stats.peak > 0.0) {
                         peak_ = stats.peak;
@@ -528,8 +533,46 @@ public:
         // only stages the active mode, and we may be paused).
         if (mode_ == ViewMode::Surface) {
             ensure_cpu_current();  // meshing reads the CPU field
+            if (stepping_ == Stepping::RelaxingExcited) {
+                stepping_ = Stepping::Relaxing;  // deflation is GPU-only (v1)
+            }
         }
         stage_active_view();
+        after_control();
+    }
+
+    // Transitions arc T1: relax into the z-aligned first excited state.
+    // The ground state is computed and cached on first use (a few seconds,
+    // one-time); the z-odd seed keeps the whole flow in the odd-parity
+    // sector, so it converges to the 2p_z-like state deterministically.
+    void relax_to_excited() {
+        if (!gpu_ok_) {
+            return;  // deflation runs on the GPU path only (v1)
+        }
+        if (mode_ != ViewMode::Cloud) {
+            mode_ = ViewMode::Cloud;
+        }
+        if (!prepare_ground_cache()) {
+            return;
+        }
+        const ses::Grid3D& g = sim_.grid();
+        ses::Field3D seed{g};
+        for (int k = 0; k < g.z.n; ++k) {
+            for (int j = 0; j < g.y.n; ++j) {
+                for (int i = 0; i < g.x.n; ++i) {
+                    const double x = g.x.coord(i);
+                    const double y = g.y.coord(j);
+                    const double z = g.z.coord(k);
+                    const double env =
+                        std::exp(-(x * x + y * y + z * z) / (4.0 * 2.0 * 2.0));
+                    seed(i, j, k) = ses::Complex<double>{z * env, 0.0};
+                }
+            }
+        }
+        ses::normalize(seed);
+        sim_.set_psi(seed);
+        cpu_is_truth_ = true;
+        stepping_ = Stepping::RelaxingExcited;
         after_control();
     }
 
@@ -537,6 +580,36 @@ protected:
     void after_control() {
         refresh_title();
         update();
+    }
+
+    // One-time ground-state computation into a cached GPU buffer (and a CPU
+    // copy for later CPU-side use). Blocks for a few seconds on first call.
+    bool prepare_ground_cache() {
+        if (ground_buf_ != 0) {
+            return true;
+        }
+        ensure_cpu_current();  // snapshot the user's state
+        const ses::Field3D user_state = sim_.psi();
+
+        sim_.set_psi(ses::gaussian_wavepacket(sim_.grid(), ses::Vec3d{},
+                                              ses::Vec3d{2.0, 2.0, 2.0}, ses::Vec3d{}));
+        makeCurrent();
+        engine_.upload_state(*this, sim_.psi());
+        engine_.relax_step(*this, 700);
+        engine_.readback(*this, readback_buf_);
+        ses::Field3D ground{sim_.grid()};
+        for (std::size_t i = 0; i < ground.data().size(); ++i) {
+            ground.data()[i] =
+                ses::Complex<double>{readback_buf_[2 * i], readback_buf_[2 * i + 1]};
+        }
+        ses::normalize(ground);  // fp32 round-trip polish
+        ground_buf_ = engine_.create_state_buffer(*this, ground);
+        doneCurrent();
+        ground_cpu_.emplace(std::move(ground));
+
+        sim_.set_psi(user_state);  // restore; next paint re-uploads
+        cpu_is_truth_ = true;
+        return ground_buf_ != 0;
     }
 
     void keyPressEvent(QKeyEvent* e) override {
@@ -549,6 +622,9 @@ protected:
                 break;
             case Qt::Key_2:
                 set_relaxing();
+                break;
+            case Qt::Key_3:
+                relax_to_excited();
                 break;
             case Qt::Key_R:
                 reset_simulation();
@@ -661,7 +737,7 @@ private:
         // Convergence readout while relaxing: exact <H> on the CPU session,
         // or the free ITP estimator (-ln||psi||^2 / 2 dtau) on the GPU path.
         QString energy;
-        if (stepping_ == Stepping::Relaxing) {
+        if (stepping_ != Stepping::RealTime) {
             energy = cpu_is_truth_
                          ? QStringLiteral("E = %1 Ha   ")
                                .arg(ses::mean_energy(sim_.psi(), sim_.potential()), 0,
@@ -678,8 +754,11 @@ private:
                 .arg(norm_display_, 0, 'f', 6)
                 .arg(mode_ == ViewMode::Cloud ? QStringLiteral("cloud")
                                               : QStringLiteral("surface"))
-                .arg(stepping_ == Stepping::RealTime ? QStringLiteral("real-time")
-                                                     : QStringLiteral("relaxing"))
+                .arg(stepping_ == Stepping::RealTime
+                         ? QStringLiteral("real-time")
+                         : (stepping_ == Stepping::Relaxing
+                                ? QStringLiteral("relaxing->1s")
+                                : QStringLiteral("relaxing->2p")))
                 .arg(use_gpu_path() ? QStringLiteral("gpu 128^3")
                                     : QStringLiteral("cpu 128^3")));
     }
@@ -871,6 +950,10 @@ private:
     double relax_energy_display_ = 0.0;
     std::vector<float> readback_buf_;
 
+    // Transitions arc T1: cached ground state for deflation.
+    GLuint ground_buf_ = 0;
+    std::optional<ses::Field3D> ground_cpu_;
+
     ses::Mesh mesh_;
     std::vector<ses::Rgb> colors_;
     std::vector<float> psi_staging_;
@@ -944,6 +1027,8 @@ int main(int argc, char** argv) {
                         [viewport] { viewport->set_real_time(); });
     controls->addAction(QStringLiteral("Relax to ground state (2)"), viewport,
                         [viewport] { viewport->set_relaxing(); });
+    controls->addAction(QStringLiteral("Relax to 2p (3)"), viewport,
+                        [viewport] { viewport->relax_to_excited(); });
     controls->addSeparator();
     controls->addAction(QStringLiteral("Reset packet (R)"), viewport,
                         [viewport] { viewport->reset_simulation(); });
