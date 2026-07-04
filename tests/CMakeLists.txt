@@ -21,6 +21,7 @@ add_executable(sesolver_tests
     field_test.cpp
     grid_test.cpp
     spectral_test.cpp
+    wavepacket_test.cpp
 )
 target_link_libraries(sesolver_tests
     PRIVATE
