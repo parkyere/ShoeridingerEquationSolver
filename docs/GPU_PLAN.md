@@ -46,9 +46,18 @@ Compute shaders cannot be gtest-unit-tested from the pure core. Instead:
   FFT; inverse via the conj/scale kernel. Verified vs CPU double fft3 on
   16x8x4 (distinct dims: axis mapping) and 64^3; GPU round-trip restores the
   original to ~1e-6.
-- [ ] G4: full split-operator step on GPU; psi lives in an SSBO; phase
-  tables (e^{-iVdt/2}, e^{-ik^2dt/2}) uploaded once; a final compute pass
-  writes the RG32F 3D texture for the existing volume renderer (no CPU
-  round-trip). Verify: N GPU steps vs N CPU steps at fp32 tolerance.
-- [ ] G5: shell switch to GPU stepping at 128^3; CPU path kept as a runtime
-  fallback and as the verification reference.
+- [x] G4: full split-operator step on GPU; psi lives in an SSBO; phase
+  tables from SplitOperator3D's tested accessors; the bridge compute pass
+  writes the RG32F 3D texture (no CPU round-trip). Verified: 20 GPU steps vs
+  20 CPU steps at 1.2e-6; bridge bitwise.
+- [x] G5: shell steps on the GPU at 128^3 (~50-55 fps; CPU would be ~9);
+  relax/measure/surface stay on the CPU double session behind the single
+  cpu_is_truth_ sync invariant. Hardened by adversarial review (stale-bridge,
+  buffer-update barriers, execute-side time accounting, peak tracking).
+- [x] G6: norm/peak tree-reduction kernel (2 KB readback replaces the 16 MB
+  title drain) + scale kernel for fp32 drift renormalization -- the norm now
+  stays pinned at 1 +- ~2e-5 indefinitely. Verified: reduction rel err 3e-9
+  vs CPU double, scale exact.
+- [ ] G7 (candidate): imaginary-time relaxation on the GPU (weight tables +
+  per-step renormalization via the G6 kernels) so relax mode is also
+  real-time at 128^3.

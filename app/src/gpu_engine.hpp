@@ -16,6 +16,7 @@
 
 #include <QOpenGLFunctions_4_3_Core>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdio>
 #include <string>
@@ -107,6 +108,61 @@ void main() {
 
     data[base + int(i0) * stride] = line_sm[i0];
     data[base + int(i1) * stride] = line_sm[i1];
+}
+)";
+
+// Sum and max of |psi_i|^2 in one pass: grid-stride accumulation, then a
+// shared-memory tree reduction; one vec2(sum, max) per workgroup lands in a
+// small partials SSBO (binding 2). Replaces full-buffer readbacks for the
+// norm display, brightness peak, and fp32 renormalization.
+inline const char* kNormPeakSrc = R"(#version 430 core
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer PsiBuf { vec2 psi[]; };
+layout(std430, binding = 2) writeonly buffer PartialsBuf { vec2 partials[]; };
+uniform uint n;
+
+shared float s_sum[256];
+shared float s_max[256];
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint stride = gl_NumWorkGroups.x * 256u;
+    float acc = 0.0;
+    float mx = 0.0;
+    for (uint i = gl_GlobalInvocationID.x; i < n; i += stride) {
+        vec2 v = psi[i];
+        float d = dot(v, v);
+        acc += d;
+        mx = max(mx, d);
+    }
+    s_sum[tid] = acc;
+    s_max[tid] = mx;
+    barrier();
+    for (uint half_len = 128u; half_len > 0u; half_len >>= 1u) {
+        if (tid < half_len) {
+            s_sum[tid] += s_sum[tid + half_len];
+            s_max[tid] = max(s_max[tid], s_max[tid + half_len]);
+        }
+        barrier();
+    }
+    if (tid == 0u) {
+        partials[gl_WorkGroupID.x] = vec2(s_sum[0], s_max[0]);
+    }
+}
+)";
+
+// psi <- scale * psi (fp32 drift renormalization).
+inline const char* kScaleSrc = R"(#version 430 core
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) buffer DataBuf { vec2 data[]; };
+uniform uint n;
+uniform float scale;
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= n) {
+        return;
+    }
+    data[i] = scale * data[i];
 }
 )";
 
@@ -248,6 +304,42 @@ inline std::vector<float> to_rg32f(const std::vector<ses::Complex<double>>& src)
     return out;
 }
 
+constexpr int kNormPeakGroups = 256;  // partials buffer: 256 vec2 = 2 KB
+
+struct NormPeak {
+    double sum{};   // sum of |psi_i|^2 (multiply by dV for the norm)
+    double peak{};  // max of |psi_i|^2
+};
+
+// Reduce |psi|^2 over the SSBO bound at binding 0 into the partials buffer
+// (binding 2), then finish the 256 partial pairs on the CPU in double.
+inline NormPeak run_norm_peak(Gl& gl, GLuint prog, GLuint partials_buf, std::size_t n) {
+    gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, partials_buf);
+    gl.glUseProgram(prog);
+    gl.glUniform1ui(gl.glGetUniformLocation(prog, "n"), static_cast<GLuint>(n));
+    gl.glDispatchCompute(kNormPeakGroups, 1, 1);
+    gl.glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+
+    float partials[2 * kNormPeakGroups];
+    gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, partials_buf);
+    gl.glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(partials), partials);
+
+    NormPeak out;
+    for (int g = 0; g < kNormPeakGroups; ++g) {
+        out.sum += partials[2 * g];
+        out.peak = std::max(out.peak, static_cast<double>(partials[2 * g + 1]));
+    }
+    return out;
+}
+
+inline void run_scale(Gl& gl, GLuint prog, std::size_t n, float scale) {
+    gl.glUseProgram(prog);
+    gl.glUniform1ui(gl.glGetUniformLocation(prog, "n"), static_cast<GLuint>(n));
+    gl.glUniform1f(gl.glGetUniformLocation(prog, "scale"), scale);
+    gl.glDispatchCompute(static_cast<GLuint>((n + 255) / 256), 1, 1);
+    gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+}
+
 // ---- the engine ------------------------------------------------------------
 
 class GpuEngine {
@@ -264,16 +356,35 @@ public:
         mul_prog_ = build_program(gl, kPhaseMultiplySrc, "phase multiply");
         conj_prog_ = build_program(gl, kConjScaleSrc, "conj scale");
         bridge_prog_ = build_program(gl, kBridgeSrc, "texture bridge");
+        norm_prog_ = build_program(gl, kNormPeakSrc, "norm/peak reduce");
+        scale_prog_ = build_program(gl, kScaleSrc, "scale");
         fft_progs_ = build_fft_programs(gl, grid);
-        if (mul_prog_ == 0 || conj_prog_ == 0 || bridge_prog_ == 0 ||
-            fft_progs_.axis[0] == 0 || fft_progs_.axis[1] == 0 || fft_progs_.axis[2] == 0) {
+        if (mul_prog_ == 0 || conj_prog_ == 0 || bridge_prog_ == 0 || norm_prog_ == 0 ||
+            scale_prog_ == 0 || fft_progs_.axis[0] == 0 || fft_progs_.axis[1] == 0 ||
+            fft_progs_.axis[2] == 0) {
             return false;
         }
 
         psi_buf_ = make_buffer(gl, to_rg32f(psi0.data()));
         half_buf_ = make_buffer(gl, to_rg32f(half_v));
         kin_buf_ = make_buffer(gl, to_rg32f(kinetic));
+        partials_buf_ = make_buffer(gl, std::vector<float>(2 * kNormPeakGroups, 0.0f));
         return true;
+    }
+
+    // GPU-reduced norm (sum |psi|^2 * dV) and peak density -- a 2 KB readback
+    // instead of the full field.
+    NormPeak norm_and_peak(Gl& gl) {
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, psi_buf_);
+        NormPeak np = run_norm_peak(gl, norm_prog_, partials_buf_, cells_);
+        np.sum *= grid_.cell_volume();
+        return np;
+    }
+
+    // psi <- s * psi (fp32 drift renormalization).
+    void scale(Gl& gl, float s) {
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, psi_buf_);
+        run_scale(gl, scale_prog_, cells_, s);
     }
 
     void upload_state(Gl& gl, const ses::Field3D& psi) {
@@ -353,9 +464,12 @@ private:
     GLuint psi_buf_ = 0;
     GLuint half_buf_ = 0;
     GLuint kin_buf_ = 0;
+    GLuint partials_buf_ = 0;
     GLuint mul_prog_ = 0;
     GLuint conj_prog_ = 0;
     GLuint bridge_prog_ = 0;
+    GLuint norm_prog_ = 0;
+    GLuint scale_prog_ = 0;
     FftPrograms fft_progs_;
 };
 

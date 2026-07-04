@@ -12,7 +12,9 @@
 //  G2+G3: 3-axis line FFT vs CPU fft3 on 16x8x4 (distinct dims: axis
 //         mapping) and 64^3, plus GPU inverse round-trip;
 //  G4: GpuEngine::step x20 vs SplitOperator3D::step x20 (soft Coulomb),
-//      plus the SSBO -> RG32F texture bridge.
+//      plus the SSBO -> RG32F texture bridge;
+//  G6: norm/peak tree reduction vs CPU double sums, and the scale kernel
+//      (fp32 renormalization) scaling the reduced norm exactly by s^2.
 
 #include "gpu_engine.hpp"
 
@@ -200,6 +202,46 @@ bool check_engine_step(Gl& gl) {
     return ok && bridge_ok;
 }
 
+// G6: the norm/peak reduction and the scale kernel vs CPU double reference.
+bool check_norm_reduction(Gl& gl) {
+    const ses::Grid1D axis{-8.0, 8.0, 32};
+    const ses::Grid3D g{axis, axis, axis};
+    const ses::Field3D f = deterministic_field(g);
+    const std::size_t cells = f.data().size();
+
+    double cpu_sum = 0.0;
+    double cpu_peak = 0.0;
+    for (const ses::Complex<double>& z : f.data()) {
+        const double d = ses::norm_sq(z);
+        cpu_sum += d;
+        cpu_peak = std::max(cpu_peak, d);
+    }
+
+    const GLuint norm_prog = ses_gpu::build_program(gl, ses_gpu::kNormPeakSrc, "G6 norm");
+    const GLuint scale_prog = ses_gpu::build_program(gl, ses_gpu::kScaleSrc, "G6 scale");
+    const GLuint psi_buf = make_ssbo(gl, 0, ses_gpu::to_rg32f(f.data()));
+    const GLuint partials = make_ssbo(
+        gl, 2, std::vector<float>(2 * ses_gpu::kNormPeakGroups, 0.0f));
+
+    const ses_gpu::NormPeak np = ses_gpu::run_norm_peak(gl, norm_prog, partials, cells);
+    const double sum_rel = std::abs(np.sum - cpu_sum) / cpu_sum;
+    const double peak_rel = std::abs(np.peak - cpu_peak) / cpu_peak;
+    bool ok = sum_rel < 1e-5 && peak_rel < 1e-6;
+    std::printf("norm/peak reduce: rel err sum %.3e, peak %.3e  [%s]\n", sum_rel, peak_rel,
+                ok ? "PASS" : "FAIL");
+
+    // scale by s must scale the reduced |psi|^2 sum by s^2.
+    gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, psi_buf);
+    ses_gpu::run_scale(gl, scale_prog, cells, 0.5f);
+    const ses_gpu::NormPeak scaled = ses_gpu::run_norm_peak(gl, norm_prog, partials, cells);
+    const double scale_rel = std::abs(scaled.sum - 0.25 * np.sum) / (0.25 * np.sum);
+    const bool scale_ok = scale_rel < 1e-6;
+    std::printf("scale kernel: rel err %.3e  [%s]\n", scale_rel, scale_ok ? "PASS" : "FAIL");
+
+    gl.glDeleteBuffers(1, &psi_buf);
+    return ok && scale_ok;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -241,6 +283,7 @@ int main(int argc, char** argv) {
     ok = check_fft3(gl, ses::Grid3D{axis64, axis64, axis64}, "fft3 64^3") && ok;
 
     ok = check_engine_step(gl) && ok;
+    ok = check_norm_reduction(gl) && ok;
 
     return ok ? 0 : 1;
 }

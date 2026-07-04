@@ -307,23 +307,22 @@ protected:
             }
             if (pending_gpu_steps_ > 0) {
                 if (gpu_title_due_) {
-                    // Read BEFORE enqueueing new steps: the implicit sync then
-                    // waits only on long-finished work instead of draining the
-                    // fresh pipeline (norm is one frame stale -- immaterial).
+                    // GPU-reduced norm+peak (2 KB readback, no full-field
+                    // drain), taken BEFORE enqueueing new steps so the
+                    // implicit sync waits only on long-finished work.
                     gpu_title_due_ = false;
-                    engine_.readback(*this, readback_buf_);
-                    double acc = 0.0;
-                    double pk = 0.0;
-                    for (std::size_t i = 0; i + 1 < readback_buf_.size(); i += 2) {
-                        const double re = readback_buf_[i];
-                        const double im = readback_buf_[i + 1];
-                        const double d = re * re + im * im;
-                        acc += d;
-                        pk = std::max(pk, d);
+                    const ses_gpu::NormPeak np = engine_.norm_and_peak(*this);
+                    norm_display_ = np.sum;
+                    if (np.peak > 0.0) {
+                        peak_ = np.peak;  // brightness tracks the evolving cloud
                     }
-                    norm_display_ = acc * sim_.grid().cell_volume();
-                    if (pk > 0.0) {
-                        peak_ = pk;  // brightness tracks the evolving cloud
+                    // fp32 drift renormalization: the split-operator is
+                    // unitary in exact arithmetic, so pinning the norm back
+                    // to 1 removes pure numerical decay (display shows the
+                    // measured value first, then snaps back to 1.000000).
+                    if (np.sum > 0.0 && std::abs(np.sum - 1.0) > 1e-4) {
+                        engine_.scale(*this,
+                                      static_cast<float>(1.0 / std::sqrt(np.sum)));
                     }
                     refresh_title();
                 }
