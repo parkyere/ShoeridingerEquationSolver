@@ -77,14 +77,16 @@ git config core.hooksPath tools/git-hooks
 
 ## Status
 
-Phases 0-6 complete, Phase 7 shipping (110 tests green): the hand-rolled
-Complex/FFT/split-operator/imaginary-time stack is validated against analytic
-oracles through 3D, and `sesolver_app` now animates the TDSE in real time --
-a Gaussian electron wavepacket swinging past a soft-Coulomb nucleus,
-re-meshed by marching cubes every frame (~57 fps at 32^3, norm conserved to
-1e-9 live). Drag orbits, wheel zooms, space pauses. Remaining: phase
-coloring, volume rendering, static-orbital mode. See
-[docs/ROADMAP.md](docs/ROADMAP.md).
+Phases 0-7 delivered (128 tests green): the hand-rolled Complex/FFT/
+split-operator/imaginary-time stack is validated against analytic oracles
+through 3D, and `sesolver_app` renders the TDSE in real time -- a Gaussian
+electron wavepacket swinging past a soft-Coulomb nucleus, shown as a TRUE
+VOLUME-RENDERED cloud (GPU ray marching, opacity ~ |psi|^2, hue = arg(psi)
+via the cyclic colormap) at ~57 fps with the norm conserved to 1e-9 live.
+Tab switches to the marching-cubes isosurface view; drag orbits, wheel
+zooms, space pauses, [ ] tunes cloud density. All shader math (ray/box,
+Beer-Lambert opacity, front-to-back compositing, phase LUT) is unit-tested
+in core and transcribed into GLSL. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 > Toolchain note: build with the Qt-bundled MinGW kit
 > (`-DCMAKE_PREFIX_PATH=C:/Qt/6.8.1/mingw_64`, compilers from
