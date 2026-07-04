@@ -35,6 +35,7 @@ add_executable(sesolver_tests
     sampling_test.cpp
     simulation_test.cpp
     spectral_test.cpp
+    volume_test.cpp
     wavepacket3_test.cpp
     wavepacket_test.cpp
 )
