@@ -7,9 +7,11 @@
 // GL context, buffer uploads, shaders, the frame timer, and input glue. It
 // is verified by eye, not by unit tests (the Humble Object pattern).
 //
-// v2 deliverable: REAL-TIME DYNAMICS -- a Gaussian electron wavepacket
-// released beside a soft-Coulomb nucleus, swinging past it and quantum-
-// mechanically dispersing, re-meshed and re-uploaded every frame.
+// v3 deliverable: REAL-TIME DYNAMICS WITH PHASE COLORING -- a Gaussian
+// electron wavepacket released beside a soft-Coulomb nucleus, re-meshed
+// every frame, with arg(psi) painted on the surface through the cyclic
+// colormap: the packet's momentum shows up as color stripes, and the
+// stationary parts cycle hue at the local energy (e^{-iEt}).
 // Controls: drag = orbit, wheel = zoom, space = pause/resume.
 
 #include <core/camera.hpp>
@@ -18,6 +20,7 @@
 #include <core/grid.hpp>
 #include <core/marching_cubes.hpp>
 #include <core/potential.hpp>
+#include <core/sampling.hpp>
 #include <core/simulation.hpp>
 #include <core/vec.hpp>
 
@@ -74,28 +77,31 @@ constexpr double kIsoFraction = 0.25;
 const char* kVertexShader = R"(#version 430 core
 layout(location = 0) in vec3 pos;
 layout(location = 1) in vec3 normal;
+layout(location = 2) in vec3 color;
 uniform mat4 mvp;
 out vec3 v_normal;
 out vec3 v_pos;
+out vec3 v_color;
 void main() {
     gl_Position = mvp * vec4(pos, 1.0);
     v_normal = normal;
     v_pos = pos;
+    v_color = color;
 }
 )";
 
 const char* kFragmentShader = R"(#version 430 core
 in vec3 v_normal;
 in vec3 v_pos;
+in vec3 v_color;
 uniform vec3 eye;
-uniform vec3 base_color;
 out vec4 frag;
 void main() {
     vec3 n = normalize(v_normal);
     vec3 vdir = normalize(eye - v_pos);
     float diffuse = abs(dot(n, vdir));               // two-sided headlight
     float spec = pow(max(dot(n, vdir), 0.0), 32.0);  // light rides the camera
-    vec3 c = base_color * (0.15 + 0.85 * diffuse) + vec3(0.25) * spec;
+    vec3 c = v_color * (0.20 + 0.80 * diffuse) + vec3(0.25) * spec;
     frag = vec4(c, 1.0);
 }
 )";
@@ -130,18 +136,21 @@ protected:
         program_ = link_program(kVertexShader, kFragmentShader);
         mvp_loc_ = glGetUniformLocation(program_, "mvp");
         eye_loc_ = glGetUniformLocation(program_, "eye");
-        color_loc_ = glGetUniformLocation(program_, "base_color");
 
         glGenVertexArrays(1, &vao_);
         glBindVertexArray(vao_);
         glGenBuffers(1, &vbo_);
         glBindBuffer(GL_ARRAY_BUFFER, vbo_);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float),
+        constexpr GLsizei kStride = 9 * sizeof(float);  // pos3 + normal3 + color3
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, kStride,
                               reinterpret_cast<void*>(0));
         glEnableVertexAttribArray(0);
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float),
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, kStride,
                               reinterpret_cast<void*>(3 * sizeof(float)));
         glEnableVertexAttribArray(1);
+        glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, kStride,
+                              reinterpret_cast<void*>(6 * sizeof(float)));
+        glEnableVertexAttribArray(2);
         glBindVertexArray(0);
         mesh_dirty_ = true;
     }
@@ -171,9 +180,6 @@ protected:
         glUniformMatrix4fv(mvp_loc_, 1, GL_FALSE, mvp_f);  // column-major, no transpose
         glUniform3f(eye_loc_, static_cast<float>(eye.x), static_cast<float>(eye.y),
                     static_cast<float>(eye.z));
-        const ses::Rgb tint = ses::magnitude_color(0.75);
-        glUniform3f(color_loc_, static_cast<float>(tint.r), static_cast<float>(tint.g),
-                    static_cast<float>(tint.b));
 
         glBindVertexArray(vao_);
         glDrawArrays(GL_TRIANGLES, 0, vertex_count_);
@@ -223,6 +229,7 @@ private:
     // CPU side only -- safe to call with no GL context current.
     void remesh() {
         mesh_ = ses::marching_cubes_at_fraction(sim_.density(), sim_.grid(), kIsoFraction);
+        colors_ = ses::phase_colors(mesh_, sim_.psi());
     }
 
     void refresh_title() {
@@ -238,16 +245,20 @@ private:
     // Requires a current GL context (called from paintGL only).
     void upload_mesh() {
         std::vector<float> interleaved;
-        interleaved.reserve(mesh_.vertices.size() * 6);
+        interleaved.reserve(mesh_.vertices.size() * 9);
         for (std::size_t i = 0; i < mesh_.vertices.size(); ++i) {
             const ses::Vec3d& p = mesh_.vertices[i];
             const ses::Vec3d& n = mesh_.normals[i];
+            const ses::Rgb& c = colors_[i];
             interleaved.push_back(static_cast<float>(p.x));
             interleaved.push_back(static_cast<float>(p.y));
             interleaved.push_back(static_cast<float>(p.z));
             interleaved.push_back(static_cast<float>(n.x));
             interleaved.push_back(static_cast<float>(n.y));
             interleaved.push_back(static_cast<float>(n.z));
+            interleaved.push_back(static_cast<float>(c.r));
+            interleaved.push_back(static_cast<float>(c.g));
+            interleaved.push_back(static_cast<float>(c.b));
         }
         vertex_count_ = static_cast<int>(mesh_.vertices.size());
         glBindBuffer(GL_ARRAY_BUFFER, vbo_);
@@ -291,6 +302,7 @@ private:
 
     ses::WavepacketSimulation sim_;
     ses::Mesh mesh_;
+    std::vector<ses::Rgb> colors_;
     QTimer timer_;
     bool paused_ = false;
     bool mesh_dirty_ = false;
@@ -301,7 +313,6 @@ private:
     GLuint vbo_ = 0;
     GLint mvp_loc_ = -1;
     GLint eye_loc_ = -1;
-    GLint color_loc_ = -1;
     int vertex_count_ = 0;
 
     double azimuth_ = 0.6;
