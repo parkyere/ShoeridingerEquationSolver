@@ -104,6 +104,11 @@ public:
 
     double dt() const { return dt_; }
 
+    // Read access to the phase tables so the GPU engine consumes the TESTED
+    // tables instead of re-deriving them (docs/GPU_PLAN.md).
+    const std::vector<Complex<double>>& half_potential_phase() const { return half_v_; }
+    const std::vector<Complex<double>>& kinetic_phase() const { return kinetic_; }
+
     void step(Field3D& psi, int nsteps = 1) const {
         assert(psi.data().size() == half_v_.size());
         for (int s = 0; s < nsteps; ++s) {

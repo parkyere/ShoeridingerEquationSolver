@@ -68,6 +68,7 @@ public:
     }
 
     double time() const { return steps_ * dt_; }
+    double dt() const { return dt_; }
     const Grid3D& grid() const { return grid_; }
     const Field3D& psi() const { return psi_; }
     const std::vector<double>& potential() const { return potential_; }
