@@ -94,6 +94,11 @@ public:
         }
     }
 
+    // Read access to the weight tables so the GPU relax path consumes the
+    // TESTED tables instead of re-deriving them (docs/GPU_PLAN.md G7).
+    const std::vector<double>& half_potential_weight() const { return half_v_; }
+    const std::vector<double>& kinetic_weight() const { return kinetic_; }
+
     void relax(Field3D& psi, int nsteps) const {
         assert(psi.data().size() == half_v_.size());
         for (int s = 0; s < nsteps; ++s) {
