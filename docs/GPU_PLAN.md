@@ -58,6 +58,13 @@ Compute shaders cannot be gtest-unit-tested from the pure core. Instead:
   title drain) + scale kernel for fp32 drift renormalization -- the norm now
   stays pinned at 1 +- ~2e-5 indefinitely. Verified: reduction rel err 3e-9
   vs CPU double, scale exact.
-- [ ] G7 (candidate): imaginary-time relaxation on the GPU (weight tables +
-  per-step renormalization via the G6 kernels) so relax mode is also
-  real-time at 128^3.
+- [x] G7: imaginary-time relaxation on the GPU. Real weights pack as
+  vec2(w, 0) into the verified complex-multiply kernel; per-step
+  renormalization reuses the G6 reduction, whose pre-renorm norm gives the
+  ITP energy estimator E ~= -ln||psi||^2/(2 dtau) for free. Verified: 50 GPU
+  steps match the CPU relaxer at 4.7e-7; the estimator hits the harmonic
+  3w/2 at 1.4998. The whole stationary-state demo arc now runs at 128^3.
+
+The GPU arc is complete: the Cloud view never leaves the GPU in either time
+direction; the CPU double session remains the tested truth for measure,
+surface meshing, and as gpucheck's reference.
