@@ -32,6 +32,7 @@ add_executable(sesolver_tests
     marching_cubes_test.cpp
     potential_test.cpp
     propagator_test.cpp
+    simulation_test.cpp
     spectral_test.cpp
     wavepacket3_test.cpp
     wavepacket_test.cpp
