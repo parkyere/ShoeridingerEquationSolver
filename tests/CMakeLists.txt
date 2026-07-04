@@ -19,6 +19,7 @@ add_executable(sesolver_tests
     camera_test.cpp
     colormap_test.cpp
     complex_test.cpp
+    deflation_test.cpp
     dynamics3_test.cpp
     fft3_test.cpp
     fft_test.cpp
