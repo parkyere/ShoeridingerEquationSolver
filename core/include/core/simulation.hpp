@@ -72,6 +72,14 @@ public:
     const Grid3D& grid() const { return grid_; }
     const Field3D& psi() const { return psi_; }
     const std::vector<double>& potential() const { return potential_; }
+    const SplitOperator3D& propagator() const { return propagator_; }
+
+    // Replace the state (e.g. hand a GPU-evolved field back to this CPU
+    // session). Grid sizes must match.
+    void set_psi(const Field3D& psi) {
+        assert(psi.data().size() == psi_.data().size());
+        psi_ = psi;
+    }
     std::vector<double> density() const { return probability_density(psi_); }
 
 private:
