@@ -51,4 +51,44 @@ inline void normalize(Field1D& f) {
     }
 }
 
+// Complex scalar field over a Grid3D (x-fastest flat storage).
+class Field3D {
+public:
+    explicit Field3D(Grid3D grid)
+        : grid_(grid), data_(static_cast<std::size_t>(grid.size())) {}
+
+    int size() const { return grid_.size(); }
+    const Grid3D& grid() const { return grid_; }
+
+    Complex<double>& operator()(int i, int j, int k) {
+        return data_[static_cast<std::size_t>(grid_.flat(i, j, k))];
+    }
+    const Complex<double>& operator()(int i, int j, int k) const {
+        return data_[static_cast<std::size_t>(grid_.flat(i, j, k))];
+    }
+
+    std::vector<Complex<double>>& data() { return data_; }
+    const std::vector<Complex<double>>& data() const { return data_; }
+
+private:
+    Grid3D grid_;
+    std::vector<Complex<double>> data_;
+};
+
+// ||psi||^2 = sum_ijk |psi_ijk|^2 * hx hy hz
+inline double norm_sq(const Field3D& f) {
+    double acc = 0.0;
+    for (const Complex<double>& z : f.data()) {
+        acc += norm_sq(z);
+    }
+    return acc * f.grid().cell_volume();
+}
+
+inline void normalize(Field3D& f) {
+    const double inv = 1.0 / std::sqrt(norm_sq(f));
+    for (Complex<double>& z : f.data()) {
+        z = inv * z;
+    }
+}
+
 }  // namespace ses

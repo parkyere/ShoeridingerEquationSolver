@@ -18,4 +18,17 @@ struct Grid1D {
     constexpr double coord(int i) const { return xmin + i * spacing(); }
 };
 
+// 3D periodic grid: three independent Grid1D axes.
+// Flat layout is X FASTEST -- flat(i,j,k) = i + nx*(j + ny*k) -- so x-lines
+// are contiguous (3D FFT) and the layout matches glTexImage3D upload later.
+struct Grid3D {
+    Grid1D x{};
+    Grid1D y{};
+    Grid1D z{};
+
+    constexpr int size() const { return x.n * y.n * z.n; }
+    constexpr int flat(int i, int j, int k) const { return i + x.n * (j + y.n * k); }
+    constexpr double cell_volume() const { return x.spacing() * y.spacing() * z.spacing(); }
+};
+
 }  // namespace ses
