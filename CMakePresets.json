@@ -1,0 +1,40 @@
+{
+    "version": 5,
+    "configurePresets": [
+        {
+            "name": "msvc",
+            "displayName": "MSVC RelWithDebInfo (Qt msvc2022_64)",
+            "description": "Visual Studio toolset. Debug builds make the 3D physics tests crawl; RelWithDebInfo keeps them fast and still debuggable.",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/out/build/msvc",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "CMAKE_PREFIX_PATH": "C:/Qt/6.8.1/msvc2022_64"
+            },
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+        },
+        {
+            "name": "mingw",
+            "displayName": "MinGW RelWithDebInfo (Qt mingw_64)",
+            "description": "Qt-bundled GCC 13.1 toolchain (the scripted build).",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "CMAKE_C_COMPILER": "C:/Qt/Tools/mingw1310_64/bin/gcc.exe",
+                "CMAKE_CXX_COMPILER": "C:/Qt/Tools/mingw1310_64/bin/g++.exe",
+                "CMAKE_MAKE_PROGRAM": "C:/Qt/Tools/Ninja/ninja.exe",
+                "CMAKE_PREFIX_PATH": "C:/Qt/6.8.1/mingw_64"
+            },
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+        }
+    ],
+    "buildPresets": [
+        { "name": "msvc", "configurePreset": "msvc" },
+        { "name": "mingw", "configurePreset": "mingw" }
+    ],
+    "testPresets": [
+        { "name": "msvc", "configurePreset": "msvc", "output": { "outputOnFailure": true } },
+        { "name": "mingw", "configurePreset": "mingw", "output": { "outputOnFailure": true } }
+    ]
+}

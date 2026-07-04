@@ -24,10 +24,17 @@ target_link_libraries(sesolver_core PUBLIC ses_arch)
 # guarded by #ifdef _OPENMP, so a compiler without OpenMP still builds a
 # correct serial core. PUBLIC: the code lives in headers, so consumers need
 # the flag too.
-find_package(OpenMP QUIET)
-if(OpenMP_CXX_FOUND)
-    target_link_libraries(sesolver_core PUBLIC OpenMP::OpenMP_CXX)
-    message(STATUS "OpenMP found - parallel core hot loops enabled.")
+if(MSVC)
+    # MSVC's default OpenMP is 2.0, which IGNORES collapse(2) (warning C4849).
+    # The LLVM runtime implements modern OpenMP; it also links automatically.
+    target_compile_options(sesolver_core PUBLIC /openmp:llvm)
+    message(STATUS "OpenMP (MSVC LLVM runtime) - parallel core hot loops enabled.")
 else()
-    message(STATUS "OpenMP not found - core runs serial.")
+    find_package(OpenMP QUIET)
+    if(OpenMP_CXX_FOUND)
+        target_link_libraries(sesolver_core PUBLIC OpenMP::OpenMP_CXX)
+        message(STATUS "OpenMP found - parallel core hot loops enabled.")
+    else()
+        message(STATUS "OpenMP not found - core runs serial.")
+    endif()
 endif()
