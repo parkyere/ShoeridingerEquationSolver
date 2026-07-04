@@ -33,3 +33,31 @@ target_link_libraries(sesolver_app
         ses_warnings
 )
 target_compile_features(sesolver_app PRIVATE cxx_std_20)
+
+# ---------------------------------------------------------------------------
+# sesolver_gpucheck: verification harness for GPU compute kernels
+# (docs/GPU_PLAN.md). Compares each kernel against the unit-tested CPU core;
+# registered with ctest (label "gpu", exit 77 = SKIP when no 4.3 context).
+# ---------------------------------------------------------------------------
+add_executable(sesolver_gpucheck
+    src/gpucheck_main.cpp
+)
+target_link_libraries(sesolver_gpucheck
+    PRIVATE
+        sesolver_core
+        Qt6::Core
+        Qt6::Gui
+        Qt6::OpenGL
+        ses_warnings
+)
+target_compile_features(sesolver_gpucheck PRIVATE cxx_std_20)
+
+# Qt DLLs must be findable when ctest launches the harness.
+get_target_property(_qt6_core_dll Qt6::Core LOCATION)
+get_filename_component(_qt6_bin_dir "${_qt6_core_dll}" DIRECTORY)
+add_test(NAME GpuCheck COMMAND sesolver_gpucheck)
+set_tests_properties(GpuCheck PROPERTIES
+    LABELS "gpu"
+    SKIP_RETURN_CODE 77
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_qt6_bin_dir}"
+)
