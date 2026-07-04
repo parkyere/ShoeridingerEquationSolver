@@ -11,6 +11,7 @@
 // re-derived on the GPU side except the FFT twiddles (in-shader, fp32).
 
 #include <core/complex.hpp>
+#include <core/drive.hpp>
 #include <core/field.hpp>
 #include <core/grid.hpp>
 
@@ -220,6 +221,37 @@ void main() {
 }
 )";
 
+// Dipole half-kick (transitions arc T3): psi *= exp(-i * theta * (axis . r))
+// -- the tested core/drive.hpp apply_dipole_halfkick with the scalar
+// theta = E0 cos(omega t) dt/2 evaluated by the CALLER in double. The
+// coordinate comes from the flat index (x fastest, coord = xmin + i*h),
+// matching Grid1D::coord.
+inline const char* kDipoleKickSrc = R"(#version 430 core
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) buffer PsiBuf { vec2 psi[]; };
+uniform uint n;
+uniform int nx;
+uniform int ny;
+uniform vec3 box_min;
+uniform vec3 cell_h;
+uniform vec3 axis;
+uniform float theta;
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= n) {
+        return;
+    }
+    int i = int(idx) % nx;
+    int j = (int(idx) / nx) % ny;
+    int k = int(idx) / (nx * ny);
+    vec3 r = box_min + vec3(float(i), float(j), float(k)) * cell_h;
+    float ang = -theta * dot(axis, r);
+    vec2 w = vec2(cos(ang), sin(ang));
+    vec2 a = psi[idx];
+    psi[idx] = vec2(a.x * w.x - a.y * w.y, a.x * w.y + a.y * w.x);
+}
+)";
+
 // SSBO psi -> RG32F 3D image (the volume renderer's texture), no CPU trip.
 inline const char* kBridgeSrc = R"(#version 430 core
 layout(local_size_x = 256) in;
@@ -424,9 +456,10 @@ public:
         scale_prog_ = build_program(gl, kScaleSrc, "scale");
         inner_prog_ = build_program(gl, kInnerProductSrc, "inner product");
         axpy_prog_ = build_program(gl, kAxpySrc, "axpy");
+        kick_prog_ = build_program(gl, kDipoleKickSrc, "dipole kick");
         fft_progs_ = build_fft_programs(gl, grid);
         if (mul_prog_ == 0 || conj_prog_ == 0 || bridge_prog_ == 0 || norm_prog_ == 0 ||
-            scale_prog_ == 0 || inner_prog_ == 0 || axpy_prog_ == 0 ||
+            scale_prog_ == 0 || inner_prog_ == 0 || axpy_prog_ == 0 || kick_prog_ == 0 ||
             fft_progs_.axis[0] == 0 || fft_progs_.axis[1] == 0 ||
             fft_progs_.axis[2] == 0) {
             return false;
@@ -593,6 +626,53 @@ public:
         }
     }
 
+    // One dipole half-kick on psi (T3). theta = E0 cos(omega t) dt/2 is
+    // computed by the caller in double (core/drive.hpp's formula); the
+    // kernel only does the pointwise complex rotation.
+    void dipole_kick(Gl& gl, const ses::Vec3d& axis, double theta) {
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, psi_buf_);
+        gl.glUseProgram(kick_prog_);
+        gl.glUniform1ui(gl.glGetUniformLocation(kick_prog_, "n"),
+                        static_cast<GLuint>(cells_));
+        gl.glUniform1i(gl.glGetUniformLocation(kick_prog_, "nx"), grid_.x.n);
+        gl.glUniform1i(gl.glGetUniformLocation(kick_prog_, "ny"), grid_.y.n);
+        gl.glUniform3f(gl.glGetUniformLocation(kick_prog_, "box_min"),
+                       static_cast<float>(grid_.x.xmin), static_cast<float>(grid_.y.xmin),
+                       static_cast<float>(grid_.z.xmin));
+        gl.glUniform3f(gl.glGetUniformLocation(kick_prog_, "cell_h"),
+                       static_cast<float>(grid_.x.spacing()),
+                       static_cast<float>(grid_.y.spacing()),
+                       static_cast<float>(grid_.z.spacing()));
+        gl.glUniform3f(gl.glGetUniformLocation(kick_prog_, "axis"),
+                       static_cast<float>(axis.x), static_cast<float>(axis.y),
+                       static_cast<float>(axis.z));
+        gl.glUniform1f(gl.glGetUniformLocation(kick_prog_, "theta"),
+                       static_cast<float>(theta));
+        gl.glDispatchCompute(static_cast<GLuint>((cells_ + 255) / 256), 1, 1);
+        gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    }
+
+    // Driven Strang steps (T3): the tested core/drive.hpp composition
+    //   psi <- kick(t+dt) . halfV . IFFT . kinetic . FFT . halfV . kick(t) psi
+    // around the untouched static tables; t0 is the physical time at the
+    // start of the first step, dt must match the tables' time step.
+    void driven_step(Gl& gl, const ses::DipoleDrive& d, double t0, double dt, int nsteps) {
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, psi_buf_);
+        for (int s = 0; s < nsteps; ++s) {
+            const double t = t0 + s * dt;
+            dipole_kick(gl, d.axis, d.amplitude * std::cos(d.omega * t) * 0.5 * dt);
+            multiply(gl, half_buf_);
+            run_fft3(gl, grid_, fft_progs_);
+            multiply(gl, kin_buf_);
+            run_conj_scale(gl, conj_prog_, cells_, 1.0f);
+            run_fft3(gl, grid_, fft_progs_);
+            run_conj_scale(gl, conj_prog_, cells_, 1.0f / static_cast<float>(cells_));
+            multiply(gl, half_buf_);
+            dipole_kick(gl, d.axis,
+                        d.amplitude * std::cos(d.omega * (t + dt)) * 0.5 * dt);
+        }
+    }
+
     // Write psi into the volume renderer's RG32F 3D texture, GPU-to-GPU.
     void write_psi_texture(Gl& gl, GLuint texture) {
         gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, psi_buf_);
@@ -662,6 +742,7 @@ private:
     GLuint scale_prog_ = 0;
     GLuint inner_prog_ = 0;
     GLuint axpy_prog_ = 0;
+    GLuint kick_prog_ = 0;
     FftPrograms fft_progs_;
 };
 

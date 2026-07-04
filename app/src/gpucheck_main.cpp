@@ -18,11 +18,14 @@
 //  G7: GPU imaginary-time relax x50 vs ImaginaryTimePropagator3D x50, and
 //      the free ITP energy estimator converging to the harmonic 3w/2;
 //  T1: complex inner-product reduction vs ses::inner_product, and the
-//      deflated relax vs the CPU relax_deflated, converging to E1 = 5w/2.
+//      deflated relax vs the CPU relax_deflated, converging to E1 = 5w/2;
+//  T3: the dipole-kick kernel vs apply_dipole_halfkick, and the driven
+//      engine step x20 vs core driven_step (skew axis, nonzero t0).
 
 #include "gpu_engine.hpp"
 
 #include <core/complex.hpp>
+#include <core/drive.hpp>
 #include <core/fft.hpp>
 #include <core/field.hpp>
 #include <core/grid.hpp>
@@ -350,6 +353,48 @@ bool check_deflation(Gl& gl) {
     return ip_ok && ok && e_ok && copy_ok;
 }
 
+// T3-GPU: the dipole-kick kernel and the driven engine step vs core/drive.hpp.
+// The drive is deliberately adversarial: skew (non-unit) polarization axis,
+// nonzero frequency, and a nonzero start time exercise every uniform path.
+bool check_driven_step(Gl& gl) {
+    const ses::Grid1D axis{-8.0, 8.0, 32};
+    const ses::Grid3D g{axis, axis, axis};
+    const std::vector<double> v = ses::soft_coulomb_potential(g, 1.0, 1.0, ses::Vec3d{});
+    const double dt = 0.02;
+    const ses::SplitOperator3D cpu_prop{g, v, dt};
+    const ses::DipoleDrive drive{ses::Vec3d{0.3, -0.2, 1.0}, 0.5, 0.6};
+
+    const ses::Field3D psi0 = ses::gaussian_wavepacket(g, ses::Vec3d{2.0, 0.0, 0.0},
+                                                       ses::Vec3d{1.2, 1.2, 1.2},
+                                                       ses::Vec3d{0.0, 0.5, 0.0});
+
+    ses_gpu::GpuEngine engine;
+    if (!engine.initialize(gl, g, cpu_prop.half_potential_phase(), cpu_prop.kinetic_phase(),
+                           psi0)) {
+        std::printf("engine init: FAIL\n");
+        return false;
+    }
+
+    // Kick kernel alone vs the CPU half-kick at a fixed edge time.
+    const double t_kick = 0.37;
+    engine.dipole_kick(gl, drive.axis,
+                       drive.amplitude * std::cos(drive.omega * t_kick) * 0.5 * dt);
+    ses::Field3D cpu = psi0;
+    ses::apply_dipole_halfkick(cpu, drive, t_kick, dt);
+    std::vector<float> gpu_out;
+    engine.readback(gl, gpu_out);
+    bool ok = compare("dipole kick kernel", gpu_out, cpu, 1e-5);
+
+    // Full driven composition, 20 steps from t0 = 1.3.
+    engine.upload_state(gl, psi0);
+    engine.driven_step(gl, drive, 1.3, dt, 20);
+    cpu = psi0;
+    ses::driven_step(cpu, cpu_prop, drive, 1.3, 20);
+    engine.readback(gl, gpu_out);
+    ok = compare("driven engine 20 steps", gpu_out, cpu, 1e-4) && ok;
+    return ok;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -394,6 +439,7 @@ int main(int argc, char** argv) {
     ok = check_norm_reduction(gl) && ok;
     ok = check_relax(gl) && ok;
     ok = check_deflation(gl) && ok;
+    ok = check_driven_step(gl) && ok;
 
     return ok ? 0 : 1;
 }

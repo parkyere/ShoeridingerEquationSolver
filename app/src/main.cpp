@@ -13,8 +13,15 @@
 // e^{-i E0 t} -- the definition of a stationary state, on screen. Key R
 // releases a fresh wavepacket.
 // Controls: drag = orbit, wheel = zoom, space = pause, Tab = cloud/surface,
-// 1 = real time, 2 = relax (imaginary time), R = reset packet,
+// 1 = real time, 2 = relax (imaginary time), 3 = relax to 2p, R = reset,
+// M = measure, D = decay, L = laser (off -> Z-pol -> X-pol -> off),
 // [ ] = thinner/denser cloud.
+//
+// T3 (laser): a resonant dipole drive at w = E(2p) - E(1s) pumps 1s -> 2p_z
+// and Rabi-flops the populations (title readout); with decay ON the photon
+// counter clicks through repeated absorb/emit cycles -- fluorescence. The
+// X-polarized flavor pumps the ORTHOGONAL 2p_x, so the monitored P(2pz)
+// stays flat: the selection rule, live on screen.
 
 #include <core/camera.hpp>
 #include <core/colormap.hpp>
@@ -93,6 +100,12 @@ constexpr double kMeasureSigma = 0.8;  // measurement resolution (Bohr)
 // true lifetime and the acceleration factor honestly.
 constexpr double kDecayGammaDisplay = 0.125;
 constexpr double kProtonMarkerRadius = 0.35;  // symbolic (a real proton is ~1e-5 Bohr)
+// T3 laser: E0 is derived from a TARGET Rabi frequency over the computed
+// dipole matrix element (Omega = E0 |<2p|z|1s>|). Omega = 0.04 keeps the
+// drive well under the ~0.163 Ha gap (RWA-ish two-level flopping) while a
+// full flop (2 pi / Omega ~ 157 au) takes seconds at the laser tick rate.
+constexpr double kRabiTargetOmega = 0.04;
+constexpr int kLaserStepsPerTick = 6;  // the pump demo runs hotter than 1x
 
 // ---- isosurface (mesh) shaders ----
 
@@ -241,6 +254,7 @@ void main() {
 
 enum class ViewMode { Cloud, Surface };
 enum class Stepping { RealTime, Relaxing, RelaxingExcited };
+enum class LaserPol { Off, Z, X };
 
 class Viewport : public QOpenGLWidget, protected QOpenGLFunctions_4_3_Core {
 public:
@@ -388,7 +402,16 @@ protected:
                                           static_cast<float>(1.0 / std::sqrt(np.sum)));
                         }
                     }
-                    engine_.step(*this, pending_gpu_steps_);
+                    if (laser_pol_ != LaserPol::Off) {
+                        // T3: resonant dipole drive. t0 is the same clock
+                        // that credits gpu_time_, so the carrier phase
+                        // cos(w t) stays continuous across batches/pauses.
+                        const ses::DipoleDrive d{laser_axis(), laser_e0_, laser_omega_};
+                        engine_.driven_step(*this, d, sim_.time() + gpu_time_,
+                                            sim_.dt(), pending_gpu_steps_);
+                    } else {
+                        engine_.step(*this, pending_gpu_steps_);
+                    }
                     // Time is credited where steps EXECUTE, so a stalled or
                     // occluded paint cannot desync the clock from the state.
                     gpu_time_ += pending_gpu_steps_ * sim_.dt();
@@ -411,6 +434,20 @@ protected:
                             ++photon_count_;
                             refresh_title();
                         }
+                    }
+
+                    // T3: live populations for the title readout (and the
+                    // Rabi peak the selftest asserts on), on the title
+                    // cadence -- two 2 KB reductions every ~10 ticks.
+                    if (laser_pol_ != LaserPol::Off && gpu_title_due_ &&
+                        excited_buf_ != 0) {
+                        const ses_gpu::NormPeak pe =
+                            engine_.inner_with_psi(*this, excited_buf_);
+                        pop_excited_ = pe.sum * pe.sum + pe.peak * pe.peak;
+                        const ses_gpu::NormPeak pg =
+                            engine_.inner_with_psi(*this, ground_buf_);
+                        pop_ground_ = pg.sum * pg.sum + pg.peak * pg.peak;
+                        rabi_peak_ = std::max(rabi_peak_, pop_excited_);
                     }
                 } else {
                     // GPU imaginary time (G7/T1): renormalized every step;
@@ -543,6 +580,7 @@ public:
     void reset_simulation() {
         sim_ = make_simulation();
         stepping_ = Stepping::RealTime;
+        laser_pol_ = LaserPol::Off;  // reset returns to the vanilla packet demo
         cpu_is_truth_ = true;  // GPU state discarded with the reset
         gpu_time_ = 0.0;
         pending_gpu_steps_ = 0;
@@ -569,6 +607,7 @@ public:
             if (stepping_ == Stepping::RelaxingExcited) {
                 stepping_ = Stepping::Relaxing;  // deflation is GPU-only (v1)
             }
+            laser_pol_ = LaserPol::Off;  // the drive is GPU-only too
         }
         stage_active_view();
         after_control();
@@ -609,9 +648,45 @@ public:
         after_control();
     }
 
+    // Transitions arc T3: cycle the laser off -> Z-pol -> X-pol -> off. The
+    // carrier w comes from OUR spectrum (the cached ITP energies) and E0
+    // from a target Rabi frequency over OUR dipole matrix element, so the
+    // pump is first-principles end to end. Z pumps 1s -> 2p_z (watch P(2pz)
+    // flop); X pumps the orthogonal 2p_x instead, so the monitored P(2pz)
+    // stays flat -- the selection rule, live.
+    void toggle_laser() {
+        if (!gpu_ok_) {
+            return;  // the drive runs on the GPU path only
+        }
+        if (laser_pol_ == LaserPol::Off) {
+            if (mode_ != ViewMode::Cloud) {
+                mode_ = ViewMode::Cloud;
+            }
+            if (!prepare_excited_cache()) {
+                return;
+            }
+            laser_omega_ = excited_energy_ - ground_energy_;
+            laser_e0_ = dipole_z_ > 0.0 ? kRabiTargetOmega / dipole_z_ : 0.0;
+            rabi_peak_ = 0.0;
+            laser_pol_ = LaserPol::Z;
+            stepping_ = Stepping::RealTime;  // the drive lives in real time
+        } else if (laser_pol_ == LaserPol::Z) {
+            laser_pol_ = LaserPol::X;
+        } else {
+            laser_pol_ = LaserPol::Off;
+        }
+        after_control();
+    }
+
     long long photon_count() const { return photon_count_; }
+    double peak_excited_population() const { return rabi_peak_; }
 
 protected:
+    ses::Vec3d laser_axis() const {
+        return laser_pol_ == LaserPol::X ? ses::Vec3d{1.0, 0.0, 0.0}
+                                         : ses::Vec3d{0.0, 0.0, 1.0};
+    }
+
     void after_control() {
         refresh_title();
         update();
@@ -699,6 +774,7 @@ protected:
         const ses::DipoleMatrixElement d =
             ses::dipole_matrix_element(*excited_cpu_, *ground_cpu_);
         gamma_true_ = ses::einstein_a(gap, ses::dipole_strength_sq(d));
+        dipole_z_ = std::abs(d.z);  // T3: sets the laser E0 for a target Rabi rate
 
         sim_.set_psi(user_state);
         cpu_is_truth_ = true;
@@ -728,6 +804,9 @@ protected:
             case Qt::Key_D:
                 toggle_decay();
                 break;
+            case Qt::Key_L:
+                toggle_laser();
+                break;
             case Qt::Key_Tab:
                 toggle_view_mode();
                 break;
@@ -753,9 +832,14 @@ private:
         if (use_gpu_path()) {
             // Steps run in paintGL (context current there). Cap the backlog
             // so a stalled paint cannot spiral; time is credited at
-            // execution, so dropped ticks drop cleanly.
-            pending_gpu_steps_ = std::min(pending_gpu_steps_ + kStepsPerTick,
-                                          kMaxPendingGpuSteps);
+            // execution, so dropped ticks drop cleanly. The laser demo steps
+            // hotter so a Rabi flop fits in seconds of wall time.
+            const int per_tick =
+                (stepping_ == Stepping::RealTime && laser_pol_ != LaserPol::Off)
+                    ? kLaserStepsPerTick
+                    : kStepsPerTick;
+            pending_gpu_steps_ =
+                std::min(pending_gpu_steps_ + per_tick, kMaxPendingGpuSteps);
             if (++ticks_ % 10 == 0) {
                 gpu_title_due_ = true;
             }
@@ -863,6 +947,15 @@ private:
                        .arg(gamma_true_ > 0.0 ? kDecayGammaDisplay / gamma_true_ : 0.0,
                             0, 'e', 1)
                        .arg(photon_count_)
+                 : QString()) +
+            (laser_pol_ != LaserPol::Off
+                 ? QStringLiteral("  laser %1: w %2, E0 %3, P(1s) %4, P(2pz) %5")
+                       .arg(laser_pol_ == LaserPol::Z ? QStringLiteral("Z")
+                                                      : QStringLiteral("X"))
+                       .arg(laser_omega_, 0, 'f', 4)
+                       .arg(laser_e0_, 0, 'f', 4)
+                       .arg(pop_ground_, 0, 'f', 3)
+                       .arg(pop_excited_, 0, 'f', 3)
                  : QString()));
     }
 
@@ -1065,6 +1158,15 @@ private:
     int flash_ticks_ = 0;
     long long photon_count_ = 0;
 
+    // Transitions arc T3: laser (resonant dipole drive) bookkeeping.
+    LaserPol laser_pol_ = LaserPol::Off;
+    double laser_omega_ = 0.0;
+    double laser_e0_ = 0.0;
+    double dipole_z_ = 0.0;   // |<2p_z| z |1s>| from the cached states
+    double pop_ground_ = 0.0;
+    double pop_excited_ = 0.0;
+    double rabi_peak_ = 0.0;  // max P(2pz) since the laser came on
+
     ses::Mesh mesh_;
     std::vector<ses::Rgb> colors_;
     std::vector<float> psi_staging_;
@@ -1142,6 +1244,8 @@ int main(int argc, char** argv) {
                         [viewport] { viewport->relax_to_excited(); });
     controls->addAction(QStringLiteral("Decay (D)"), viewport,
                         [viewport] { viewport->toggle_decay(); });
+    controls->addAction(QStringLiteral("Laser (L)"), viewport,
+                        [viewport] { viewport->toggle_laser(); });
     controls->addSeparator();
     controls->addAction(QStringLiteral("Reset packet (R)"), viewport,
                         [viewport] { viewport->reset_simulation(); });
@@ -1169,6 +1273,32 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "selftest-decay: photons = %lld  [%s]\n", photons,
                          photons >= 1 ? "PASS" : "FAIL");
             app.exit(photons >= 1 ? 0 : 1);
+        });
+    }
+
+    // Headless-ish regression of the T3 pump demo: relax to 1s, laser ON
+    // (Z-pol), require a Rabi peak P(2pz) >= 0.5; then decay ON as well and
+    // require >= 2 photons -- repeated absorb/emit cycles. A ground-start
+    // run WITHOUT the pump emits zero photons, so 2 is unambiguous.
+    if (app.arguments().contains(QStringLiteral("--selftest-rabi"))) {
+        QTimer::singleShot(500, viewport, [viewport] { viewport->set_relaxing(); });
+        QTimer::singleShot(12000, viewport, [viewport] { viewport->set_real_time(); });
+        QTimer::singleShot(12500, viewport, [viewport] { viewport->toggle_laser(); });
+        QTimer::singleShot(50000, viewport, [viewport, &app] {
+            const double peak = viewport->peak_excited_population();
+            std::fprintf(stderr, "selftest-rabi: peak P(2pz) = %.3f  [%s]\n", peak,
+                         peak >= 0.5 ? "PASS" : "FAIL");
+            if (peak < 0.5) {
+                app.exit(1);
+                return;
+            }
+            viewport->toggle_decay();
+        });
+        QTimer::singleShot(110000, viewport, [viewport, &app] {
+            const long long photons = viewport->photon_count();
+            std::fprintf(stderr, "selftest-rabi: photons = %lld  [%s]\n", photons,
+                         photons >= 2 ? "PASS" : "FAIL");
+            app.exit(photons >= 2 ? 0 : 1);
         });
     }
 
