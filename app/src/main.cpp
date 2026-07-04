@@ -25,6 +25,7 @@
 #include <core/potential.hpp>
 #include <core/sampling.hpp>
 #include <core/simulation.hpp>
+#include <core/sphere.hpp>
 #include <core/vec.hpp>
 #include <core/volume.hpp>
 
@@ -44,6 +45,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
+#include <random>
 #include <utility>
 #include <vector>
 
@@ -79,6 +81,8 @@ constexpr double kRelaxDtau = 0.05;
 constexpr int kTickMs = 16;
 constexpr double kIsoFraction = 0.25;
 constexpr int kPhaseLutSize = 256;
+constexpr double kMeasureSigma = 0.8;  // measurement resolution (Bohr)
+constexpr double kProtonMarkerRadius = 0.35;  // symbolic (a real proton is ~1e-5 Bohr)
 
 // ---- isosurface (mesh) shaders ----
 
@@ -230,6 +234,8 @@ protected:
         glEnableVertexAttribArray(2);
         glBindVertexArray(0);
 
+        upload_proton_marker();
+
         // -- volume pipeline --
         volume_program_ = link_program(kVolumeVertexShader, kVolumeFragmentShader);
         vol_mvp_loc_ = glGetUniformLocation(volume_program_, "mvp");
@@ -262,6 +268,11 @@ protected:
         for (int i = 0; i < 16; ++i) {
             mvp_f[i] = static_cast<float>(mvp.m[i]);
         }
+
+        // The proton marker draws first in both modes (depth-tested); in
+        // cloud mode the volume then blends over it, so the nucleus dims
+        // naturally behind dense parts of the electron cloud.
+        draw_proton(mvp_f, eye);
 
         if (mode_ == ViewMode::Cloud) {
             if (volume_dirty_) {
@@ -313,6 +324,17 @@ protected:
         }
     }
 
+    void draw_proton(const float* mvp_f, const ses::Vec3d& eye) {
+        glEnable(GL_DEPTH_TEST);
+        glUseProgram(mesh_program_);
+        glUniformMatrix4fv(mesh_mvp_loc_, 1, GL_FALSE, mvp_f);
+        glUniform3f(mesh_eye_loc_, static_cast<float>(eye.x), static_cast<float>(eye.y),
+                    static_cast<float>(eye.z));
+        glBindVertexArray(proton_vao_);
+        glDrawArrays(GL_TRIANGLES, 0, proton_vertex_count_);
+        glBindVertexArray(0);
+    }
+
     void mousePressEvent(QMouseEvent* e) override { last_pos_ = e->position(); }
 
     void mouseMoveEvent(QMouseEvent* e) override {
@@ -346,6 +368,16 @@ protected:
                 stepping_ = Stepping::RealTime;
                 stage_active_view();
                 break;
+            case Qt::Key_M: {
+                // Soft position measurement: sample from |psi|^2 (RNG lives
+                // here in the shell; core takes the uniform draw) and let
+                // the sharpened packet re-evolve.
+                std::uniform_real_distribution<double> uniform(0.0, 1.0);
+                sim_.measure(uniform(rng_), kMeasureSigma);
+                stepping_ = Stepping::RealTime;
+                stage_active_view();
+                break;
+            }
             case Qt::Key_Tab:
                 mode_ = (mode_ == ViewMode::Cloud) ? ViewMode::Surface : ViewMode::Cloud;
                 // Re-stage for the newly selected mode: its data may be stale
@@ -424,10 +456,49 @@ private:
                 .arg(mode_ == ViewMode::Cloud ? QStringLiteral("cloud")
                                               : QStringLiteral("surface"))
                 .arg(stepping_ == Stepping::RealTime ? QStringLiteral("real-time")
-                                                     : QStringLiteral("relaxing")));
+                                                     : QStringLiteral("relaxing")) +
+            QStringLiteral(" M=measure"));
     }
 
     // ---- GL uploads (current context required: called from initializeGL/paintGL) ----
+
+    // Static warm-colored sphere at the nucleus, in the mesh vertex format.
+    void upload_proton_marker() {
+        const ses::Mesh sphere = ses::sphere_mesh(ses::Vec3d{}, kProtonMarkerRadius, 16, 24);
+        std::vector<float> interleaved;
+        interleaved.reserve(sphere.vertices.size() * 9);
+        for (std::size_t i = 0; i < sphere.vertices.size(); ++i) {
+            const ses::Vec3d& p = sphere.vertices[i];
+            const ses::Vec3d& n = sphere.normals[i];
+            interleaved.push_back(static_cast<float>(p.x));
+            interleaved.push_back(static_cast<float>(p.y));
+            interleaved.push_back(static_cast<float>(p.z));
+            interleaved.push_back(static_cast<float>(n.x));
+            interleaved.push_back(static_cast<float>(n.y));
+            interleaved.push_back(static_cast<float>(n.z));
+            interleaved.push_back(1.0f);   // warm proton color
+            interleaved.push_back(0.45f);
+            interleaved.push_back(0.20f);
+        }
+        proton_vertex_count_ = static_cast<int>(sphere.vertices.size());
+        glGenVertexArrays(1, &proton_vao_);
+        glBindVertexArray(proton_vao_);
+        glGenBuffers(1, &proton_vbo_);
+        glBindBuffer(GL_ARRAY_BUFFER, proton_vbo_);
+        glBufferData(GL_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(interleaved.size() * sizeof(float)),
+                     interleaved.data(), GL_STATIC_DRAW);
+        constexpr GLsizei kStride = 9 * sizeof(float);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, kStride, reinterpret_cast<void*>(0));
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, kStride,
+                              reinterpret_cast<void*>(3 * sizeof(float)));
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, kStride,
+                              reinterpret_cast<void*>(6 * sizeof(float)));
+        glEnableVertexAttribArray(2);
+        glBindVertexArray(0);
+    }
 
     void upload_box_cube() {
         const ses::Grid3D& g = sim_.grid();
@@ -581,6 +652,11 @@ private:
     GLint mesh_mvp_loc_ = -1;
     GLint mesh_eye_loc_ = -1;
     int vertex_count_ = 0;
+
+    GLuint proton_vao_ = 0;
+    GLuint proton_vbo_ = 0;
+    int proton_vertex_count_ = 0;
+    std::mt19937 rng_{std::random_device{}()};
 
     GLuint volume_program_ = 0;
     GLuint cube_vao_ = 0;
