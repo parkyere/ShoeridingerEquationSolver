@@ -18,7 +18,9 @@ FetchContent_MakeAvailable(googletest)
 add_executable(sesolver_tests
     complex_test.cpp
     fft_test.cpp
+    field3_test.cpp
     field_test.cpp
+    grid3_test.cpp
     grid_test.cpp
     harmonic_dynamics_test.cpp
     imaginary_time_test.cpp
