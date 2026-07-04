@@ -6,10 +6,14 @@
 // compositing, phase LUT) live in core and are unit-tested -- the GLSL below
 // is a line-by-line transcription of those verified formulas.
 //
-// v4 deliverable: THE ELECTRON CLOUD ITSELF -- direct volume rendering by
-// GPU ray marching with opacity proportional to |psi|^2 and hue from
-// arg(psi). The isosurface view remains as a second mode.
+// v5 deliverable: THE STATIONARY-STATE DEMO ARC on top of the volume-
+// rendered cloud. Key 2 switches stepping to imaginary time: you WATCH the
+// packet cool into the 1s ground state (energy readout converging). Key 1
+// returns to real time: the density freezes -- only the hue cycles at
+// e^{-i E0 t} -- the definition of a stationary state, on screen. Key R
+// releases a fresh wavepacket.
 // Controls: drag = orbit, wheel = zoom, space = pause, Tab = cloud/surface,
+// 1 = real time, 2 = relax (imaginary time), R = reset packet,
 // [ ] = thinner/denser cloud.
 
 #include <core/camera.hpp>
@@ -17,6 +21,7 @@
 #include <core/field.hpp>
 #include <core/grid.hpp>
 #include <core/marching_cubes.hpp>
+#include <core/observables.hpp>
 #include <core/potential.hpp>
 #include <core/sampling.hpp>
 #include <core/simulation.hpp>
@@ -65,6 +70,8 @@ ses::WavepacketSimulation make_simulation() {
 }
 
 constexpr int kStepsPerTick = 2;
+constexpr int kRelaxStepsPerTick = 2;
+constexpr double kRelaxDtau = 0.05;
 constexpr int kTickMs = 16;
 constexpr double kIsoFraction = 0.25;
 constexpr int kPhaseLutSize = 256;
@@ -175,6 +182,7 @@ void main() {
 )";
 
 enum class ViewMode { Cloud, Surface };
+enum class Stepping { RealTime, Relaxing };
 
 class Viewport : public QOpenGLWidget, protected QOpenGLFunctions_4_3_Core {
 public:
@@ -323,17 +331,22 @@ protected:
             case Qt::Key_Space:
                 paused_ = !paused_;
                 break;
+            case Qt::Key_1:
+                stepping_ = Stepping::RealTime;
+                break;
+            case Qt::Key_2:
+                stepping_ = Stepping::Relaxing;
+                break;
+            case Qt::Key_R:
+                sim_ = make_simulation();
+                stepping_ = Stepping::RealTime;
+                stage_active_view();
+                break;
             case Qt::Key_Tab:
                 mode_ = (mode_ == ViewMode::Cloud) ? ViewMode::Surface : ViewMode::Cloud;
                 // Re-stage for the newly selected mode: its data may be stale
                 // (tick only stages the active mode, and we may be paused).
-                if (mode_ == ViewMode::Cloud) {
-                    stage_volume();
-                    volume_dirty_ = true;
-                } else {
-                    remesh();
-                    mesh_dirty_ = true;
-                }
+                stage_active_view();
                 break;
             case Qt::Key_BracketLeft:
                 absorbance_ = std::max(0.1, absorbance_ / 1.3);
@@ -354,7 +367,19 @@ private:
         if (paused_) {
             return;
         }
-        sim_.advance(kStepsPerTick);
+        if (stepping_ == Stepping::RealTime) {
+            sim_.advance(kStepsPerTick);
+        } else {
+            sim_.relax(kRelaxStepsPerTick, kRelaxDtau);
+        }
+        stage_active_view();
+        if (++ticks_ % 10 == 0) {
+            refresh_title();
+        }
+        update();
+    }
+
+    void stage_active_view() {
         if (mode_ == ViewMode::Cloud) {
             stage_volume();
             volume_dirty_ = true;
@@ -362,10 +387,6 @@ private:
             remesh();
             mesh_dirty_ = true;
         }
-        if (++ticks_ % 10 == 0) {
-            refresh_title();
-        }
-        update();
     }
 
     // ---- CPU staging (no GL context needed) ----
@@ -389,13 +410,17 @@ private:
     }
 
     void refresh_title() {
+        const double energy = ses::mean_energy(sim_.psi(), sim_.potential());
         window()->setWindowTitle(
-            QStringLiteral("Electron wavepacket near a soft-Coulomb nucleus   "
-                           "t = %1 a.u.   norm = %2   [%3]  space=pause tab=view [ ]=density")
+            QStringLiteral("Electron near a soft-Coulomb nucleus   t = %1   E = %2 Ha   "
+                           "norm = %3   [%4, %5]  1=real 2=relax R=reset tab=view [ ]=density")
                 .arg(sim_.time(), 0, 'f', 2)
+                .arg(energy, 0, 'f', 4)
                 .arg(ses::norm_sq(sim_.psi()), 0, 'f', 9)
                 .arg(mode_ == ViewMode::Cloud ? QStringLiteral("cloud")
-                                              : QStringLiteral("surface")));
+                                              : QStringLiteral("surface"))
+                .arg(stepping_ == Stepping::RealTime ? QStringLiteral("real-time")
+                                                     : QStringLiteral("relaxing")));
     }
 
     // ---- GL uploads (current context required: called from initializeGL/paintGL) ----
@@ -532,6 +557,7 @@ private:
 
     ses::WavepacketSimulation sim_;
     ViewMode mode_ = ViewMode::Cloud;
+    Stepping stepping_ = Stepping::RealTime;
 
     ses::Mesh mesh_;
     std::vector<ses::Rgb> colors_;
