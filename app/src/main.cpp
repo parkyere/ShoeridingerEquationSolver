@@ -20,6 +20,7 @@
 #include <core/colormap.hpp>
 #include <core/field.hpp>
 #include <core/grid.hpp>
+#include <core/imaginary_time.hpp>
 #include <core/marching_cubes.hpp>
 #include <core/observables.hpp>
 #include <core/potential.hpp>
@@ -206,12 +207,10 @@ public:
     }
 
 protected:
-    // GPU stepping is used only on the hot path: Cloud view + real time.
-    // Everything else (relax, measure, surface meshing) runs on the CPU
-    // double session, synced through the single cpu_is_truth_ invariant.
-    bool use_gpu_path() const {
-        return gpu_ok_ && mode_ == ViewMode::Cloud && stepping_ == Stepping::RealTime;
-    }
+    // GPU stepping covers the Cloud view in BOTH real and imaginary time
+    // (G7); measure and surface meshing run on the CPU double session,
+    // synced through the single cpu_is_truth_ invariant.
+    bool use_gpu_path() const { return gpu_ok_ && mode_ == ViewMode::Cloud; }
 
     void initializeGL() override {
         if (!initializeOpenGLFunctions()) {
@@ -251,6 +250,13 @@ protected:
         gpu_ok_ = engine_.initialize(*this, sim_.grid(),
                                      sim_.propagator().half_potential_phase(),
                                      sim_.propagator().kinetic_phase(), sim_.psi());
+        if (gpu_ok_) {
+            // Imaginary-time weights from the tested CPU relaxer (G7).
+            const ses::ImaginaryTimePropagator3D relaxer{sim_.grid(), sim_.potential(),
+                                                         kRelaxDtau};
+            engine_.set_relax_tables(*this, relaxer.half_potential_weight(),
+                                     relaxer.kinetic_weight(), kRelaxDtau);
+        }
 
         // -- volume pipeline --
         volume_program_ = link_program(kVolumeVertexShader, kVolumeFragmentShader);
@@ -306,34 +312,46 @@ protected:
                 engine_.write_psi_texture(*this, psi_tex_);
             }
             if (pending_gpu_steps_ > 0) {
-                if (gpu_title_due_) {
-                    // GPU-reduced norm+peak (2 KB readback, no full-field
-                    // drain), taken BEFORE enqueueing new steps so the
-                    // implicit sync waits only on long-finished work.
-                    gpu_title_due_ = false;
-                    const ses_gpu::NormPeak np = engine_.norm_and_peak(*this);
-                    norm_display_ = np.sum;
-                    if (np.peak > 0.0) {
-                        peak_ = np.peak;  // brightness tracks the evolving cloud
+                if (stepping_ == Stepping::RealTime) {
+                    if (gpu_title_due_) {
+                        // GPU-reduced norm+peak (2 KB readback), taken BEFORE
+                        // enqueueing new steps so the implicit sync waits
+                        // only on long-finished work.
+                        const ses_gpu::NormPeak np = engine_.norm_and_peak(*this);
+                        norm_display_ = np.sum;
+                        if (np.peak > 0.0) {
+                            peak_ = np.peak;  // brightness tracks the cloud
+                        }
+                        // fp32 drift renormalization: the split-operator is
+                        // unitary in exact arithmetic; pinning the norm back
+                        // to 1 removes pure numerical decay.
+                        if (np.sum > 0.0 && std::abs(np.sum - 1.0) > 1e-4) {
+                            engine_.scale(*this,
+                                          static_cast<float>(1.0 / std::sqrt(np.sum)));
+                        }
                     }
-                    // fp32 drift renormalization: the split-operator is
-                    // unitary in exact arithmetic, so pinning the norm back
-                    // to 1 removes pure numerical decay (display shows the
-                    // measured value first, then snaps back to 1.000000).
-                    if (np.sum > 0.0 && std::abs(np.sum - 1.0) > 1e-4) {
-                        engine_.scale(*this,
-                                      static_cast<float>(1.0 / std::sqrt(np.sum)));
+                    engine_.step(*this, pending_gpu_steps_);
+                    // Time is credited where steps EXECUTE, so a stalled or
+                    // occluded paint cannot desync the clock from the state.
+                    gpu_time_ += pending_gpu_steps_ * sim_.dt();
+                } else {
+                    // GPU imaginary time (G7): renormalized every step; the
+                    // ITP estimator gives the convergence readout for free.
+                    const ses_gpu::GpuEngine::RelaxStats stats =
+                        engine_.relax_step(*this, pending_gpu_steps_);
+                    relax_energy_display_ = stats.energy;
+                    if (stats.peak > 0.0) {
+                        peak_ = stats.peak;
                     }
-                    refresh_title();
+                    norm_display_ = 1.0;  // pinned by per-step renormalization
                 }
-                engine_.step(*this, pending_gpu_steps_);
-                // Time is credited where steps EXECUTE, so a stalled or
-                // occluded paint (dropped ticks) cannot desync the clock
-                // from the state.
-                gpu_time_ += pending_gpu_steps_ * sim_.dt();
                 pending_gpu_steps_ = 0;
                 engine_.write_psi_texture(*this, psi_tex_);
                 volume_dirty_ = false;
+                if (gpu_title_due_) {
+                    gpu_title_due_ = false;
+                    refresh_title();
+                }
             }
         }
 
@@ -429,8 +447,10 @@ protected:
                 stepping_ = Stepping::RealTime;
                 break;
             case Qt::Key_2:
-                ensure_cpu_current();  // relaxation runs on the CPU session
                 stepping_ = Stepping::Relaxing;
+                if (!use_gpu_path()) {
+                    ensure_cpu_current();  // CPU relax (Surface view / no GPU)
+                }
                 break;
             case Qt::Key_R:
                 sim_ = make_simulation();
@@ -559,13 +579,17 @@ private:
     }
 
     void refresh_title() {
-        // <H> costs an fft3 (CPU) -- shown only while relaxing, where the
-        // convergence readout is the whole point and the state is CPU-side.
-        const QString energy =
-            (stepping_ == Stepping::Relaxing && cpu_is_truth_)
-                ? QStringLiteral("E = %1 Ha   ")
-                      .arg(ses::mean_energy(sim_.psi(), sim_.potential()), 0, 'f', 4)
-                : QString();
+        // Convergence readout while relaxing: exact <H> on the CPU session,
+        // or the free ITP estimator (-ln||psi||^2 / 2 dtau) on the GPU path.
+        QString energy;
+        if (stepping_ == Stepping::Relaxing) {
+            energy = cpu_is_truth_
+                         ? QStringLiteral("E = %1 Ha   ")
+                               .arg(ses::mean_energy(sim_.psi(), sim_.potential()), 0,
+                                    'f', 4)
+                         : QStringLiteral("E ~ %1 Ha   ")
+                               .arg(relax_energy_display_, 0, 'f', 4);
+        }
         window()->setWindowTitle(
             QStringLiteral("Electron near a soft-Coulomb nucleus   t = %1   %2"
                            "norm = %3   [%4, %5, %6]  1=real 2=relax R=reset tab=view "
@@ -765,6 +789,7 @@ private:
     bool gpu_title_due_ = false;
     double gpu_time_ = 0.0;
     double norm_display_ = 1.0;
+    double relax_energy_display_ = 0.0;
     std::vector<float> readback_buf_;
 
     ses::Mesh mesh_;
@@ -823,9 +848,13 @@ int main(int argc, char** argv) {
 
     QMainWindow window;
     window.setWindowTitle(QStringLiteral("Electron wavepacket near a soft-Coulomb nucleus"));
-    window.setCentralWidget(new Viewport());
+    auto* viewport = new Viewport();
+    window.setCentralWidget(viewport);
     window.resize(1024, 768);
     window.show();
+    // StrongFocus only ACCEPTS focus; grab it so the 1/2/R/M/space keys work
+    // immediately without a click.
+    viewport->setFocus();
 
     return app.exec();
 }

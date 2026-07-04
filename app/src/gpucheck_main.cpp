@@ -14,7 +14,9 @@
 //  G4: GpuEngine::step x20 vs SplitOperator3D::step x20 (soft Coulomb),
 //      plus the SSBO -> RG32F texture bridge;
 //  G6: norm/peak tree reduction vs CPU double sums, and the scale kernel
-//      (fp32 renormalization) scaling the reduced norm exactly by s^2.
+//      (fp32 renormalization) scaling the reduced norm exactly by s^2;
+//  G7: GPU imaginary-time relax x50 vs ImaginaryTimePropagator3D x50, and
+//      the free ITP energy estimator converging to the harmonic 3w/2.
 
 #include "gpu_engine.hpp"
 
@@ -22,6 +24,7 @@
 #include <core/fft.hpp>
 #include <core/field.hpp>
 #include <core/grid.hpp>
+#include <core/imaginary_time.hpp>
 #include <core/potential.hpp>
 #include <core/propagator.hpp>
 #include <core/vec.hpp>
@@ -242,6 +245,44 @@ bool check_norm_reduction(Gl& gl) {
     return ok && scale_ok;
 }
 
+// G7: GPU imaginary-time relaxation vs the CPU relaxer, plus the free ITP
+// energy estimator at convergence.
+bool check_relax(Gl& gl) {
+    const ses::Grid1D axis{-8.0, 8.0, 32};
+    const ses::Grid3D g{axis, axis, axis};
+    const std::vector<double> v = ses::harmonic_potential(g, 1.0, ses::Vec3d{});
+    const double dtau = 0.05;
+    const ses::SplitOperator3D real_prop{g, v, 0.02};  // engine init needs them
+    const ses::ImaginaryTimePropagator3D cpu_relaxer{g, v, dtau};
+
+    const ses::Field3D psi0 = ses::gaussian_wavepacket(
+        g, ses::Vec3d{1.5, 0.0, 0.0}, ses::Vec3d{2.0, 2.0, 2.0}, ses::Vec3d{});
+
+    ses_gpu::GpuEngine engine;
+    if (!engine.initialize(gl, g, real_prop.half_potential_phase(),
+                           real_prop.kinetic_phase(), psi0)) {
+        std::printf("engine init: FAIL\n");
+        return false;
+    }
+    engine.set_relax_tables(gl, cpu_relaxer.half_potential_weight(),
+                            cpu_relaxer.kinetic_weight(), dtau);
+
+    engine.relax_step(gl, 50);
+    ses::Field3D cpu = psi0;
+    cpu_relaxer.relax(cpu, 50);
+    std::vector<float> gpu_out;
+    engine.readback(gl, gpu_out);
+    bool ok = compare("relax 50 steps", gpu_out, cpu, 1e-4);
+
+    // Converge (tau = 30 total) and check the free energy estimator against
+    // the known 3D harmonic ground energy 3w/2 = 1.5.
+    const ses_gpu::GpuEngine::RelaxStats stats = engine.relax_step(gl, 550);
+    const bool e_ok = std::abs(stats.energy - 1.5) < 0.02;
+    std::printf("relax energy estimator: E = %.4f (expect 1.5)  [%s]\n", stats.energy,
+                e_ok ? "PASS" : "FAIL");
+    return ok && e_ok;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -284,6 +325,7 @@ int main(int argc, char** argv) {
 
     ok = check_engine_step(gl) && ok;
     ok = check_norm_reduction(gl) && ok;
+    ok = check_relax(gl) && ok;
 
     return ok ? 0 : 1;
 }

@@ -17,6 +17,7 @@
 #include <QOpenGLFunctions_4_3_Core>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <string>
@@ -304,6 +305,16 @@ inline std::vector<float> to_rg32f(const std::vector<ses::Complex<double>>& src)
     return out;
 }
 
+// Real weights packed as vec2(w, 0): the verified complex-multiply kernel
+// then computes exactly w * psi -- no separate real-multiply kernel needed.
+inline std::vector<float> pack_real_as_rg(const std::vector<double>& w) {
+    std::vector<float> out(2 * w.size(), 0.0f);
+    for (std::size_t i = 0; i < w.size(); ++i) {
+        out[2 * i] = static_cast<float>(w[i]);
+    }
+    return out;
+}
+
 constexpr int kNormPeakGroups = 256;  // partials buffer: 256 vec2 = 2 KB
 
 struct NormPeak {
@@ -370,6 +381,45 @@ public:
         kin_buf_ = make_buffer(gl, to_rg32f(kinetic));
         partials_buf_ = make_buffer(gl, std::vector<float>(2 * kNormPeakGroups, 0.0f));
         return true;
+    }
+
+    // Imaginary-time weight tables (from ImaginaryTimePropagator3D's tested
+    // accessors), packed as vec2(w, 0) for the complex-multiply kernel.
+    void set_relax_tables(Gl& gl, const std::vector<double>& half_w,
+                          const std::vector<double>& kin_w, double dtau) {
+        relax_dtau_ = dtau;
+        relax_half_buf_ = make_buffer(gl, pack_real_as_rg(half_w));
+        relax_kin_buf_ = make_buffer(gl, pack_real_as_rg(kin_w));
+    }
+
+    struct RelaxStats {
+        double energy{};  // ITP estimator: E ~= -ln||psi||^2 / (2 dtau)
+        double peak{};    // max |psi_i|^2 after renormalization
+    };
+
+    // e^{-H dtau} Strang steps with per-step renormalization (the flow is
+    // not unitary). The pre-renormalization norm decays as e^{-2 E dtau}
+    // near an eigenstate, so the energy estimate is free.
+    RelaxStats relax_step(Gl& gl, int nsteps) {
+        RelaxStats stats;
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, psi_buf_);
+        for (int s = 0; s < nsteps; ++s) {
+            multiply(gl, relax_half_buf_);
+            run_fft3(gl, grid_, fft_progs_);
+            multiply(gl, relax_kin_buf_);
+            run_conj_scale(gl, conj_prog_, cells_, 1.0f);
+            run_fft3(gl, grid_, fft_progs_);
+            run_conj_scale(gl, conj_prog_, cells_, 1.0f / static_cast<float>(cells_));
+            multiply(gl, relax_half_buf_);
+
+            const NormPeak np = run_norm_peak(gl, norm_prog_, partials_buf_, cells_);
+            const double norm_sq = np.sum * grid_.cell_volume();
+            stats.energy = -std::log(norm_sq) / (2.0 * relax_dtau_);
+            stats.peak = np.peak / norm_sq;
+            run_scale(gl, scale_prog_, cells_,
+                      static_cast<float>(1.0 / std::sqrt(norm_sq)));
+        }
+        return stats;
     }
 
     // GPU-reduced norm (sum |psi|^2 * dV) and peak density -- a 2 KB readback
@@ -464,6 +514,9 @@ private:
     GLuint psi_buf_ = 0;
     GLuint half_buf_ = 0;
     GLuint kin_buf_ = 0;
+    GLuint relax_half_buf_ = 0;
+    GLuint relax_kin_buf_ = 0;
+    double relax_dtau_ = 0.0;
     GLuint partials_buf_ = 0;
     GLuint mul_prog_ = 0;
     GLuint conj_prog_ = 0;
