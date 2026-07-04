@@ -21,6 +21,7 @@ add_executable(sesolver_tests
     field_test.cpp
     grid_test.cpp
     harmonic_dynamics_test.cpp
+    imaginary_time_test.cpp
     potential_test.cpp
     propagator_test.cpp
     spectral_test.cpp
