@@ -111,6 +111,30 @@ public:
         }
     }
 
+    // Relax within the orthogonal complement of the given lower eigenstates:
+    // each step projects them out (Gram-Schmidt deflation), so the flow
+    // converges to the NEXT excited state instead of falling back down.
+    void relax_deflated(Field3D& psi, const std::vector<const Field3D*>& lower,
+                        int nsteps) const {
+        assert(psi.data().size() == half_v_.size());
+        for (int s = 0; s < nsteps; ++s) {
+            apply_weight(half_v_, psi.data());
+            fft(psi);
+            apply_weight(kinetic_, psi.data());
+            ifft(psi);
+            apply_weight(half_v_, psi.data());
+            for (const Field3D* phi : lower) {
+                const Complex<double> c = inner_product(*phi, psi);
+                std::vector<Complex<double>>& p = psi.data();
+                const std::vector<Complex<double>>& q = phi->data();
+                for (std::size_t i = 0; i < p.size(); ++i) {
+                    p[i] = p[i] - c * q[i];
+                }
+            }
+            normalize(psi);
+        }
+    }
+
 private:
     // Elementwise (disjoint) scale: threaded result is bitwise identical.
     static void apply_weight(const std::vector<double>& weight,

@@ -91,6 +91,20 @@ inline void normalize(Field3D& f) {
     }
 }
 
+// Discrete inner product <a|b> = sum conj(a_i) b_i * dV. The building block
+// of state projections (deflation) and populations |<phi|psi>|^2.
+inline Complex<double> inner_product(const Field3D& a, const Field3D& b) {
+    double re = 0.0;
+    double im = 0.0;
+    for (std::size_t i = 0; i < a.data().size(); ++i) {
+        const Complex<double> t = std::conj(a.data()[i]) * b.data()[i];
+        re += t.real();
+        im += t.imag();
+    }
+    const double dv = a.grid().cell_volume();
+    return Complex<double>{re * dv, im * dv};
+}
+
 // |psi|^2 per grid point -- the probability-density scalar field handed to
 // visualization (marching cubes, volume rendering). No volume weight: this
 // is a density, not an integral.
