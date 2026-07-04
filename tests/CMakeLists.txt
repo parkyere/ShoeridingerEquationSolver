@@ -17,6 +17,7 @@ FetchContent_MakeAvailable(googletest)
 
 add_executable(sesolver_tests
     complex_test.cpp
+    fft_test.cpp
     field_test.cpp
     grid_test.cpp
 )
