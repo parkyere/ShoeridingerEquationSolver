@@ -17,6 +17,7 @@ FetchContent_MakeAvailable(googletest)
 
 add_executable(sesolver_tests
     complex_test.cpp
+    grid_test.cpp
 )
 target_link_libraries(sesolver_tests
     PRIVATE
