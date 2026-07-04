@@ -1,27 +1,28 @@
 // Humble Object shell -- the Qt + hand-written OpenGL boundary.
 //
-// NO domain logic lives here (docs/ARCHITECTURE.md): the hydrogen ground
-// state comes from core's imaginary-time relaxation, the isosurface mesh
-// from core's marching cubes, the matrices from core's camera math, and the
-// colors from core's colormaps. This file only owns the window, the GL
-// context, buffer uploads, shaders, and input -> camera-state glue. It is
-// verified by eye, not by unit tests (the Humble Object pattern).
+// NO domain logic lives here (docs/ARCHITECTURE.md): the electron wavepacket
+// evolves in core's WavepacketSimulation (split-operator TDSE), the
+// isosurface mesh comes from core's marching cubes, matrices from core's
+// camera math, colors from core's colormaps. This file owns the window, the
+// GL context, buffer uploads, shaders, the frame timer, and input glue. It
+// is verified by eye, not by unit tests (the Humble Object pattern).
 //
-// v1 deliverable: the softened-hydrogen 1s electron cloud (|psi|^2
-// isosurface) with mouse-orbit and wheel-zoom.
+// v2 deliverable: REAL-TIME DYNAMICS -- a Gaussian electron wavepacket
+// released beside a soft-Coulomb nucleus, swinging past it and quantum-
+// mechanically dispersing, re-meshed and re-uploaded every frame.
+// Controls: drag = orbit, wheel = zoom, space = pause/resume.
 
 #include <core/camera.hpp>
 #include <core/colormap.hpp>
 #include <core/field.hpp>
 #include <core/grid.hpp>
-#include <core/imaginary_time.hpp>
 #include <core/marching_cubes.hpp>
-#include <core/observables.hpp>
 #include <core/potential.hpp>
+#include <core/simulation.hpp>
 #include <core/vec.hpp>
-#include <core/wavepacket.hpp>
 
 #include <QApplication>
+#include <QKeyEvent>
 #include <QMainWindow>
 #include <QMessageBox>
 #include <QMouseEvent>
@@ -29,6 +30,7 @@
 #include <QOpenGLWidget>
 #include <QString>
 #include <QSurfaceFormat>
+#include <QTimer>
 #include <QWheelEvent>
 
 #include <algorithm>
@@ -50,28 +52,24 @@ namespace {
     std::exit(EXIT_FAILURE);
 }
 
-struct HydrogenCloud {
-    ses::Mesh mesh;
-    double energy{};
-};
-
-// All physics happens here, in core, before any GL exists.
-HydrogenCloud compute_hydrogen_cloud() {
+// The scenario, built entirely from core pieces: a bound-ish packet released
+// 3 Bohr from a soft-Coulomb nucleus with a little tangential momentum.
+ses::WavepacketSimulation make_simulation() {
     const ses::Grid1D axis{-12.0, 12.0, 32};
     const ses::Grid3D grid{axis, axis, axis};
-    const std::vector<double> v =
-        ses::soft_coulomb_potential(grid, 1.0, 1.0, ses::Vec3d{});
-
-    ses::Field3D psi = ses::gaussian_wavepacket(grid, ses::Vec3d{},
-                                                ses::Vec3d{1.3, 1.3, 1.3}, ses::Vec3d{});
-    const ses::ImaginaryTimePropagator3D relaxer{grid, v, 0.02};
-    relaxer.relax(psi, 600);
-
-    const std::vector<double> rho = ses::probability_density(psi);
-    const double peak = *std::max_element(rho.begin(), rho.end());
-    return HydrogenCloud{ses::marching_cubes(rho, grid, 0.25 * peak),
-                         ses::mean_energy(psi, v)};
+    return ses::WavepacketSimulation{ses::WavepacketSimulation::Config{
+        grid,
+        ses::soft_coulomb_potential(grid, 1.0, 1.0, ses::Vec3d{}),
+        ses::Vec3d{3.0, 0.0, 0.0},  // r0: beside the nucleus
+        ses::Vec3d{1.5, 1.5, 1.5},  // sigma
+        ses::Vec3d{0.0, 0.4, 0.0},  // k0: tangential kick
+        0.02,                       // dt
+    }};
 }
+
+constexpr int kStepsPerTick = 2;
+constexpr int kTickMs = 16;
+constexpr double kIsoFraction = 0.25;
 
 const char* kVertexShader = R"(#version 430 core
 layout(location = 0) in vec3 pos;
@@ -104,8 +102,13 @@ void main() {
 
 class Viewport : public QOpenGLWidget, protected QOpenGLFunctions_4_3_Core {
 public:
-    explicit Viewport(ses::Mesh mesh, QWidget* parent = nullptr)
-        : QOpenGLWidget(parent), mesh_(std::move(mesh)) {}
+    explicit Viewport(QWidget* parent = nullptr)
+        : QOpenGLWidget(parent), sim_(make_simulation()) {
+        setFocusPolicy(Qt::StrongFocus);  // receive the spacebar
+        remesh();
+        connect(&timer_, &QTimer::timeout, this, &Viewport::tick);
+        timer_.start(kTickMs);
+    }
 
 protected:
     void initializeGL() override {
@@ -129,27 +132,10 @@ protected:
         eye_loc_ = glGetUniformLocation(program_, "eye");
         color_loc_ = glGetUniformLocation(program_, "base_color");
 
-        std::vector<float> interleaved;
-        interleaved.reserve(mesh_.vertices.size() * 6);
-        for (std::size_t i = 0; i < mesh_.vertices.size(); ++i) {
-            const ses::Vec3d& p = mesh_.vertices[i];
-            const ses::Vec3d& n = mesh_.normals[i];
-            interleaved.push_back(static_cast<float>(p.x));
-            interleaved.push_back(static_cast<float>(p.y));
-            interleaved.push_back(static_cast<float>(p.z));
-            interleaved.push_back(static_cast<float>(n.x));
-            interleaved.push_back(static_cast<float>(n.y));
-            interleaved.push_back(static_cast<float>(n.z));
-        }
-        vertex_count_ = static_cast<int>(mesh_.vertices.size());
-
         glGenVertexArrays(1, &vao_);
         glBindVertexArray(vao_);
         glGenBuffers(1, &vbo_);
         glBindBuffer(GL_ARRAY_BUFFER, vbo_);
-        glBufferData(GL_ARRAY_BUFFER,
-                     static_cast<GLsizeiptr>(interleaved.size() * sizeof(float)),
-                     interleaved.data(), GL_STATIC_DRAW);
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float),
                               reinterpret_cast<void*>(0));
         glEnableVertexAttribArray(0);
@@ -157,9 +143,15 @@ protected:
                               reinterpret_cast<void*>(3 * sizeof(float)));
         glEnableVertexAttribArray(1);
         glBindVertexArray(0);
+        mesh_dirty_ = true;
     }
 
     void paintGL() override {
+        if (mesh_dirty_) {
+            upload_mesh();
+            mesh_dirty_ = false;
+        }
+
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         const double aspect =
@@ -205,7 +197,65 @@ protected:
         update();
     }
 
+    void keyPressEvent(QKeyEvent* e) override {
+        if (e->key() == Qt::Key_Space) {
+            paused_ = !paused_;
+            refresh_title();
+        } else {
+            QOpenGLWidget::keyPressEvent(e);
+        }
+    }
+
 private:
+    void tick() {
+        if (paused_) {
+            return;
+        }
+        sim_.advance(kStepsPerTick);
+        remesh();
+        mesh_dirty_ = true;
+        if (++ticks_ % 10 == 0) {
+            refresh_title();
+        }
+        update();
+    }
+
+    // CPU side only -- safe to call with no GL context current.
+    void remesh() {
+        mesh_ = ses::marching_cubes_at_fraction(sim_.density(), sim_.grid(), kIsoFraction);
+    }
+
+    void refresh_title() {
+        window()->setWindowTitle(
+            QStringLiteral("Electron wavepacket near a soft-Coulomb nucleus   "
+                           "t = %1 a.u.   norm = %2   %3")
+                .arg(sim_.time(), 0, 'f', 2)
+                .arg(ses::norm_sq(sim_.psi()), 0, 'f', 9)
+                .arg(paused_ ? QStringLiteral("[paused - space resumes]")
+                             : QStringLiteral("[space pauses]")));
+    }
+
+    // Requires a current GL context (called from paintGL only).
+    void upload_mesh() {
+        std::vector<float> interleaved;
+        interleaved.reserve(mesh_.vertices.size() * 6);
+        for (std::size_t i = 0; i < mesh_.vertices.size(); ++i) {
+            const ses::Vec3d& p = mesh_.vertices[i];
+            const ses::Vec3d& n = mesh_.normals[i];
+            interleaved.push_back(static_cast<float>(p.x));
+            interleaved.push_back(static_cast<float>(p.y));
+            interleaved.push_back(static_cast<float>(p.z));
+            interleaved.push_back(static_cast<float>(n.x));
+            interleaved.push_back(static_cast<float>(n.y));
+            interleaved.push_back(static_cast<float>(n.z));
+        }
+        vertex_count_ = static_cast<int>(mesh_.vertices.size());
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+        glBufferData(GL_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(interleaved.size() * sizeof(float)),
+                     interleaved.data(), GL_DYNAMIC_DRAW);
+    }
+
     GLuint compile_shader(GLenum type, const char* src) {
         const GLuint shader = glCreateShader(type);
         glShaderSource(shader, 1, &src, nullptr);
@@ -239,7 +289,13 @@ private:
         return prog;
     }
 
+    ses::WavepacketSimulation sim_;
     ses::Mesh mesh_;
+    QTimer timer_;
+    bool paused_ = false;
+    bool mesh_dirty_ = false;
+    long long ticks_ = 0;
+
     GLuint program_ = 0;
     GLuint vao_ = 0;
     GLuint vbo_ = 0;
@@ -250,7 +306,7 @@ private:
 
     double azimuth_ = 0.6;
     double elevation_ = 0.4;
-    double distance_ = 24.0;
+    double distance_ = 28.0;
     QPointF last_pos_;
 };
 
@@ -266,14 +322,9 @@ int main(int argc, char** argv) {
 
     QApplication app(argc, argv);
 
-    // Physics first (a few seconds of imaginary-time relaxation), GL after.
-    const HydrogenCloud cloud = compute_hydrogen_cloud();
-
     QMainWindow window;
-    window.setWindowTitle(
-        QStringLiteral("Hydrogen 1s electron cloud  |psi|^2 isosurface   (E0 = %1 Ha,  soft Coulomb a = 1)")
-            .arg(cloud.energy, 0, 'f', 4));
-    window.setCentralWidget(new Viewport(cloud.mesh));
+    window.setWindowTitle(QStringLiteral("Electron wavepacket near a soft-Coulomb nucleus"));
+    window.setCentralWidget(new Viewport());
     window.resize(1024, 768);
     window.show();
 
