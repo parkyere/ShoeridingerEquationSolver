@@ -8,6 +8,7 @@
 // Sizes must be powers of two.
 
 #include <core/complex.hpp>
+#include <core/field.hpp>
 
 #include <cassert>
 #include <cmath>
@@ -18,10 +19,10 @@
 
 namespace ses {
 
-// In-place forward transform. Iterative: bit-reversal permutation, then
-// butterfly passes of doubling length.
-inline void fft(std::vector<Complex<double>>& a) {
-    const std::size_t n = a.size();
+// In-place forward transform of a contiguous line of length n.
+// Iterative: bit-reversal permutation, then butterfly passes of doubling
+// length.
+inline void fft(Complex<double>* a, std::size_t n) {
     assert((n & (n - 1)) == 0 && "fft size must be a power of two");
     if (n < 2) {
         return;
@@ -64,6 +65,8 @@ inline void fft(std::vector<Complex<double>>& a) {
     }
 }
 
+inline void fft(std::vector<Complex<double>>& a) { fft(a.data(), a.size()); }
+
 // In-place inverse transform via the conjugation identity:
 //     ifft(X) = conj(fft(conj(X))) / N
 inline void ifft(std::vector<Complex<double>>& a) {
@@ -73,6 +76,61 @@ inline void ifft(std::vector<Complex<double>>& a) {
     fft(a);
     const double inv = 1.0 / static_cast<double>(a.size());
     for (Complex<double>& z : a) {
+        z = inv * conj(z);
+    }
+}
+
+// 3D forward transform: 1D FFT along each axis. x-lines are contiguous in
+// the x-fastest layout and transform in place; y/z lines are gathered into a
+// scratch buffer, transformed, and scattered back.
+inline void fft(Field3D& f) {
+    std::vector<Complex<double>>& a = f.data();
+    const Grid3D& g = f.grid();
+    const int nx = g.x.n;
+    const int ny = g.y.n;
+    const int nz = g.z.n;
+
+    for (int k = 0; k < nz; ++k) {
+        for (int j = 0; j < ny; ++j) {
+            fft(a.data() + g.flat(0, j, k), static_cast<std::size_t>(nx));
+        }
+    }
+
+    std::vector<Complex<double>> line(static_cast<std::size_t>(ny));
+    for (int k = 0; k < nz; ++k) {
+        for (int i = 0; i < nx; ++i) {
+            for (int j = 0; j < ny; ++j) {
+                line[static_cast<std::size_t>(j)] = a[static_cast<std::size_t>(g.flat(i, j, k))];
+            }
+            fft(line.data(), line.size());
+            for (int j = 0; j < ny; ++j) {
+                a[static_cast<std::size_t>(g.flat(i, j, k))] = line[static_cast<std::size_t>(j)];
+            }
+        }
+    }
+
+    line.resize(static_cast<std::size_t>(nz));
+    for (int j = 0; j < ny; ++j) {
+        for (int i = 0; i < nx; ++i) {
+            for (int k = 0; k < nz; ++k) {
+                line[static_cast<std::size_t>(k)] = a[static_cast<std::size_t>(g.flat(i, j, k))];
+            }
+            fft(line.data(), line.size());
+            for (int k = 0; k < nz; ++k) {
+                a[static_cast<std::size_t>(g.flat(i, j, k))] = line[static_cast<std::size_t>(k)];
+            }
+        }
+    }
+}
+
+// 3D inverse: conjugation identity with N = nx*ny*nz.
+inline void ifft(Field3D& f) {
+    for (Complex<double>& z : f.data()) {
+        z = conj(z);
+    }
+    fft(f);
+    const double inv = 1.0 / static_cast<double>(f.size());
+    for (Complex<double>& z : f.data()) {
         z = inv * conj(z);
     }
 }
