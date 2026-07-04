@@ -64,6 +64,16 @@ the core/test build still succeeds.
 > Windows: pass your Qt install to CMake, e.g.
 > `-DCMAKE_PREFIX_PATH="C:/Qt/6.x.x/msvc2022_64"`.
 
+### Visual Studio
+
+Open the folder; VS picks up [CMakePresets.json](CMakePresets.json) --
+choose the **`MSVC RelWithDebInfo (Qt msvc2022_64)`** preset (avoid plain
+Debug: the 3D physics tests crawl at `-Od`). Then select
+**`sesolver_app.exe`** in the startup-item dropdown next to the Run button
+and press F5. `windeployqt` stages the Qt runtime next to the exe after
+every build, so it also launches from Explorer. Tests run via the Test
+Explorer or `ctest --preset msvc`.
+
 ## Working agreement
 
 This project follows **strict TDD**. No production code is written without a

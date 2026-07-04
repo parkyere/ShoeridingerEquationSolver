@@ -61,3 +61,16 @@ set_tests_properties(GpuCheck PROPERTIES
     SKIP_RETURN_CODE 77
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_qt6_bin_dir}"
 )
+
+# Stage the Qt runtime next to the app after every build, so it launches
+# from the IDE or Explorer without Qt on PATH (the classic missing-
+# Qt6Widgets.dll failure when pressing F5 in Visual Studio).
+if(WIN32)
+    find_program(SES_WINDEPLOYQT windeployqt HINTS "${_qt6_bin_dir}")
+    if(SES_WINDEPLOYQT)
+        add_custom_command(TARGET sesolver_app POST_BUILD
+            COMMAND "${SES_WINDEPLOYQT}" --no-translations
+                    "$<TARGET_FILE:sesolver_app>"
+            COMMENT "windeployqt: staging the Qt runtime next to sesolver_app")
+    endif()
+endif()
