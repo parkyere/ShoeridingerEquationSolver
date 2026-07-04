@@ -54,6 +54,20 @@ inline RayHit ray_box(Vec3d origin, Vec3d dir, Vec3d box_min, Vec3d box_max) {
     return RayHit{true, t_near, t_far};
 }
 
+// Ray/sphere intersection (dir must be unit length). Raw [t_near, t_far]:
+// t_near < 0 when the ray starts inside; tangent rays report t_near == t_far.
+inline RayHit ray_sphere(Vec3d origin, Vec3d dir, Vec3d center, double radius) {
+    const Vec3d oc = origin - center;
+    const double b = dot(oc, dir);
+    const double c = dot(oc, oc) - radius * radius;
+    const double disc = b * b - c;
+    if (disc < 0.0) {
+        return RayHit{false, 0.0, 0.0};
+    }
+    const double s = std::sqrt(disc);
+    return RayHit{true, -b - s, -b + s};
+}
+
 // Beer-Lambert emission-absorption opacity of one ray-march step.
 inline double sample_alpha(double density01, double absorbance, double step) {
     return 1.0 - std::exp(-absorbance * density01 * step);
