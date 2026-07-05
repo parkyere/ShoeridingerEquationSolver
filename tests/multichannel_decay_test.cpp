@@ -232,6 +232,35 @@ TEST(MultiQuantumJump, ForbiddenChannelIsNeverSelected) {
     }
 }
 
+// RED: pick_decay_channel -- the pure selection arithmetic, factored out so
+// the GPU shell can reuse it on GPU-reduced populations without duplicating
+// domain logic (Humble Object rule). Same semantics as multi_quantum_jump
+// with the rates precomputed.
+
+TEST(PickDecayChannel, NoJumpReportsClosedFormP) {
+    const std::vector<double> rates{0.3, 0.1};
+    const ses::ChannelPick r = ses::pick_decay_channel(rates, 0.7, 0.999, 0.5);
+    EXPECT_EQ(r.channel, -1);
+    EXPECT_NEAR(r.p_total, 1.0 - std::exp(-0.4 * 0.7), 1e-15);
+}
+
+TEST(PickDecayChannel, SelectsByCumulativeRateFraction) {
+    const std::vector<double> rates{2.0, 1.0, 1.0};
+    EXPECT_EQ(ses::pick_decay_channel(rates, 50.0, 0.0, 0.49).channel, 0);
+    EXPECT_EQ(ses::pick_decay_channel(rates, 50.0, 0.0, 0.51).channel, 1);
+    EXPECT_EQ(ses::pick_decay_channel(rates, 50.0, 0.0, 0.80).channel, 2);
+    EXPECT_EQ(ses::pick_decay_channel(rates, 50.0, 0.0, 0.999999).channel, 2);
+}
+
+TEST(PickDecayChannel, ZeroRateChannelsAreSkipped) {
+    const std::vector<double> rates{0.0, 1.0};
+    EXPECT_EQ(ses::pick_decay_channel(rates, 50.0, 0.0, 0.0).channel, 1);
+    const ses::ChannelPick none =
+        ses::pick_decay_channel(std::vector<double>{0.0, 0.0}, 50.0, 0.0, 0.5);
+    EXPECT_EQ(none.channel, -1);
+    EXPECT_EQ(none.p_total, 0.0);
+}
+
 TEST(MultiQuantumJump, AllForbiddenNeverJumps) {
     const Grid3D g = cube(-8.0, 8.0, 16);
     const Manifold m = make_manifold(g);
