@@ -30,6 +30,7 @@ add_executable(sesolver_tests
     grid3_test.cpp
     grid_test.cpp
     harmonic_dynamics_test.cpp
+    harmonics_test.cpp
     hydrogen3_test.cpp
     imaginary_tables_test.cpp
     imaginary_time_test.cpp
