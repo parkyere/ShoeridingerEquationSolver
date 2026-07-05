@@ -96,22 +96,29 @@ kernel verified against the unit-tested CPU double core by
 `sesolver_gpucheck`). The full atom-and-light demo works from first
 principles computed by the solver itself:
 
-At startup the app SOLVES the atom first: the n<=2 eigenstate atlas
-(1s, 2p_x, 2p_y, 2p_z, 2s) builds chunked across frames -- watch each
-state converge, progress in the title (~20 s one-time) -- and then the
-wavepacket demo begins with spontaneous decay ARMED, as in nature.
+At startup the app SOLVES the atom first. The spherical potential reduces
+exactly to 1D per angular momentum, so the hand-rolled radial engine
+(Sturm bisection + inverse iteration) finds ALL 55 bound levels to n = 10
+with their E1 lifetimes -- the full table prints to the console (2p 4.8
+ns; 2s 184 ns through the degeneracy-lifted 2s->2p channel; 10s 95 us).
+The 3D tracked manifold is everything the +-24 Bohr box physically holds:
+n <= 3, 14 states synthesized as (u/r) Y_lm (75 decay channels), each
+cross-checked E_radial vs <H>_grid to 1e-5. Then the wavepacket demo
+begins with spontaneous decay ARMED, as in nature.
 
 - **1** real time / **2** relax to 1s / **3** relax to 2p_z / **4** relax
-  to 2s (deflated imaginary time; the ITP energy readout converges live);
+  to 2s (deflated imaginary time, live energy readout; relaxation
+  AUTO-COMPLETES on convergence so the prepared state visibly decays);
+- **5** excite an n=3 state and watch the CASCADE: 3d -> 2p (photon) ->
+  1s (photon), the Delta-l = +-1 chain forced by the selection rules;
 - **M** soft Gaussian position measurement (collapse and re-evolution);
 - **D** turns decay OFF (and back on) -- the switch for studying pure
-  unitary evolution. Decay itself is multi-channel quantum jumps over the
-  whole manifold: every downward pair gets its Einstein A from OUR
-  wavefunctions -- the 2p triplet decays with tau ~ 4.7 ns (same order as
-  real hydrogen 2p) while A(2s->1s) ~ 1e-17 makes 2s METASTABLE, the
-  selection rule emerging from the matrix element. Photon flash + counter
-  + last-jump label; one common, honestly-labeled display acceleration
-  keeps relative lifetimes physical;
+  unitary evolution. Decay is multi-channel quantum jumps over the whole
+  manifold: every downward pair gets its Einstein A from OUR
+  wavefunctions -- A(2s->1s) ~ 1e-42 (exact nodal planes), Delta-l rules
+  emerge numerically, and one common, honestly-labeled display
+  acceleration keeps relative lifetimes physical. Photon flash + counter
+  + last-jump label;
 - **L** resonant laser at w = E(2p) - E(1s): Z-polarization Rabi-pumps
   1s -> 2p_z (live P(1s)/P(2pz) readout), X-polarization pumps 2p_x
   instead so P(2pz) stays flat -- and its fluorescence clicks through the
@@ -121,7 +128,7 @@ Tab switches to the marching-cubes isosurface view; drag orbits, wheel
 zooms, space pauses, [ ] tunes cloud density. All shader math is
 unit-tested in core and transcribed into GLSL; the demo arcs regress
 headlessly via `--selftest-decay` / `--selftest-rabi` /
-`--selftest-manifold`. See
+`--selftest-manifold` / `--selftest-cascade`. See
 [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/GPU_PLAN.md](docs/GPU_PLAN.md).
 
 > Toolchain note: build with the Qt-bundled MinGW kit
