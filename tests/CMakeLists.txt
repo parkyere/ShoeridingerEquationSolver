@@ -39,6 +39,7 @@ add_executable(sesolver_tests
     potential_test.cpp
     propagator_tables_test.cpp
     propagator_test.cpp
+    radial_test.cpp
     relaxation_in_simulation_test.cpp
     sampling_test.cpp
     simulation_state_test.cpp
