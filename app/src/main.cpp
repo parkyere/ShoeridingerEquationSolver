@@ -13,8 +13,8 @@
 // e^{-i E0 t} -- the definition of a stationary state, on screen. Key R
 // releases a fresh wavepacket.
 // Controls: drag = orbit, wheel = zoom, space = pause, Tab = cloud/surface,
-// 1 = real time, 2 = relax (imaginary time), 3 = relax to 2p, R = reset,
-// M = measure, D = decay, L = laser (off -> Z-pol -> X-pol -> off),
+// 1 = real time, 2 = relax (imaginary time), 3 = relax to 2p, 4 = relax to
+// 2s, R = reset, M = measure, D = decay, L = laser (off -> Z -> X -> off),
 // [ ] = thinner/denser cloud.
 //
 // T3 (laser): a resonant dipole drive at w = E(2p) - E(1s) pumps 1s -> 2p_z
@@ -22,6 +22,14 @@
 // counter clicks through repeated absorb/emit cycles -- fluorescence. The
 // X-polarized flavor pumps the ORTHOGONAL 2p_x, so the monitored P(2pz)
 // stays flat: the selection rule, live on screen.
+//
+// T5 (multi-channel decay): EVERY tracked orbital gets its lifetime. The
+// whole n<=2 manifold (1s, 2p_x, 2p_y, 2p_z, 2s) is cached; every downward
+// pair gets its Einstein A from our own wavefunctions and the channels
+// compete as Poisson processes (core-tested pick_decay_channel). Selection
+// rules emerge: A(2s->1s) ~ 0, so 2s (key 4) just sits there -- metastable
+// -- while any 2p decays in a ~4.5 ns-scale lifetime (display-accelerated
+// by ONE common factor, so RELATIVE lifetimes stay honest).
 
 #include <core/camera.hpp>
 #include <core/colormap.hpp>
@@ -54,8 +62,11 @@
 #include <QWheelEvent>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <memory>
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
 #include <optional>
 #include <random>
@@ -261,6 +272,18 @@ enum class ViewMode { Cloud, Surface };
 enum class Stepping { RealTime, Relaxing, RelaxingExcited };
 enum class LaserPol { Off, Z, X };
 
+// T5: the tracked eigenstate manifold (the n <= 2 shell).
+enum StateIndex : int { kS1 = 0, kP2X = 1, kP2Y = 2, kP2Z = 3, kS2 = 4 };
+constexpr int kNumStates = 5;
+constexpr const char* kStateName[kNumStates] = {"1s", "2p_x", "2p_y", "2p_z", "2s"};
+
+struct ShellChannel {
+    int from;
+    int to;
+    double a_true;         // Einstein A from our wavefunctions (au)
+    double gamma_display;  // uniformly accelerated display rate
+};
+
 class Viewport : public QOpenGLWidget, protected QOpenGLFunctions_4_3_Core {
 public:
     explicit Viewport(QWidget* parent = nullptr)
@@ -421,22 +444,37 @@ protected:
                     // occluded paint cannot desync the clock from the state.
                     gpu_time_ += pending_gpu_steps_ * sim_.dt();
 
-                    // T4: one Poisson decay trial per executed batch. The
-                    // jump probability is weighted by the LIVE excited
-                    // population (GPU inner product); on a jump the state
-                    // collapses onto the cached ground state ("photon out").
-                    if (decay_on_ && excited_buf_ != 0) {
-                        const ses_gpu::NormPeak ip =
-                            engine_.inner_with_psi(*this, excited_buf_);
-                        const double p_e = ip.sum * ip.sum + ip.peak * ip.peak;
-                        const double p_jump =
-                            1.0 - std::exp(-kDecayGammaDisplay * p_e *
-                                           pending_gpu_steps_ * sim_.dt());
+                    // T4/T5: one competing-channels Poisson trial per
+                    // executed batch. LIVE populations of every tracked
+                    // excited state come from GPU inner products; the
+                    // selection arithmetic is the core-tested
+                    // pick_decay_channel; on a jump the state collapses
+                    // onto the fired channel's destination ("photon out").
+                    if (decay_on_ && !channels_.empty()) {
+                        std::array<double, kNumStates> pop{};
+                        for (int s = kP2X; s <= kS2; ++s) {
+                            const ses_gpu::NormPeak ip =
+                                engine_.inner_with_psi(*this, state_buf_[s]);
+                            pop[s] = ip.sum * ip.sum + ip.peak * ip.peak;
+                        }
+                        std::vector<double> rates(channels_.size());
+                        for (std::size_t c = 0; c < channels_.size(); ++c) {
+                            rates[c] =
+                                channels_[c].gamma_display * pop[channels_[c].from];
+                        }
                         std::uniform_real_distribution<double> uniform(0.0, 1.0);
-                        if (uniform(rng_) < p_jump) {
-                            engine_.copy_into_psi(*this, ground_buf_);
+                        const ses::ChannelPick pick = ses::pick_decay_channel(
+                            rates, pending_gpu_steps_ * sim_.dt(), uniform(rng_),
+                            uniform(rng_));
+                        if (pick.channel >= 0) {
+                            const ShellChannel& ch =
+                                channels_[static_cast<std::size_t>(pick.channel)];
+                            engine_.copy_into_psi(*this, state_buf_[ch.to]);
                             flash_ticks_ = 25;
                             ++photon_count_;
+                            last_jump_ = QStringLiteral("%1->%2").arg(
+                                QLatin1String(kStateName[ch.from]),
+                                QLatin1String(kStateName[ch.to]));
                             refresh_title();
                         }
                     }
@@ -445,12 +483,12 @@ protected:
                     // Rabi peak the selftest asserts on), on the title
                     // cadence -- two 2 KB reductions every ~10 ticks.
                     if (laser_pol_ != LaserPol::Off && gpu_title_due_ &&
-                        excited_buf_ != 0) {
+                        state_buf_[kP2Z] != 0) {
                         const ses_gpu::NormPeak pe =
-                            engine_.inner_with_psi(*this, excited_buf_);
+                            engine_.inner_with_psi(*this, state_buf_[kP2Z]);
                         pop_excited_ = pe.sum * pe.sum + pe.peak * pe.peak;
                         const ses_gpu::NormPeak pg =
-                            engine_.inner_with_psi(*this, ground_buf_);
+                            engine_.inner_with_psi(*this, state_buf_[kS1]);
                         pop_ground_ = pg.sum * pg.sum + pg.peak * pg.peak;
                         rabi_peak_ = std::max(rabi_peak_, pop_excited_);
                     }
@@ -459,8 +497,8 @@ protected:
                     // the ITP estimator gives the convergence readout free.
                     // The excited flavor deflates the cached ground state.
                     const ses_gpu::GpuEngine::RelaxStats stats =
-                        (stepping_ == Stepping::RelaxingExcited && ground_buf_ != 0)
-                            ? engine_.relax_deflated_step(*this, {ground_buf_},
+                        (stepping_ == Stepping::RelaxingExcited && state_buf_[kS1] != 0)
+                            ? engine_.relax_deflated_step(*this, {state_buf_[kS1]},
                                                           pending_gpu_steps_)
                             : engine_.relax_step(*this, pending_gpu_steps_);
                     relax_energy_display_ = stats.energy;
@@ -623,35 +661,46 @@ public:
     // one-time); the z-odd seed keeps the whole flow in the odd-parity
     // sector, so it converges to the 2p_z-like state deterministically.
     void relax_to_excited() {
-        if (!gpu_ok_) {
-            return;  // deflation runs on the GPU path only (v1)
-        }
-        if (mode_ != ViewMode::Cloud) {
-            mode_ = ViewMode::Cloud;
-        }
-        if (!prepare_ground_cache()) {
-            return;
-        }
-        sim_.set_psi(make_z_odd_seed());
-        cpu_is_truth_ = true;
-        stepping_ = Stepping::RelaxingExcited;
-        after_control();
+        start_excited_relax(make_axis_odd_seed(2), QStringLiteral("2p"));
     }
 
-    // Transitions arc T4: toggle spontaneous decay (quantum jumps). The
-    // decay rate comes from OUR spectrum: Gamma = einstein_a(gap, |<f|r|i>|^2)
-    // with both eigenstates cached; the true lifetime is ~1e8 a.u., so the
-    // display runs an accelerated Gamma (title shows both, honestly).
+    // T5: relax into 2s (even sector with the cached 1s deflated) -- the
+    // radial node appears live. With decay ON it then just SITS there:
+    // A(2s -> 1s) ~ 0 makes it metastable, from our own matrix elements.
+    void relax_to_2s() {
+        start_excited_relax(
+            ses::gaussian_wavepacket(sim_.grid(), ses::Vec3d{},
+                                     ses::Vec3d{4.0, 4.0, 4.0}, ses::Vec3d{}),
+            QStringLiteral("2s"));
+    }
+
+    // Transitions arc T4/T5: toggle spontaneous decay (quantum jumps) over
+    // the whole tracked manifold. Every channel rate is einstein_a(gap,
+    // |<f|r|i>|^2) from our own eigenstates; true lifetimes are ~1e8 a.u.,
+    // so the display accelerates ALL channels by one common factor (title
+    // reports it honestly and relative lifetimes stay physical).
     void toggle_decay() {
         if (!gpu_ok_) {
             return;
         }
-        if (!decay_on_ && !prepare_excited_cache()) {
+        if (!decay_on_ && !prepare_manifold_cache()) {
             return;
         }
         decay_on_ = !decay_on_;
         after_control();
     }
+
+    // Selftest access: the computed Einstein A for a channel (0 if absent)
+    // and the cached eigenenergies.
+    double channel_a(int from, int to) const {
+        for (const ShellChannel& c : channels_) {
+            if (c.from == from && c.to == to) {
+                return c.a_true;
+            }
+        }
+        return 0.0;
+    }
+    double state_energy(int idx) const { return state_energy_[static_cast<std::size_t>(idx)]; }
 
     // Transitions arc T3: cycle the laser off -> Z-pol -> X-pol -> off. The
     // carrier w comes from OUR spectrum (the cached ITP energies) and E0
@@ -670,7 +719,7 @@ public:
             if (!prepare_excited_cache()) {
                 return;
             }
-            laser_omega_ = excited_energy_ - ground_energy_;
+            laser_omega_ = state_energy_[kP2Z] - state_energy_[kS1];
             laser_e0_ = dipole_z_ > 0.0 ? kRabiTargetOmega / dipole_z_ : 0.0;
             rabi_peak_ = 0.0;
             laser_pol_ = LaserPol::Z;
@@ -697,18 +746,36 @@ protected:
         update();
     }
 
-    ses::Field3D make_z_odd_seed() const {
+    // The common launcher for excited-state relaxation demos (keys 3/4):
+    // ensure the deflation target (1s) is cached, then hand the seed to the
+    // GPU deflated imaginary-time flow.
+    void start_excited_relax(const ses::Field3D& seed, const QString& label) {
+        if (!gpu_ok_) {
+            return;  // deflation runs on the GPU path only (v1)
+        }
+        if (mode_ != ViewMode::Cloud) {
+            mode_ = ViewMode::Cloud;
+        }
+        if (!prepare_ground_cache()) {
+            return;
+        }
+        sim_.set_psi(seed);
+        cpu_is_truth_ = true;
+        relax_label_ = label;
+        stepping_ = Stepping::RelaxingExcited;
+        after_control();
+    }
+
+    ses::Field3D make_axis_odd_seed(int axis) const {  // 0 = x, 1 = y, 2 = z
         const ses::Grid3D& g = sim_.grid();
         ses::Field3D seed{g};
         for (int k = 0; k < g.z.n; ++k) {
             for (int j = 0; j < g.y.n; ++j) {
                 for (int i = 0; i < g.x.n; ++i) {
-                    const double x = g.x.coord(i);
-                    const double y = g.y.coord(j);
-                    const double z = g.z.coord(k);
-                    const double env =
-                        std::exp(-(x * x + y * y + z * z) / (4.0 * 2.0 * 2.0));
-                    seed(i, j, k) = ses::Complex<double>{z * env, 0.0};
+                    const double c[3] = {g.x.coord(i), g.y.coord(j), g.z.coord(k)};
+                    const double env = std::exp(
+                        -(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) / (4.0 * 2.0 * 2.0));
+                    seed(i, j, k) = ses::Complex<double>{c[axis] * env, 0.0};
                 }
             }
         }
@@ -716,74 +783,134 @@ protected:
         return seed;
     }
 
-    // One-time ground-state computation into a cached GPU buffer (and a CPU
-    // copy for later CPU-side use). Blocks for a few seconds on first call.
-    bool prepare_ground_cache() {
-        if (ground_buf_ != 0) {
+    // One-time eigenstate computation into cache slot `idx`: GPU ITP from
+    // the seed (deflated against `lower` if nonempty), fp32 round-trip
+    // polished, stored as BOTH a GPU state buffer (jump destinations,
+    // deflation, populations) and a CPU copy (dipole matrix elements).
+    // Blocks for a few seconds; the user's state is snapshotted/restored.
+    bool cache_eigenstate(int idx, const ses::Field3D& seed,
+                          const std::vector<GLuint>& lower, int steps) {
+        if (state_buf_[static_cast<std::size_t>(idx)] != 0) {
             return true;
         }
         ensure_cpu_current();  // snapshot the user's state
         const ses::Field3D user_state = sim_.psi();
 
-        sim_.set_psi(ses::gaussian_wavepacket(sim_.grid(), ses::Vec3d{},
-                                              ses::Vec3d{2.0, 2.0, 2.0}, ses::Vec3d{}));
+        sim_.set_psi(seed);
         makeCurrent();
         engine_.upload_state(*this, sim_.psi());
-        ground_energy_ = engine_.relax_step(*this, 700).energy;
+        state_energy_[static_cast<std::size_t>(idx)] =
+            lower.empty() ? engine_.relax_step(*this, steps).energy
+                          : engine_.relax_deflated_step(*this, lower, steps).energy;
         engine_.readback(*this, readback_buf_);
-        ses::Field3D ground{sim_.grid()};
-        for (std::size_t i = 0; i < ground.data().size(); ++i) {
-            ground.data()[i] =
+        ses::Field3D f{sim_.grid()};
+        for (std::size_t i = 0; i < f.data().size(); ++i) {
+            f.data()[i] =
                 ses::Complex<double>{readback_buf_[2 * i], readback_buf_[2 * i + 1]};
         }
-        ses::normalize(ground);  // fp32 round-trip polish
-        ground_buf_ = engine_.create_state_buffer(*this, ground);
+        ses::normalize(f);  // fp32 round-trip polish
+        state_buf_[static_cast<std::size_t>(idx)] = engine_.create_state_buffer(*this, f);
         doneCurrent();
-        ground_cpu_.emplace(std::move(ground));
+        state_cpu_[static_cast<std::size_t>(idx)].emplace(std::move(f));
 
         sim_.set_psi(user_state);  // restore; next paint re-uploads
         cpu_is_truth_ = true;
-        return ground_buf_ != 0;
+        return state_buf_[static_cast<std::size_t>(idx)] != 0;
     }
 
-    // One-time excited-state (2p_z) cache + first-principles decay rate:
-    // gap from the two ITP energy estimates, dipole strength from the cached
-    // wavefunctions, Gamma_true = einstein_a(gap, strength).
+    bool prepare_ground_cache() {
+        return cache_eigenstate(
+            kS1,
+            ses::gaussian_wavepacket(sim_.grid(), ses::Vec3d{},
+                                     ses::Vec3d{2.0, 2.0, 2.0}, ses::Vec3d{}),
+            {}, 700);
+    }
+
+    // The laser pair (1s + 2p_z) plus the T3 drive numbers: dipole element
+    // for the target-Rabi E0.
     bool prepare_excited_cache() {
-        if (excited_buf_ != 0) {
-            return true;
-        }
-        if (!prepare_ground_cache()) {
+        if (!prepare_ground_cache() ||
+            !cache_eigenstate(kP2Z, make_axis_odd_seed(2), {state_buf_[kS1]}, 700)) {
             return false;
         }
-        ensure_cpu_current();
-        const ses::Field3D user_state = sim_.psi();
-
-        sim_.set_psi(make_z_odd_seed());
-        makeCurrent();
-        engine_.upload_state(*this, sim_.psi());
-        excited_energy_ =
-            engine_.relax_deflated_step(*this, {ground_buf_}, 700).energy;
-        engine_.readback(*this, readback_buf_);
-        ses::Field3D excited{sim_.grid()};
-        for (std::size_t i = 0; i < excited.data().size(); ++i) {
-            excited.data()[i] =
-                ses::Complex<double>{readback_buf_[2 * i], readback_buf_[2 * i + 1]};
+        if (dipole_z_ == 0.0) {
+            const ses::DipoleMatrixElement d =
+                ses::dipole_matrix_element(*state_cpu_[kP2Z], *state_cpu_[kS1]);
+            dipole_z_ = std::abs(d.z);  // T3: sets the laser E0 for a target Rabi rate
         }
-        ses::normalize(excited);
-        excited_buf_ = engine_.create_state_buffer(*this, excited);
-        doneCurrent();
-        excited_cpu_.emplace(std::move(excited));
+        return true;
+    }
 
-        const double gap = excited_energy_ - ground_energy_;
-        const ses::DipoleMatrixElement d =
-            ses::dipole_matrix_element(*excited_cpu_, *ground_cpu_);
-        gamma_true_ = ses::einstein_a(gap, ses::dipole_strength_sq(d));
-        dipole_z_ = std::abs(d.z);  // T3: sets the laser E0 for a target Rabi rate
+    // T5: ensure the whole n<=2 manifold is cached and build the decay
+    // channels. Every downward pair gets its Einstein A from OUR
+    // wavefunctions -- selection rules emerge as A ~ 0 (2s -> 1s). Display
+    // rates are the true rates scaled by ONE common factor (the fastest
+    // channel is pinned to kDecayGammaDisplay), so RELATIVE lifetimes --
+    // the metastability of 2s -- stay honest on screen.
+    bool prepare_manifold_cache() {
+        if (!channels_.empty()) {
+            return true;
+        }
+        if (!prepare_excited_cache() ||
+            !cache_eigenstate(kP2X, make_axis_odd_seed(0), {state_buf_[kS1]}, 700) ||
+            !cache_eigenstate(kP2Y, make_axis_odd_seed(1), {state_buf_[kS1]}, 700) ||
+            !cache_eigenstate(kS2,
+                              ses::gaussian_wavepacket(sim_.grid(), ses::Vec3d{},
+                                                       ses::Vec3d{4.0, 4.0, 4.0},
+                                                       ses::Vec3d{}),
+                              {state_buf_[kS1]}, 1500)) {
+            return false;
+        }
+        double a_max = 0.0;
+        for (int from = 0; from < kNumStates; ++from) {
+            for (int to = 0; to < kNumStates; ++to) {
+                const double gap = state_energy_[static_cast<std::size_t>(from)] -
+                                   state_energy_[static_cast<std::size_t>(to)];
+                if (gap < 1e-3) {
+                    continue;  // downward only; also skips the spurious
+                               // ~1e-4 splitting of the degenerate 2p's
+                }
+                const ses::DipoleMatrixElement d = ses::dipole_matrix_element(
+                    *state_cpu_[static_cast<std::size_t>(to)],
+                    *state_cpu_[static_cast<std::size_t>(from)]);
+                channels_.push_back(ShellChannel{
+                    from, to, ses::einstein_a(gap, ses::dipole_strength_sq(d)), 0.0});
+                a_max = std::max(a_max, channels_.back().a_true);
+            }
+        }
+        if (a_max <= 0.0) {
+            channels_.clear();
+            return false;
+        }
+        accel_display_ = kDecayGammaDisplay / a_max;
+        for (ShellChannel& c : channels_) {
+            c.gamma_display = c.a_true * accel_display_;
+        }
+        // The manifold report: our computed spectrum and lifetimes.
+        std::fprintf(stderr, "manifold: display acceleration x%.3e\n", accel_display_);
+        for (int s = 0; s < kNumStates; ++s) {
+            std::fprintf(stderr, "manifold: E(%s) = %.6f Ha\n", kStateName[s],
+                         state_energy_[static_cast<std::size_t>(s)]);
+        }
+        for (const ShellChannel& c : channels_) {
+            std::fprintf(stderr, "manifold: %s -> %s  A = %.3e /au  tau = %.3e au%s\n",
+                         kStateName[c.from], kStateName[c.to], c.a_true,
+                         c.a_true > 0.0 ? 1.0 / c.a_true : 0.0,
+                         c.a_true < 1e-3 * a_max ? "  [forbidden]" : "");
+        }
+        return true;
+    }
 
-        sim_.set_psi(user_state);
-        cpu_is_truth_ = true;
-        return excited_buf_ != 0;
+    // Total decay lifetime of a tracked state (sum over its channels), in
+    // TRUE atomic units; 0 means no open channel (stable/metastable).
+    double lifetime_of(int state) const {
+        double a_sum = 0.0;
+        for (const ShellChannel& c : channels_) {
+            if (c.from == state) {
+                a_sum += c.a_true;
+            }
+        }
+        return a_sum > 0.0 ? 1.0 / a_sum : 0.0;
     }
 
     void keyPressEvent(QKeyEvent* e) override {
@@ -799,6 +926,9 @@ protected:
                 break;
             case Qt::Key_3:
                 relax_to_excited();
+                break;
+            case Qt::Key_4:
+                relax_to_2s();
                 break;
             case Qt::Key_R:
                 reset_simulation();
@@ -943,15 +1073,19 @@ private:
                          ? QStringLiteral("real-time")
                          : (stepping_ == Stepping::Relaxing
                                 ? QStringLiteral("relaxing->1s")
-                                : QStringLiteral("relaxing->2p")))
+                                : QStringLiteral("relaxing->%1").arg(relax_label_)))
                 .arg(use_gpu_path() ? QStringLiteral("gpu 128^3")
                                     : QStringLiteral("cpu 128^3")) +
             (decay_on_
-                 ? QStringLiteral("  decay ON: tau_true %1 au, x%2, photons %3")
-                       .arg(gamma_true_ > 0.0 ? 1.0 / gamma_true_ : 0.0, 0, 'e', 2)
-                       .arg(gamma_true_ > 0.0 ? kDecayGammaDisplay / gamma_true_ : 0.0,
-                            0, 'e', 1)
+                 ? QStringLiteral("  decay ON: tau(2p) %1 au, tau(2s) %2 au, x%3, "
+                                  "photons %4%5")
+                       .arg(lifetime_of(kP2Z), 0, 'e', 2)
+                       .arg(lifetime_of(kS2), 0, 'e', 2)
+                       .arg(accel_display_, 0, 'e', 1)
                        .arg(photon_count_)
+                       .arg(last_jump_.isEmpty()
+                                ? QString()
+                                : QStringLiteral(", last %1").arg(last_jump_))
                  : QString()) +
             (laser_pol_ != LaserPol::Off
                  ? QStringLiteral("  laser %1: w %2, E0 %3, P(1s) %4, P(2pz) %5")
@@ -1151,14 +1285,15 @@ private:
     double relax_energy_display_ = 0.0;
     std::vector<float> readback_buf_;
 
-    // Transitions arc T1/T4: cached eigenstates and decay bookkeeping.
-    GLuint ground_buf_ = 0;
-    std::optional<ses::Field3D> ground_cpu_;
-    GLuint excited_buf_ = 0;
-    std::optional<ses::Field3D> excited_cpu_;
-    double ground_energy_ = 0.0;
-    double excited_energy_ = 0.0;
-    double gamma_true_ = 0.0;
+    // Transitions arc T1/T4/T5: the cached eigenstate manifold, the decay
+    // channel table (built on first decay toggle), and jump bookkeeping.
+    std::array<GLuint, kNumStates> state_buf_{};
+    std::array<std::optional<ses::Field3D>, kNumStates> state_cpu_;
+    std::array<double, kNumStates> state_energy_{};
+    std::vector<ShellChannel> channels_;
+    double accel_display_ = 0.0;  // common display acceleration factor
+    QString last_jump_;
+    QString relax_label_ = QStringLiteral("2p");
     bool decay_on_ = false;
     int flash_ticks_ = 0;
     long long photon_count_ = 0;
@@ -1247,6 +1382,8 @@ int main(int argc, char** argv) {
                         [viewport] { viewport->set_relaxing(); });
     controls->addAction(QStringLiteral("Relax to 2p (3)"), viewport,
                         [viewport] { viewport->relax_to_excited(); });
+    controls->addAction(QStringLiteral("Relax to 2s (4)"), viewport,
+                        [viewport] { viewport->relax_to_2s(); });
     controls->addAction(QStringLiteral("Decay (D)"), viewport,
                         [viewport] { viewport->toggle_decay(); });
     controls->addAction(QStringLiteral("Laser (L)"), viewport,
@@ -1273,7 +1410,9 @@ int main(int argc, char** argv) {
         QTimer::singleShot(500, viewport, [viewport] { viewport->relax_to_excited(); });
         QTimer::singleShot(14000, viewport, [viewport] { viewport->set_real_time(); });
         QTimer::singleShot(15000, viewport, [viewport] { viewport->toggle_decay(); });
-        QTimer::singleShot(45000, viewport, [viewport, &app] {
+        // The T5 manifold build blocks ~30 s inside toggle_decay, so the
+        // verdict timer leaves room for a real decay window after it.
+        QTimer::singleShot(90000, viewport, [viewport, &app] {
             const long long photons = viewport->photon_count();
             std::fprintf(stderr, "selftest-decay: photons = %lld  [%s]\n", photons,
                          photons >= 1 ? "PASS" : "FAIL");
@@ -1299,11 +1438,57 @@ int main(int argc, char** argv) {
             }
             viewport->toggle_decay();
         });
-        QTimer::singleShot(110000, viewport, [viewport, &app] {
+        QTimer::singleShot(130000, viewport, [viewport, &app] {
             const long long photons = viewport->photon_count();
             std::fprintf(stderr, "selftest-rabi: photons = %lld  [%s]\n", photons,
                          photons >= 2 ? "PASS" : "FAIL");
             app.exit(photons >= 2 ? 0 : 1);
+        });
+    }
+
+    // T5 regression: (a) deterministic physics of the computed channel
+    // table -- the selection rule A(2s->1s) ~ 0 and the 2p degeneracy --
+    // then (b) live wiring of the non-2p_z channels: an X-polarized pump
+    // from 1s can only fluoresce through 2p_x, so new photons prove the
+    // multi-channel trial fires beyond the old single 2p_z channel.
+    if (app.arguments().contains(QStringLiteral("--selftest-manifold"))) {
+        QTimer::singleShot(500, viewport, [viewport] { viewport->toggle_decay(); });
+        QTimer::singleShot(40000, viewport, [viewport, &app] {
+            const double a_pz = viewport->channel_a(kP2Z, kS1);
+            const double a_px = viewport->channel_a(kP2X, kS1);
+            const double a_2s1s = viewport->channel_a(kS2, kS1);
+            std::fprintf(stderr,
+                         "selftest-manifold: A(2pz->1s)=%.3e A(2px->1s)=%.3e "
+                         "A(2s->1s)=%.3e  E(1s)=%.4f E(2pz)=%.4f E(2s)=%.4f\n",
+                         a_pz, a_px, a_2s1s, viewport->state_energy(kS1),
+                         viewport->state_energy(kP2Z), viewport->state_energy(kS2));
+            const bool selection = a_pz > 0.0 && a_2s1s < 1e-3 * a_pz;
+            const bool degeneracy = a_pz > 0.0 && std::abs(a_px / a_pz - 1.0) < 0.05;
+            const bool ordering =
+                viewport->state_energy(kS1) < viewport->state_energy(kP2Z) &&
+                viewport->state_energy(kS1) < viewport->state_energy(kS2);
+            std::fprintf(stderr,
+                         "selftest-manifold: selection %s, degeneracy %s, ordering %s\n",
+                         selection ? "PASS" : "FAIL", degeneracy ? "PASS" : "FAIL",
+                         ordering ? "PASS" : "FAIL");
+            if (!(selection && degeneracy && ordering)) {
+                app.exit(1);
+                return;
+            }
+            viewport->set_relaxing();  // cool to 1s for the X-pol pump
+        });
+        QTimer::singleShot(52000, viewport, [viewport] { viewport->set_real_time(); });
+        QTimer::singleShot(52500, viewport, [viewport] { viewport->toggle_laser(); });
+        QTimer::singleShot(53000, viewport, [viewport] { viewport->toggle_laser(); });
+        auto baseline = std::make_shared<long long>(0);
+        QTimer::singleShot(53500, viewport, [viewport, baseline] {
+            *baseline = viewport->photon_count();
+        });
+        QTimer::singleShot(115000, viewport, [viewport, &app, baseline] {
+            const long long fresh = viewport->photon_count() - *baseline;
+            std::fprintf(stderr, "selftest-manifold: x-pol photons = %lld  [%s]\n",
+                         fresh, fresh >= 2 ? "PASS" : "FAIL");
+            app.exit(fresh >= 2 ? 0 : 1);
         });
     }
 
