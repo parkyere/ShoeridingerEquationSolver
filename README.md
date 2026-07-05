@@ -101,16 +101,19 @@ exactly to 1D per angular momentum, so the hand-rolled radial engine
 (Sturm bisection + inverse iteration) finds ALL 55 bound levels to n = 10
 with their E1 lifetimes -- the full table prints to the console (2p 4.8
 ns; 2s 184 ns through the degeneracy-lifted 2s->2p channel; 10s 95 us).
-The 3D tracked manifold is everything the +-24 Bohr box physically holds:
-n <= 3, 14 states synthesized as (u/r) Y_lm (75 decay channels), each
-cross-checked E_radial vs <H>_grid to 1e-5. Then the wavepacket demo
-begins with spontaneous decay ARMED, as in nature.
+The 3D tracked manifold is everything the +-64 Bohr box (256^3) and the
+16 GB GPU physically hold: the full m-resolved n <= 4 shell -- 30 states
+synthesized as (u/r) Y_lm, 161 decay channels, audited E_radial vs
+<H>_grid to 1e-6 on every launch. The m-selection physics emerges
+numerically (3d_z2 -> 2p branches 4:1:1, Clebsch-Gordan). Then the
+wavepacket demo begins with spontaneous decay ARMED, as in nature.
 
 - **1** real time / **2** relax to 1s / **3** relax to 2p_z / **4** relax
   to 2s (deflated imaginary time, live energy readout; relaxation
   AUTO-COMPLETES on convergence so the prepared state visibly decays);
-- **5** excite an n=3 state and watch the CASCADE: 3d -> 2p (photon) ->
-  1s (photon), the Delta-l = +-1 chain forced by the selection rules;
+- **5** excite an n=3/4 state and watch the CASCADE: 3d -> 2p (photon) ->
+  1s (photon), or the triple chain 4f -> 3d -> 2p -> 1s -- the
+  Delta-l = +-1 ladder forced by the selection rules;
 - **M** soft Gaussian position measurement (collapse and re-evolution);
 - **D** turns decay OFF (and back on) -- the switch for studying pure
   unitary evolution. Decay is multi-channel quantum jumps over the whole
