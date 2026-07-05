@@ -27,13 +27,20 @@ struct DipoleMatrixElement {
     Complex<double> z;
 };
 
-// <f| r |i> component-wise: sum conj(f) * r * i * dV.
+// <f| r |i> component-wise: sum conj(f) * r * i * dV. Parallelized with
+// per-z-slab partial sums combined in a FIXED order, so the result is
+// deterministic run to run (the project's OpenMP discipline).
 inline DipoleMatrixElement dipole_matrix_element(const Field3D& f, const Field3D& i) {
     const Grid3D& g = f.grid();
-    Complex<double> dx{};
-    Complex<double> dy{};
-    Complex<double> dz{};
-    for (int k = 0; k < g.z.n; ++k) {
+    const int nz = g.z.n;
+    std::vector<Complex<double>> px(static_cast<std::size_t>(nz));
+    std::vector<Complex<double>> py(static_cast<std::size_t>(nz));
+    std::vector<Complex<double>> pz(static_cast<std::size_t>(nz));
+#pragma omp parallel for
+    for (int k = 0; k < nz; ++k) {
+        Complex<double> dx{};
+        Complex<double> dy{};
+        Complex<double> dz{};
         for (int j = 0; j < g.y.n; ++j) {
             for (int ii = 0; ii < g.x.n; ++ii) {
                 const Complex<double> t = std::conj(f(ii, j, k)) * i(ii, j, k);
@@ -42,6 +49,17 @@ inline DipoleMatrixElement dipole_matrix_element(const Field3D& f, const Field3D
                 dz += g.z.coord(k) * t;
             }
         }
+        px[static_cast<std::size_t>(k)] = dx;
+        py[static_cast<std::size_t>(k)] = dy;
+        pz[static_cast<std::size_t>(k)] = dz;
+    }
+    Complex<double> dx{};
+    Complex<double> dy{};
+    Complex<double> dz{};
+    for (int k = 0; k < nz; ++k) {
+        dx += px[static_cast<std::size_t>(k)];
+        dy += py[static_cast<std::size_t>(k)];
+        dz += pz[static_cast<std::size_t>(k)];
     }
     const double dv = g.cell_volume();
     return DipoleMatrixElement{dv * dx, dv * dy, dv * dz};

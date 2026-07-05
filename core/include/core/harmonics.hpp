@@ -20,6 +20,8 @@ namespace ses {
 // Real Y_lm evaluated at direction (x, y, z)/r. Convention (m = -l..l):
 //   l=1: -1 -> y, 0 -> z, +1 -> x
 //   l=2: -2 -> xy, -1 -> yz, 0 -> 3z^2-r^2, +1 -> zx, +2 -> x^2-y^2
+//   l=3: -3 -> y(3x^2-y^2), -2 -> xyz, -1 -> y(5z^2-r^2), 0 -> z(5z^2-3r^2),
+//        +1 -> x(5z^2-r^2), +2 -> z(x^2-y^2), +3 -> x(x^2-3y^2)
 inline double real_spherical_harmonic(int l, int m, double x, double y, double z) {
     constexpr double kPi = 3.14159265358979323846;
     const double r2 = x * x + y * y + z * z;
@@ -37,14 +39,26 @@ inline double real_spherical_harmonic(int l, int m, double x, double y, double z
             default: return c * x;
         }
     }
-    // l == 2
-    const double c = std::sqrt(15.0 / kPi) / r2;
+    if (l == 2) {
+        const double c = std::sqrt(15.0 / kPi) / r2;
+        switch (m) {
+            case -2: return 0.5 * c * x * y;
+            case -1: return 0.5 * c * y * z;
+            case 0: return 0.25 * std::sqrt(5.0 / kPi) * (3.0 * z * z - r2) / r2;
+            case 1: return 0.5 * c * z * x;
+            default: return 0.25 * c * (x * x - y * y);
+        }
+    }
+    // l == 3
+    const double r3 = r2 * std::sqrt(r2);
     switch (m) {
-        case -2: return 0.5 * c * x * y;
-        case -1: return 0.5 * c * y * z;
-        case 0: return 0.25 * std::sqrt(5.0 / kPi) * (3.0 * z * z - r2) / r2;
-        case 1: return 0.5 * c * z * x;
-        default: return 0.25 * c * (x * x - y * y);
+        case -3: return 0.25 * std::sqrt(35.0 / (2.0 * kPi)) * y * (3.0 * x * x - y * y) / r3;
+        case -2: return 0.5 * std::sqrt(105.0 / kPi) * x * y * z / r3;
+        case -1: return 0.25 * std::sqrt(21.0 / (2.0 * kPi)) * y * (5.0 * z * z - r2) / r3;
+        case 0: return 0.25 * std::sqrt(7.0 / kPi) * z * (5.0 * z * z - 3.0 * r2) / r3;
+        case 1: return 0.25 * std::sqrt(21.0 / (2.0 * kPi)) * x * (5.0 * z * z - r2) / r3;
+        case 2: return 0.25 * std::sqrt(105.0 / kPi) * z * (x * x - y * y) / r3;
+        default: return 0.25 * std::sqrt(35.0 / (2.0 * kPi)) * x * (x * x - 3.0 * y * y) / r3;
     }
 }
 
@@ -56,6 +70,8 @@ inline Field3D synthesize_orbital(const Grid3D& g, const RadialGrid& rg,
                                   const std::vector<double>& u, int l, int m) {
     const double h = rg.h();
     Field3D psi{g};
+    // Disjoint z-slabs: bitwise-deterministic parallelism (project rule).
+#pragma omp parallel for
     for (int k = 0; k < g.z.n; ++k) {
         for (int j = 0; j < g.y.n; ++j) {
             for (int i = 0; i < g.x.n; ++i) {
