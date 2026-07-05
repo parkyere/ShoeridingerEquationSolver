@@ -75,7 +75,12 @@ ses::WavepacketSimulation make_simulation() {
     // 128^3: real-time stepping runs on the GPU engine (docs/GPU_PLAN.md G5);
     // the CPU session stays the double-precision truth for relax / measure /
     // surface meshing, synced on demand.
-    const ses::Grid1D axis{-12.0, 12.0, 128};
+    //
+    // Box +-24 Bohr at 128^3 (h = 0.375): spectral accuracy makes the
+    // coarser h free (E(1s), E(2p) identical to 1e-6 vs h = 0.1875), while
+    // the old +-12 box squeezed E(2p) by 7e-4 Ha (converged by +-18..24).
+    // Periodic wrap-around re-entry is also pushed 2x further out.
+    const ses::Grid1D axis{-24.0, 24.0, 128};
     const ses::Grid3D grid{axis, axis, axis};
     return ses::WavepacketSimulation{ses::WavepacketSimulation::Config{
         grid,
@@ -214,7 +219,7 @@ void main() {
         t_stop = sp.x;
     }
 
-    const int kSteps = 160;
+    const int kSteps = 256;  // keeps ~0.3 Bohr/sample across the +-24 box
     float step_len = (t_stop - tn) / float(kSteps);
     // Per-pixel jitter of the ray start kills wood-grain banding.
     float jitter = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
