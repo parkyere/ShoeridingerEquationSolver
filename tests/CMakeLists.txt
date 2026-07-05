@@ -35,6 +35,7 @@ add_executable(sesolver_tests
     imaginary_time_test.cpp
     marching_cubes_test.cpp
     measurement_test.cpp
+    multichannel_decay_test.cpp
     potential_test.cpp
     propagator_tables_test.cpp
     propagator_test.cpp
