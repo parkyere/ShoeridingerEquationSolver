@@ -59,6 +59,26 @@ TEST(RealSphericalHarmonic, PointValuesOnTheUnitSphere) {
     EXPECT_NEAR(ses::real_spherical_harmonic(2, -2, 1.0, 0.0, 0.0), 0.0, 1e-12);
 }
 
+TEST(RealSphericalHarmonic, LEqualsThreePointValues) {
+    // f_z3 at the +z pole: z(5z^2 - 3r^2)/r^3 = 2 there.
+    EXPECT_NEAR(ses::real_spherical_harmonic(3, 0, 0.0, 0.0, 1.0),
+                0.5 * std::sqrt(7.0 / kPi), 1e-12);
+    // f_x(x2-3y2) on the +x axis: x(x^2 - 3y^2)/r^3 = 1.
+    EXPECT_NEAR(ses::real_spherical_harmonic(3, 3, 1.0, 0.0, 0.0),
+                0.25 * std::sqrt(35.0 / (2.0 * kPi)), 1e-12);
+    // f_xyz on the (1,1,1) diagonal.
+    const double s3 = 1.0 / std::sqrt(3.0);
+    EXPECT_NEAR(ses::real_spherical_harmonic(3, -2, s3, s3, s3),
+                0.5 * std::sqrt(105.0 / kPi) * s3 * s3 * s3, 1e-12);
+    // f_y(5z2-r2) on the +y axis: y(5z^2 - r^2)/r^3 = -1.
+    EXPECT_NEAR(ses::real_spherical_harmonic(3, -1, 0.0, 1.0, 0.0),
+                -0.25 * std::sqrt(21.0 / (2.0 * kPi)), 1e-12);
+    // Nodal planes.
+    EXPECT_NEAR(ses::real_spherical_harmonic(3, 0, 1.0, 0.0, 0.0), 0.0, 1e-12);
+    EXPECT_NEAR(ses::real_spherical_harmonic(3, -2, 1.0, 1.0, 0.0), 0.0, 1e-12);
+    EXPECT_NEAR(ses::real_spherical_harmonic(3, 2, 1.0, 1.0, 1.0), 0.0, 1e-12);
+}
+
 struct SynthCase {
     int l;
     int m;
@@ -77,10 +97,11 @@ TEST(SynthesizeOrbital, HarmonicTrapEnergiesThroughTheFull3DMachinery) {
         vr[static_cast<std::size_t>(i)] = 0.5 * rg.r(i) * rg.r(i);
     }
 
-    // E = w (2k + l + 3/2): s, p_z, d_z2, d_xy, and the 2s-like k=1.
+    // E = w (2k + l + 3/2): s, p_z, d_z2, d_xy, the 2s-like k=1, and the
+    // l = 3 f states (E = 4.5) for the n = 4 shell.
     const SynthCase cases[] = {
         {0, 0, 0, 1.5}, {1, 0, 0, 2.5}, {2, 0, 0, 3.5}, {2, -2, 0, 3.5},
-        {0, 0, 1, 3.5},
+        {0, 0, 1, 3.5}, {3, 0, 0, 4.5}, {3, -2, 0, 4.5}, {3, 3, 0, 4.5},
     };
     for (const SynthCase& c : cases) {
         const ses::RadialState st =
@@ -108,6 +129,8 @@ TEST(SynthesizeOrbital, SetIsOrthonormalOnTheGrid) {
         {1, -1, 0, 0.0}, {1, 0, 0, 0.0}, {1, 1, 0, 0.0},                   // p
         {2, -2, 0, 0.0}, {2, -1, 0, 0.0}, {2, 0, 0, 0.0}, {2, 1, 0, 0.0},
         {2, 2, 0, 0.0},                                                    // d
+        {3, -3, 0, 0.0}, {3, -2, 0, 0.0}, {3, -1, 0, 0.0}, {3, 0, 0, 0.0},
+        {3, 1, 0, 0.0}, {3, 2, 0, 0.0}, {3, 3, 0, 0.0},                    // f
     };
     for (const SynthCase& c : cases) {
         const ses::RadialState st =
