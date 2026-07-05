@@ -14,7 +14,8 @@
 // releases a fresh wavepacket.
 // Controls: drag = orbit, wheel = zoom, space = pause, Tab = cloud/surface,
 // 1 = real time, 2 = relax (imaginary time), 3 = relax to 2p, 4 = relax to
-// 2s, R = reset, M = measure, D = decay, L = laser (off -> Z -> X -> off),
+// 2s, 5 = excite an n=3 state (cascade demo), R = reset, M = measure,
+// D = decay off/on, L = laser (off -> Z -> X -> off),
 // [ ] = thinner/denser cloud.
 //
 // T3 (laser): a resonant dipole drive at w = E(2p) - E(1s) pumps 1s -> 2p_z
@@ -36,10 +37,22 @@
 // eigenstate atlas builds chunked across frames (watch each state converge,
 // progress in the title) -- then the wavepacket demo starts with decay
 // armed. D turns decay OFF for studying pure unitary evolution.
+//
+// T7 (lifetimes to n = 10): the potential is spherical, so the radial
+// engine (core/radial.hpp) solves EVERY bound level to n = 10 in 1D --
+// energies and E1 lifetimes for all 55 levels, printed at startup. The 3D
+// tracked manifold is what the +-24 Bohr box can physically hold: n <= 3
+// (14 states, ~50 channels), each synthesized as (u/r) Y_lm from the
+// radial solutions (core/harmonics.hpp) -- no imaginary-time ladder, no
+// fp32 drift. Key 5 excites an n = 3 state to watch the CASCADE (e.g.
+// 3d -> 2p -> 1s, two photons). Relaxation demos auto-complete: when the
+// ITP energy plateaus, the app returns to real time so lifetimes act.
 
 #include <core/camera.hpp>
 #include <core/colormap.hpp>
 #include <core/decay.hpp>
+#include <core/harmonics.hpp>
+#include <core/radial.hpp>
 #include <core/field.hpp>
 #include <core/grid.hpp>
 #include <core/imaginary_time.hpp>
@@ -277,10 +290,40 @@ enum class ViewMode { Cloud, Surface };
 enum class Stepping { RealTime, Relaxing, RelaxingExcited };
 enum class LaserPol { Off, Z, X };
 
-// T5: the tracked eigenstate manifold (the n <= 2 shell).
-enum StateIndex : int { kS1 = 0, kP2X = 1, kP2Y = 2, kP2Z = 3, kS2 = 4 };
-constexpr int kNumStates = 5;
-constexpr const char* kStateName[kNumStates] = {"1s", "2p_x", "2p_y", "2p_z", "2s"};
+// T5/T7: the tracked eigenstate manifold -- everything the box holds, the
+// n <= 3 shell. The first five indices are frozen (selftests, laser).
+enum StateIndex : int {
+    kS1 = 0, kP2X = 1, kP2Y = 2, kP2Z = 3, kS2 = 4,
+    k3S = 5, k3PX = 6, k3PY = 7, k3PZ = 8,
+    k3DXY = 9, k3DYZ = 10, k3DZ0 = 11, k3DZX = 12, k3DX2Y2 = 13,
+};
+constexpr int kNumStates = 14;
+
+// Radial levels backing the manifold (l, nodes k); n = l + 1 + k.
+struct RadialLevelSpec {
+    int l;
+    int k;
+};
+constexpr int kNumLevels = 6;  // 1s 2s 2p 3s 3p 3d
+constexpr RadialLevelSpec kLevelSpec[kNumLevels] = {
+    {0, 0}, {0, 1}, {1, 0}, {0, 2}, {1, 1}, {2, 0},
+};
+
+struct StateSpec {
+    int level;  // index into kLevelSpec
+    int l;
+    int m;
+    const char* name;
+};
+constexpr StateSpec kStateSpec[kNumStates] = {
+    {0, 0, 0, "1s"},
+    {2, 1, 1, "2p_x"}, {2, 1, -1, "2p_y"}, {2, 1, 0, "2p_z"},
+    {1, 0, 0, "2s"},
+    {3, 0, 0, "3s"},
+    {4, 1, 1, "3p_x"}, {4, 1, -1, "3p_y"}, {4, 1, 0, "3p_z"},
+    {5, 2, -2, "3d_xy"}, {5, 2, -1, "3d_yz"}, {5, 2, 0, "3d_z2"},
+    {5, 2, 1, "3d_zx"}, {5, 2, 2, "3d_x2y2"},
+};
 
 struct ShellChannel {
     int from;
@@ -289,18 +332,8 @@ struct ShellChannel {
     double gamma_display;  // uniformly accelerated display rate
 };
 
-// T6: one queued eigenstate computation of the startup atlas build. The
-// build is CHUNKED across frames (kBuildStepsPerFrame ITP steps per paint)
-// so the window stays live and each state is WATCHED converging.
-struct EigenTask {
-    int idx;
-    std::vector<int> deflate;  // state indices to project out
-    int steps;
-    int done = 0;
-    bool started = false;
-};
-
-constexpr int kBuildStepsPerFrame = 16;
+constexpr int kAtlasMontageFrames = 8;  // frames each synthesized orbital shows
+constexpr int kAtlasPairsPerFrame = 8;  // dipole pairs evaluated per paint
 
 class Viewport : public QOpenGLWidget, protected QOpenGLFunctions_4_3_Core {
 public:
@@ -363,19 +396,19 @@ protected:
                                                          kRelaxDtau};
             engine_.set_relax_tables(*this, relaxer.half_potential_weight(),
                                      relaxer.kinetic_weight(), kRelaxDtau);
-            // T6: solve the atom's eigenstate atlas up front, chunked across
-            // frames, so spontaneous decay is armed BY DEFAULT (as in
-            // nature) and every later demo entry point is instant. 2s is
-            // last: it deflates the whole lower manifold.
-            build_queue_ = {
-                EigenTask{kS1, {}, 700},
-                EigenTask{kP2Z, {kS1}, 700},
-                EigenTask{kP2X, {kS1}, 700},
-                EigenTask{kP2Y, {kS1}, 700},
-                EigenTask{kS2, {kS1, kP2X, kP2Y, kP2Z}, 1500},
-            };
+            // T6/T7: solve the atom up front. The radial engine gets every
+            // bound level to n = 10 (the full lifetime table, printed
+            // below); the 3D tracked manifold (n <= 3, what the box holds)
+            // is then synthesized chunked across frames so decay is armed
+            // BY DEFAULT and every demo entry point is instant afterwards.
+            solve_radial_atom();
+            synth_queue_.clear();
+            for (int idx = 0; idx < kNumStates; ++idx) {
+                synth_queue_.push_back(idx);
+            }
         } else {
             decay_on_ = false;  // jump trials are GPU-only
+            atlas_done_ = true;
         }
 
         // -- volume pipeline --
@@ -424,11 +457,12 @@ protected:
 
         // GPU stepping happens here, where the context is guaranteed current.
         if (use_gpu_path()) {
-            if (!build_queue_.empty()) {
-                // T6: startup atlas build owns the psi buffer this frame;
-                // the in-progress eigenstate IS the picture (watch it
-                // converge). Normal stepping resumes when the queue drains.
-                run_build_chunk();
+            if (!atlas_done_) {
+                // T6/T7: startup atlas build owns the psi buffer this
+                // frame; each synthesized orbital IS the picture (a
+                // flick-through of the atom's states). Normal stepping
+                // resumes when the whole channel table is assembled.
+                run_atlas_chunk();
                 pending_gpu_steps_ = 0;
                 if (gpu_title_due_) {
                     gpu_title_due_ = false;
@@ -486,38 +520,43 @@ protected:
                     // occluded paint cannot desync the clock from the state.
                     gpu_time_ += pending_gpu_steps_ * sim_.dt();
 
-                    // T4/T5: one competing-channels Poisson trial per
-                    // executed batch. LIVE populations of every tracked
-                    // excited state come from GPU inner products; the
-                    // selection arithmetic is the core-tested
-                    // pick_decay_channel; on a jump the state collapses
-                    // onto the fired channel's destination ("photon out").
+                    // T4/T5/T7: competing-channels Poisson trials over the
+                    // whole tracked manifold. The exponential is memoryless,
+                    // so trials run on the TITLE cadence with the sim time
+                    // accumulated since the last trial (identical statistics,
+                    // 13 GPU reductions every ~10 ticks instead of per
+                    // frame). Selection arithmetic is the core-tested
+                    // pick_decay_channel; a jump collapses onto the fired
+                    // channel's destination ("photon out").
                     if (decay_on_ && !channels_.empty()) {
-                        std::array<double, kNumStates> pop{};
-                        for (int s = kP2X; s <= kS2; ++s) {
-                            const ses_gpu::NormPeak ip =
-                                engine_.inner_with_psi(*this, state_buf_[s]);
-                            pop[s] = ip.sum * ip.sum + ip.peak * ip.peak;
-                        }
-                        std::vector<double> rates(channels_.size());
-                        for (std::size_t c = 0; c < channels_.size(); ++c) {
-                            rates[c] =
-                                channels_[c].gamma_display * pop[channels_[c].from];
-                        }
-                        std::uniform_real_distribution<double> uniform(0.0, 1.0);
-                        const ses::ChannelPick pick = ses::pick_decay_channel(
-                            rates, pending_gpu_steps_ * sim_.dt(), uniform(rng_),
-                            uniform(rng_));
-                        if (pick.channel >= 0) {
-                            const ShellChannel& ch =
-                                channels_[static_cast<std::size_t>(pick.channel)];
-                            engine_.copy_into_psi(*this, state_buf_[ch.to]);
-                            flash_ticks_ = 25;
-                            ++photon_count_;
-                            last_jump_ = QStringLiteral("%1->%2").arg(
-                                QLatin1String(kStateName[ch.from]),
-                                QLatin1String(kStateName[ch.to]));
-                            refresh_title();
+                        decay_accum_dt_ += pending_gpu_steps_ * sim_.dt();
+                        if (gpu_title_due_) {
+                            std::array<double, kNumStates> pop{};
+                            for (int s = 1; s < kNumStates; ++s) {
+                                const ses_gpu::NormPeak ip =
+                                    engine_.inner_with_psi(*this, state_buf_[s]);
+                                pop[s] = ip.sum * ip.sum + ip.peak * ip.peak;
+                            }
+                            std::vector<double> rates(channels_.size());
+                            for (std::size_t c = 0; c < channels_.size(); ++c) {
+                                rates[c] = channels_[c].gamma_display *
+                                           pop[channels_[c].from];
+                            }
+                            std::uniform_real_distribution<double> uniform(0.0, 1.0);
+                            const ses::ChannelPick pick = ses::pick_decay_channel(
+                                rates, decay_accum_dt_, uniform(rng_), uniform(rng_));
+                            decay_accum_dt_ = 0.0;
+                            if (pick.channel >= 0) {
+                                const ShellChannel& ch =
+                                    channels_[static_cast<std::size_t>(pick.channel)];
+                                engine_.copy_into_psi(*this, state_buf_[ch.to]);
+                                flash_ticks_ = 25;
+                                ++photon_count_;
+                                last_jump_ = QStringLiteral("%1->%2").arg(
+                                    QLatin1String(kStateSpec[ch.from].name),
+                                    QLatin1String(kStateSpec[ch.to].name));
+                                refresh_title();
+                            }
                         }
                     }
 
@@ -549,6 +588,23 @@ protected:
                         peak_ = stats.peak;
                     }
                     norm_display_ = 1.0;  // pinned by per-step renormalization
+
+                    // T7: relaxation auto-completes. When the ITP energy
+                    // readout plateaus the state has converged; return to
+                    // real time so the lifetimes ACT (a prepared 2p should
+                    // decay, not sit in imaginary time forever).
+                    if (gpu_title_due_) {
+                        if (std::abs(stats.energy - relax_prev_energy_) < 5e-5) {
+                            ++relax_plateau_;
+                        } else {
+                            relax_plateau_ = 0;
+                        }
+                        relax_prev_energy_ = stats.energy;
+                        if (relax_plateau_ >= 12) {  // ~2 s of stable readout
+                            relax_plateau_ = 0;
+                            stepping_ = Stepping::RealTime;
+                        }
+                    }
                 }
                 pending_gpu_steps_ = 0;
                 engine_.write_psi_texture(*this, psi_tex_);
@@ -659,6 +715,8 @@ public:
     }
     void set_relaxing() {
         stepping_ = Stepping::Relaxing;
+        relax_plateau_ = 0;
+        relax_prev_energy_ = 0.0;
         if (!use_gpu_path()) {
             ensure_cpu_current();  // CPU relax (Surface view / no GPU)
         }
@@ -745,6 +803,7 @@ public:
             if (!prepare_manifold_cache()) {
                 return;
             }
+            decay_accum_dt_ = 0.0;  // no hazard accrues while decay is off
         }
         decay_on_ = !decay_on_;
         after_control();
@@ -760,8 +819,32 @@ public:
         }
         return 0.0;
     }
-    bool solving() const { return !build_queue_.empty(); }
-    bool manifold_ready() const { return !channels_.empty(); }
+    bool solving() const { return gpu_ok_ && !atlas_done_; }
+    // Ready only once the FULL table is assembled (channels_ fills
+    // incrementally during the pair phase -- do not race it).
+    bool manifold_ready() const { return atlas_done_ && !channels_.empty(); }
+
+    // T7: instantly excite an n = 3 state (cycles through a small set) and
+    // watch the CASCADE: e.g. 3d -> 2p (photon) -> 1s (photon).
+    void excite_n3() {
+        if (!gpu_ok_ || solving()) {
+            return;
+        }
+        if (mode_ != ViewMode::Cloud) {
+            mode_ = ViewMode::Cloud;
+        }
+        if (!prepare_manifold_cache()) {
+            return;
+        }
+        static constexpr int kCycle[] = {k3DZ0, k3S, k3PZ, k3DXY};
+        const int idx = kCycle[excite_cycle_++ % 4];
+        makeCurrent();
+        engine_.copy_into_psi(*this, state_buf_[static_cast<std::size_t>(idx)]);
+        doneCurrent();
+        cpu_is_truth_ = false;  // the GPU state is ahead now
+        stepping_ = Stepping::RealTime;
+        after_control();
+    }
     double state_energy(int idx) const { return state_energy_[static_cast<std::size_t>(idx)]; }
 
     // Transitions arc T3: cycle the laser off -> Z-pol -> X-pol -> off. The
@@ -836,6 +919,8 @@ protected:
         sim_.set_psi(seed);
         cpu_is_truth_ = true;
         relax_label_ = label;
+        relax_plateau_ = 0;
+        relax_prev_energy_ = 0.0;
         stepping_ = Stepping::RelaxingExcited;
         after_control();
     }
@@ -857,182 +942,157 @@ protected:
         return seed;
     }
 
-    // T6: advance the startup atlas build by one chunk (current context
-    // required -- called from paintGL). Seeds on first touch, feeds the
-    // live ITP energy to the title, bridges the in-progress state to the
-    // volume texture, and finalizes the cache slot (and, when the queue
-    // drains, the decay channel table) on completion.
-    void run_build_chunk() {
-        EigenTask& t = build_queue_.front();
-        if (!t.started) {
-            engine_.upload_state(*this, make_seed(t.idx));
-            t.started = true;
+    // T7: solve the radial atom once (blocking, well under a second).
+    // In-box levels back the tracked manifold (u(R_box) = 0 is exactly what
+    // the periodic grid supports); the free-atom table to n = 10 is the
+    // full lifetime atlas, printed for the record.
+    void solve_radial_atom() {
+        const double r_box = sim_.grid().x.xmax;  // 24 Bohr
+        radial_grid_ = ses::RadialGrid{r_box, 1999};
+        std::vector<double> v(static_cast<std::size_t>(radial_grid_.n));
+        for (int i = 0; i < radial_grid_.n; ++i) {
+            const double r = radial_grid_.r(i);
+            v[static_cast<std::size_t>(i)] = -1.0 / std::sqrt(r * r + 1.0);
         }
-        std::vector<GLuint> lower;
-        for (const int d : t.deflate) {
-            lower.push_back(state_buf_[static_cast<std::size_t>(d)]);
+        for (int lev = 0; lev < kNumLevels; ++lev) {
+            const ses::RadialState st = ses::radial_eigenstate(
+                radial_grid_,
+                ses::radial_hamiltonian(radial_grid_, v, kLevelSpec[lev].l),
+                kLevelSpec[lev].k);
+            radial_u_[static_cast<std::size_t>(lev)] = st.u;
+            radial_energy_[static_cast<std::size_t>(lev)] = st.energy;
         }
-        const int chunk = std::min(kBuildStepsPerFrame, t.steps - t.done);
-        const ses_gpu::GpuEngine::RelaxStats stats =
-            lower.empty() ? engine_.relax_step(*this, chunk)
-                          : engine_.relax_deflated_step(*this, lower, chunk);
-        t.done += chunk;
-        state_energy_[static_cast<std::size_t>(t.idx)] = stats.energy;
-        relax_energy_display_ = stats.energy;
-        if (stats.peak > 0.0) {
-            peak_ = stats.peak;
+        radial_ready_ = true;
+
+        // The full free-atom lifetime table to n = 10 (55 levels).
+        const ses::RadialGrid free_grid{600.0, 14999};
+        std::vector<double> vf(static_cast<std::size_t>(free_grid.n));
+        for (int i = 0; i < free_grid.n; ++i) {
+            const double r = free_grid.r(i);
+            vf[static_cast<std::size_t>(i)] = -1.0 / std::sqrt(r * r + 1.0);
         }
-        engine_.write_psi_texture(*this, psi_tex_);
-        volume_dirty_ = false;
-        if (t.done >= t.steps) {
-            engine_.readback(*this, readback_buf_);
-            ses::Field3D f{sim_.grid()};
-            for (std::size_t i = 0; i < f.data().size(); ++i) {
-                f.data()[i] = ses::Complex<double>{readback_buf_[2 * i],
-                                                   readback_buf_[2 * i + 1]};
+        const std::vector<ses::LevelInfo> table =
+            ses::bound_level_table(free_grid, vf, 10);
+        std::fprintf(stderr,
+                     "spectrum: free soft-Coulomb atom, ALL %d bound levels to "
+                     "n = 10 (E1 lifetimes from our radial engine)\n",
+                     static_cast<int>(table.size()));
+        const char* kSpdf = "spdfghijkl";
+        for (const ses::LevelInfo& e : table) {
+            std::fprintf(stderr,
+                         "spectrum: %2d%c  E = %11.6f Ha   tau = %.3e au (%.3e ns)%s\n",
+                         e.n, kSpdf[e.l], e.energy, e.lifetime,
+                         e.lifetime * 2.4188843e-17 * 1e9,
+                         e.lifetime == 0.0 ? "  [E1-stable]" : "");
+        }
+    }
+
+    // Synthesize (and cache) tracked state `idx` from the radial solution:
+    // psi = (u/r) Y_lm -- exact separation of variables, no ITP ladder.
+    // Needs a current GL context for the buffer upload.
+    bool ensure_state(int idx) {
+        const std::size_t s = static_cast<std::size_t>(idx);
+        if (state_buf_[s] != 0) {
+            return true;
+        }
+        if (!radial_ready_) {
+            return false;
+        }
+        const StateSpec& sp = kStateSpec[s];
+        ses::Field3D f = ses::synthesize_orbital(
+            sim_.grid(), radial_grid_,
+            radial_u_[static_cast<std::size_t>(sp.level)], sp.l, sp.m);
+        state_buf_[s] = engine_.create_state_buffer(*this, f);
+        state_energy_[s] = radial_energy_[static_cast<std::size_t>(sp.level)];
+        state_cpu_[s].emplace(std::move(f));
+        return state_buf_[s] != 0;
+    }
+
+    // T7: advance the startup atlas build by one chunk (current context:
+    // called from paintGL). Phase 1 synthesizes one orbital per visit and
+    // SHOWS it (the montage); phase 2 evaluates dipole channel pairs; the
+    // finale assembles the channel table and resumes the wavepacket.
+    void run_atlas_chunk() {
+        if (montage_hold_ > 0) {
+            --montage_hold_;
+            return;
+        }
+        if (!synth_queue_.empty()) {
+            const int idx = synth_queue_.front();
+            synth_queue_.erase(synth_queue_.begin());
+            if (!ensure_state(idx)) {
+                atlas_done_ = true;  // no radial solve: give up gracefully
+                return;
             }
-            ses::normalize(f);  // fp32 round-trip polish
-            state_buf_[static_cast<std::size_t>(t.idx)] =
-                engine_.create_state_buffer(*this, f);
-            state_cpu_[static_cast<std::size_t>(t.idx)].emplace(std::move(f));
-            build_queue_.erase(build_queue_.begin());
-            if (build_queue_.empty()) {
-                build_channel_table();
+            const std::size_t s = static_cast<std::size_t>(idx);
+            const ses::Field3D& f = *state_cpu_[s];
+            std::fprintf(stderr, "atlas: %-8s E_radial = %.6f Ha   <H>_grid = %.6f Ha\n",
+                         kStateSpec[s].name, state_energy_[s],
+                         ses::mean_energy(f, sim_.potential()));
+            // Montage: the freshly built orbital is the picture.
+            double pk = 0.0;
+            for (const ses::Complex<double>& z : f.data()) {
+                pk = std::max(pk, ses::norm_sq(z));
+            }
+            if (pk > 0.0) {
+                peak_ = pk;
+            }
+            engine_.upload_state(*this, f);
+            engine_.write_psi_texture(*this, psi_tex_);
+            volume_dirty_ = false;
+            montage_hold_ = kAtlasMontageFrames;
+            if (synth_queue_.empty()) {
+                collect_channel_pairs();
+            }
+            return;
+        }
+        if (!pair_queue_.empty()) {
+            for (int c = 0; c < kAtlasPairsPerFrame && !pair_queue_.empty(); ++c) {
+                evaluate_channel_pair(pair_queue_.back());
+                pair_queue_.pop_back();
+            }
+            if (pair_queue_.empty()) {
+                finalize_channel_table();
+                atlas_done_ = true;
                 cpu_is_truth_ = true;  // resume the untouched wavepacket
                 refresh_title();
             }
         }
     }
 
-    ses::Field3D make_seed(int idx) const {
-        switch (idx) {
-            case kP2X:
-                return make_axis_odd_seed(0);
-            case kP2Y:
-                return make_axis_odd_seed(1);
-            case kP2Z:
-                return make_axis_odd_seed(2);
-            case kS2:
-                return ses::gaussian_wavepacket(sim_.grid(), ses::Vec3d{},
-                                                ses::Vec3d{4.0, 4.0, 4.0}, ses::Vec3d{});
-            default:  // kS1
-                return ses::gaussian_wavepacket(sim_.grid(), ses::Vec3d{},
-                                                ses::Vec3d{2.0, 2.0, 2.0}, ses::Vec3d{});
-        }
-    }
-
-    // One-time eigenstate computation into cache slot `idx`: GPU ITP from
-    // the seed (deflated against `lower` if nonempty), fp32 round-trip
-    // polished, stored as BOTH a GPU state buffer (jump destinations,
-    // deflation, populations) and a CPU copy (dipole matrix elements).
-    // Blocks for a few seconds; the user's state is snapshotted/restored.
-    bool cache_eigenstate(int idx, const ses::Field3D& seed,
-                          const std::vector<GLuint>& lower, int steps) {
-        if (state_buf_[static_cast<std::size_t>(idx)] != 0) {
-            return true;
-        }
-        ensure_cpu_current();  // snapshot the user's state
-        const ses::Field3D user_state = sim_.psi();
-
-        sim_.set_psi(seed);
-        makeCurrent();
-        engine_.upload_state(*this, sim_.psi());
-        state_energy_[static_cast<std::size_t>(idx)] =
-            lower.empty() ? engine_.relax_step(*this, steps).energy
-                          : engine_.relax_deflated_step(*this, lower, steps).energy;
-        engine_.readback(*this, readback_buf_);
-        ses::Field3D f{sim_.grid()};
-        for (std::size_t i = 0; i < f.data().size(); ++i) {
-            f.data()[i] =
-                ses::Complex<double>{readback_buf_[2 * i], readback_buf_[2 * i + 1]};
-        }
-        ses::normalize(f);  // fp32 round-trip polish
-        state_buf_[static_cast<std::size_t>(idx)] = engine_.create_state_buffer(*this, f);
-        doneCurrent();
-        state_cpu_[static_cast<std::size_t>(idx)].emplace(std::move(f));
-
-        sim_.set_psi(user_state);  // restore; next paint re-uploads
-        cpu_is_truth_ = true;
-        return state_buf_[static_cast<std::size_t>(idx)] != 0;
-    }
-
-    bool prepare_ground_cache() {
-        return cache_eigenstate(
-            kS1,
-            ses::gaussian_wavepacket(sim_.grid(), ses::Vec3d{},
-                                     ses::Vec3d{2.0, 2.0, 2.0}, ses::Vec3d{}),
-            {}, 700);
-    }
-
-    // The laser pair (1s + 2p_z) plus the T3 drive numbers: dipole element
-    // for the target-Rabi E0.
-    bool prepare_excited_cache() {
-        if (!prepare_ground_cache() ||
-            !cache_eigenstate(kP2Z, make_axis_odd_seed(2), {state_buf_[kS1]}, 700)) {
-            return false;
-        }
-        if (dipole_z_ == 0.0) {
-            const ses::DipoleMatrixElement d =
-                ses::dipole_matrix_element(*state_cpu_[kP2Z], *state_cpu_[kS1]);
-            dipole_z_ = std::abs(d.z);  // T3: sets the laser E0 for a target Rabi rate
-        }
-        return true;
-    }
-
-    // T5: ensure the whole n<=2 manifold is cached and build the decay
-    // channels. Every downward pair gets its Einstein A from OUR
-    // wavefunctions -- selection rules emerge as A ~ 0 (2s -> 1s). Display
-    // rates are the true rates scaled by ONE common factor (the fastest
-    // channel is pinned to kDecayGammaDisplay), so RELATIVE lifetimes --
-    // the metastability of 2s -- stay honest on screen.
-    // The full 2p triplet (plus 1s): the deflation set for anything above
-    // it, and the bulk of the decay manifold.
-    bool prepare_p_triplet() {
-        return prepare_excited_cache() &&
-               cache_eigenstate(kP2X, make_axis_odd_seed(0), {state_buf_[kS1]}, 700) &&
-               cache_eigenstate(kP2Y, make_axis_odd_seed(1), {state_buf_[kS1]}, 700);
-    }
-
-    bool prepare_manifold_cache() {
-        if (!channels_.empty()) {
-            return true;
-        }
-        // 2s lies ABOVE the 2p triplet here (the soft core lifts s-states),
-        // so its build deflates all four lower states. (Blocking fallback;
-        // the startup atlas build normally has everything cached already.)
-        if (!prepare_p_triplet() ||
-            !cache_eigenstate(kS2, make_seed(kS2),
-                              {state_buf_[kS1], state_buf_[kP2X], state_buf_[kP2Y],
-                               state_buf_[kP2Z]},
-                              1500)) {
-            return false;
-        }
-        return build_channel_table();
-    }
-
-    // Assemble the decay-channel table from the cached manifold: every
-    // downward pair, Einstein A from our wavefunctions, one common display
-    // acceleration.
-    bool build_channel_table() {
-        double a_max = 0.0;
+    // Downward pairs worth a dipole integral: gap > 1e-3 skips both the
+    // degenerate m-splittings (zero by construction here) and sub-mHa
+    // radio-frequency channels whose omega^3 rates are irrelevant.
+    void collect_channel_pairs() {
+        pair_queue_.clear();
         for (int from = 0; from < kNumStates; ++from) {
             for (int to = 0; to < kNumStates; ++to) {
-                const double gap = state_energy_[static_cast<std::size_t>(from)] -
-                                   state_energy_[static_cast<std::size_t>(to)];
-                if (gap < 1e-3) {
-                    continue;  // downward only; also skips the spurious
-                               // ~1e-4 splitting of the degenerate 2p's
-                }
-                const ses::DipoleMatrixElement d = ses::dipole_matrix_element(
-                    *state_cpu_[static_cast<std::size_t>(to)],
-                    *state_cpu_[static_cast<std::size_t>(from)]);
-                channels_.push_back(ShellChannel{
-                    from, to, ses::einstein_a(gap, ses::dipole_strength_sq(d)), 0.0});
-                a_max = std::max(a_max, channels_.back().a_true);
-                if (from == kP2Z && to == kS1) {
-                    dipole_z_ = std::abs(d.z);  // T3 laser E0, ready for free
+                if (state_energy_[static_cast<std::size_t>(from)] -
+                        state_energy_[static_cast<std::size_t>(to)] >
+                    1e-3) {
+                    pair_queue_.push_back({from, to});
                 }
             }
+        }
+    }
+
+    void evaluate_channel_pair(const std::pair<int, int>& p) {
+        const std::size_t from = static_cast<std::size_t>(p.first);
+        const std::size_t to = static_cast<std::size_t>(p.second);
+        const double gap = state_energy_[from] - state_energy_[to];
+        const ses::DipoleMatrixElement d =
+            ses::dipole_matrix_element(*state_cpu_[to], *state_cpu_[from]);
+        channels_.push_back(ShellChannel{
+            p.first, p.second, ses::einstein_a(gap, ses::dipole_strength_sq(d)), 0.0});
+        if (p.first == kP2Z && p.second == kS1) {
+            dipole_z_ = std::abs(d.z);  // T3 laser E0, ready for free
+        }
+    }
+
+    bool finalize_channel_table() {
+        double a_max = 0.0;
+        for (const ShellChannel& c : channels_) {
+            a_max = std::max(a_max, c.a_true);
         }
         if (a_max <= 0.0) {
             channels_.clear();
@@ -1042,19 +1102,78 @@ protected:
         for (ShellChannel& c : channels_) {
             c.gamma_display = c.a_true * accel_display_;
         }
-        // The manifold report: our computed spectrum and lifetimes.
         std::fprintf(stderr, "manifold: display acceleration x%.3e\n", accel_display_);
         for (int s = 0; s < kNumStates; ++s) {
-            std::fprintf(stderr, "manifold: E(%s) = %.6f Ha\n", kStateName[s],
+            std::fprintf(stderr, "manifold: E(%s) = %.6f Ha\n", kStateSpec[s].name,
                          state_energy_[static_cast<std::size_t>(s)]);
         }
         for (const ShellChannel& c : channels_) {
             std::fprintf(stderr, "manifold: %s -> %s  A = %.3e /au  tau = %.3e au%s\n",
-                         kStateName[c.from], kStateName[c.to], c.a_true,
+                         kStateSpec[c.from].name, kStateSpec[c.to].name, c.a_true,
                          c.a_true > 0.0 ? 1.0 / c.a_true : 0.0,
-                         c.a_true < 1e-3 * a_max ? "  [forbidden]" : "");
+                         c.a_true < 1e-3 * a_max ? "  [forbidden/suppressed]" : "");
         }
         return true;
+    }
+
+    // T7: the blocking fallbacks are now thin wrappers over synthesis --
+    // after the startup atlas everything is already cached, so these cost
+    // nothing; if called early they synthesize just what is needed. All
+    // need a current GL context only for buffer creation (ensure_state),
+    // hence the makeCurrent bracket.
+    bool prepare_ground_cache() {
+        makeCurrent();
+        const bool ok = ensure_state(kS1);
+        doneCurrent();
+        return ok;
+    }
+
+    // The laser pair (1s + 2p_z); dipole_z_ (the T3 drive strength) comes
+    // from the channel table or is computed here if the table is not up.
+    bool prepare_excited_cache() {
+        makeCurrent();
+        const bool ok = ensure_state(kS1) && ensure_state(kP2Z);
+        doneCurrent();
+        if (!ok) {
+            return false;
+        }
+        if (dipole_z_ == 0.0) {
+            const ses::DipoleMatrixElement d =
+                ses::dipole_matrix_element(*state_cpu_[kP2Z], *state_cpu_[kS1]);
+            dipole_z_ = std::abs(d.z);
+        }
+        return true;
+    }
+
+    bool prepare_p_triplet() {
+        if (!prepare_excited_cache()) {
+            return false;
+        }
+        makeCurrent();
+        const bool ok = ensure_state(kP2X) && ensure_state(kP2Y);
+        doneCurrent();
+        return ok;
+    }
+
+    bool prepare_manifold_cache() {
+        if (!channels_.empty()) {
+            return true;
+        }
+        makeCurrent();
+        bool ok = true;
+        for (int idx = 0; idx < kNumStates && ok; ++idx) {
+            ok = ensure_state(idx);
+        }
+        doneCurrent();
+        if (!ok) {
+            return false;
+        }
+        collect_channel_pairs();
+        while (!pair_queue_.empty()) {
+            evaluate_channel_pair(pair_queue_.back());
+            pair_queue_.pop_back();
+        }
+        return finalize_channel_table();
     }
 
     // Total decay lifetime of a tracked state (sum over its channels), in
@@ -1085,6 +1204,9 @@ protected:
                 break;
             case Qt::Key_4:
                 relax_to_2s();
+                break;
+            case Qt::Key_5:
+                excite_n3();
                 break;
             case Qt::Key_R:
                 reset_simulation();
@@ -1233,11 +1355,14 @@ private:
                 .arg(use_gpu_path() ? QStringLiteral("gpu 128^3")
                                     : QStringLiteral("cpu 128^3")) +
             (solving()
-                 ? QStringLiteral("  solving atom: %1 (%2/%3)  E ~ %4 Ha")
-                       .arg(QLatin1String(kStateName[build_queue_.front().idx]))
-                       .arg(kNumStates - static_cast<int>(build_queue_.size()) + 1)
-                       .arg(kNumStates)
-                       .arg(relax_energy_display_, 0, 'f', 4)
+                 ? (synth_queue_.empty()
+                        ? QStringLiteral("  solving atom: dipole channels (%1 left)")
+                              .arg(static_cast<int>(pair_queue_.size()))
+                        : QStringLiteral("  solving atom: %1 (%2/%3)")
+                              .arg(QLatin1String(kStateSpec[synth_queue_.front()].name))
+                              .arg(kNumStates -
+                                   static_cast<int>(synth_queue_.size()) + 1)
+                              .arg(kNumStates))
                  : QString()) +
             (decay_on_ && !channels_.empty()
                  ? QStringLiteral("  decay ON: tau(2p) %1 au, tau(2s) %2 au, x%3, "
@@ -1458,7 +1583,20 @@ private:
     QString last_jump_;
     QString relax_label_ = QStringLiteral("2p");
     std::vector<GLuint> relax_deflate_;  // live RelaxingExcited deflation set
-    std::vector<EigenTask> build_queue_;  // T6 startup atlas build
+    double relax_prev_energy_ = 0.0;     // T7 auto-complete plateau tracking
+    int relax_plateau_ = 0;
+
+    // T7: startup atlas build (radial solve + synthesis, chunked in paint).
+    std::vector<int> synth_queue_;
+    std::vector<std::pair<int, int>> pair_queue_;
+    int montage_hold_ = 0;
+    bool atlas_done_ = false;
+    ses::RadialGrid radial_grid_{};
+    std::array<std::vector<double>, kNumLevels> radial_u_;
+    std::array<double, kNumLevels> radial_energy_{};
+    bool radial_ready_ = false;
+    double decay_accum_dt_ = 0.0;  // sim time since the last decay trial
+    int excite_cycle_ = 0;         // key-5 n=3 cycle position
     // Decay is the DEFAULT, as in nature; D is the off-switch for studying
     // pure unitary evolution. Armed once the startup atlas build finishes.
     bool decay_on_ = true;
@@ -1563,6 +1701,8 @@ int main(int argc, char** argv) {
                         [viewport] { viewport->relax_to_excited(); });
     controls->addAction(QStringLiteral("Relax to 2s (4)"), viewport,
                         [viewport] { viewport->relax_to_2s(); });
+    controls->addAction(QStringLiteral("Excite n=3 (5)"), viewport,
+                        [viewport] { viewport->excite_n3(); });
     controls->addAction(QStringLiteral("Decay (D)"), viewport,
                         [viewport] { viewport->toggle_decay(); });
     controls->addAction(QStringLiteral("Laser (L)"), viewport,
@@ -1640,6 +1780,23 @@ int main(int argc, char** argv) {
         });
     }
 
+    // T7 regression: the CASCADE. Excite 3d_z2 instantly (key-5 path) and
+    // require at least two photons: 3d cannot reach 1s directly (dl = 2),
+    // so two photons prove the chain 3d -> 2p -> 1s fired through the
+    // multi-level channel table.
+    if (app.arguments().contains(QStringLiteral("--selftest-cascade"))) {
+        run_when_manifold_ready(viewport, [viewport, &app] {
+            const long long baseline = viewport->photon_count();
+            viewport->excite_n3();  // first in the cycle: 3d_z2
+            QTimer::singleShot(60000, viewport, [viewport, &app, baseline] {
+                const long long fresh = viewport->photon_count() - baseline;
+                std::fprintf(stderr, "selftest-cascade: photons = %lld  [%s]\n",
+                             fresh, fresh >= 2 ? "PASS" : "FAIL");
+                app.exit(fresh >= 2 ? 0 : 1);
+            });
+        });
+    }
+
     // T5 regression: (a) deterministic physics of the computed channel
     // table -- the selection rule A(2s->1s) ~ 0 and the 2p degeneracy --
     // then (b) live wiring of the non-2p_z channels: an X-polarized pump
@@ -1661,11 +1818,26 @@ int main(int argc, char** argv) {
             const bool ordering =
                 viewport->state_energy(kS1) < viewport->state_energy(kP2Z) &&
                 viewport->state_energy(kS1) < viewport->state_energy(kS2);
+            // T7: the n = 3 shell -- cascade paths open, Delta-l selection
+            // rules hold (3s -> 1s and 3d -> 1s are E1-forbidden).
+            const double a_3s2p = viewport->channel_a(k3S, kP2Z);
+            const double a_3d2p = viewport->channel_a(k3DZ0, kP2Z);
+            const double a_3s1s = viewport->channel_a(k3S, kS1);
+            const double a_3d1s = viewport->channel_a(k3DZ0, kS1);
+            const bool cascade = a_3s2p > 0.0 && a_3d2p > 0.0;
+            const bool dl_rule =
+                a_3d2p > 0.0 && a_3s1s < 1e-3 * a_3d2p && a_3d1s < 1e-3 * a_3d2p;
             std::fprintf(stderr,
-                         "selftest-manifold: selection %s, degeneracy %s, ordering %s\n",
+                         "selftest-manifold: A(3s->2pz)=%.3e A(3dz2->2pz)=%.3e "
+                         "A(3s->1s)=%.3e A(3dz2->1s)=%.3e\n",
+                         a_3s2p, a_3d2p, a_3s1s, a_3d1s);
+            std::fprintf(stderr,
+                         "selftest-manifold: selection %s, degeneracy %s, ordering "
+                         "%s, cascade %s, dl-rule %s\n",
                          selection ? "PASS" : "FAIL", degeneracy ? "PASS" : "FAIL",
-                         ordering ? "PASS" : "FAIL");
-            if (!(selection && degeneracy && ordering)) {
+                         ordering ? "PASS" : "FAIL", cascade ? "PASS" : "FAIL",
+                         dl_rule ? "PASS" : "FAIL");
+            if (!(selection && degeneracy && ordering && cascade && dl_rule)) {
                 app.exit(1);
                 return;
             }
