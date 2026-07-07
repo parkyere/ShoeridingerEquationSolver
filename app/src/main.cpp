@@ -42,9 +42,10 @@
 // engine (core/radial.hpp) solves EVERY bound level to n = 10 in 1D --
 // energies and E1 lifetimes for all 55 levels, printed at startup. The 3D
 // tracked manifold is what the +-80 Bohr box can hold: n <= 6 (91 states,
-// 6s/6p box-critical), each synthesized as (u/r) Y_lm from the
-// radial solutions (core/harmonics.hpp) -- no imaginary-time ladder, no
-// fp32 drift. Key 5 excites an n = 3 state to watch the CASCADE (e.g.
+// 6s/6p box-critical), each synthesized ON THE GPU as (u/r) Y_lm straight
+// into its resident buffer (gpu_engine kSynthSrc, mirroring the unit-tested
+// core/harmonics.hpp) -- no imaginary-time ladder, no CPU field. Key 5 excites
+// an n = 3 state to watch the CASCADE (e.g.
 // 3d -> 2p -> 1s, two photons). Relaxation demos auto-complete: when the
 // ITP energy plateaus, the app returns to real time so lifetimes act.
 
@@ -52,7 +53,6 @@
 #include <core/colormap.hpp>
 #include <core/decay.hpp>
 #include <core/emission.hpp>
-#include <core/harmonics.hpp>
 #include <core/radial.hpp>
 #include <core/field.hpp>
 #include <core/grid.hpp>
@@ -1375,23 +1375,21 @@ protected:
     // Synthesize (and cache) tracked state `idx` from the radial solution:
     // psi = (u/r) Y_lm -- exact separation of variables, no ITP ladder.
     // Needs a current GL context for the buffer upload.
-    // Synthesize state `idx` from the radial solution: psi = (u/r) Y_lm --
-    // exact separation of variables, no ITP ladder. Caches the energy and
-    // RETURNS the double field without retaining it: the caller decides its
-    // lifetime (the atlas keeps only the fp32 GPU buffer, never the double).
-    ses::Field3D synthesize_state(int idx) {
+    // Synthesize state `idx` = (u/r) Y_lm STRAIGHT into a resident GPU buffer:
+    // the radial u_nl(r) table goes to the GPU and a compute shader places the
+    // orbital + normalizes it on-device -- no CPU field, no host copy. Caches
+    // the energy; *out_peak (if given) receives the normalized peak density.
+    // Needs a current GL context.
+    GLuint gpu_synthesize(int idx, double* out_peak = nullptr) {
         const std::size_t s = static_cast<std::size_t>(idx);
         const StateSpec& sp = kStateSpec[s];
         state_energy_[s] = radial_energy_[static_cast<std::size_t>(sp.level)];
-        return ses::synthesize_orbital(
-            sim_.grid(), radial_grid_,
-            radial_u_[static_cast<std::size_t>(sp.level)], sp.l, sp.m);
+        return engine_.synthesize_state(
+            *this, radial_u_[static_cast<std::size_t>(sp.level)], sp.l, sp.m,
+            radial_grid_.h(), radial_grid_.rmax, radial_grid_.n, out_peak);
     }
 
-    // Ensure state `idx` has a resident GPU buffer. The double field is a
-    // TRANSIENT -- synthesized, uploaded (fp32), then freed as it leaves scope
-    // -- so the 91-state manifold costs GPU memory only, not 91 host copies at
-    // once. Needs a current GL context for the buffer upload.
+    // Ensure state `idx` has a resident GPU buffer, synthesized on the GPU.
     bool ensure_state(int idx) {
         const std::size_t s = static_cast<std::size_t>(idx);
         if (state_buf_[s] != 0) {
@@ -1400,8 +1398,7 @@ protected:
         if (!radial_ready_) {
             return false;
         }
-        const ses::Field3D f = synthesize_state(idx);
-        state_buf_[s] = engine_.create_state_buffer(*this, f);
+        state_buf_[s] = gpu_synthesize(idx);
         return state_buf_[s] != 0;
     }
 
@@ -1422,21 +1419,28 @@ protected:
                 return;
             }
             const std::size_t s = static_cast<std::size_t>(idx);
-            // Build this orbital's TRANSIENT double field, upload it to its
-            // resident GPU buffer, show it, then let it die at frame end (the
-            // 268 MB is freed at once -- the montage never accumulates copies).
-            const ses::Field3D f = synthesize_state(idx);
+            // Synthesize this orbital straight into its resident GPU buffer:
+            // (u/r) Y_lm + normalization run entirely on the GPU, no CPU field.
+            double pk = 0.0;
             if (state_buf_[s] == 0) {
-                state_buf_[s] = engine_.create_state_buffer(*this, f);
+                state_buf_[s] = gpu_synthesize(idx, &pk);
             }
             if (state_buf_[s] == 0) {
                 atlas_done_ = true;  // GPU buffer alloc failed: give up gracefully
                 return;
             }
-            // The h-audit: cross-check the 1D radial energy against the
-            // full 3D spectral <H> for the resolution-critical 1s and the
-            // box-critical 4s/5s/6s (a full-grid CPU FFT each -- 4 states only).
+            // Show it: copy the state into psi and bridge it to the texture.
+            engine_.copy_into_psi(*this, state_buf_[s]);
+            // The h-audit: cross-check the 1D radial energy against the full 3D
+            // spectral <H> for the resolution-critical 1s and the box-critical
+            // 4s/5s/6s -- the ONLY states read back to the CPU (4 of 91).
             if (idx == kS1 || idx == k4S || idx == k5S || idx == k6S) {
+                engine_.readback(*this, readback_buf_);
+                ses::Field3D f{sim_.grid()};
+                for (std::size_t i = 0; i < f.data().size(); ++i) {
+                    f.data()[i] = ses::Complex<double>{readback_buf_[2 * i],
+                                                       readback_buf_[2 * i + 1]};
+                }
                 std::fprintf(stderr,
                              "atlas: %-8s E_radial = %.6f Ha   <H>_grid = %.6f Ha\n",
                              kStateSpec[s].name, state_energy_[s],
@@ -1445,15 +1449,9 @@ protected:
                 std::fprintf(stderr, "atlas: %-8s E_radial = %.6f Ha\n",
                              kStateSpec[s].name, state_energy_[s]);
             }
-            // Montage: the freshly built orbital is the picture.
-            double pk = 0.0;
-            for (const ses::Complex<double>& z : f.data()) {
-                pk = std::max(pk, ses::norm_sq(z));
-            }
             if (pk > 0.0) {
                 peak_ = pk;
             }
-            engine_.upload_state(*this, f);
             write_display_texture();
             volume_dirty_ = false;
             montage_hold_ = kAtlasMontageFrames;
