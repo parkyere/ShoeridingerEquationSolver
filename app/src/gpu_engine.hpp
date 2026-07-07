@@ -309,6 +309,41 @@ void main() {
 }
 )";
 
+// Mean force <grad V> = sum |psi|^2 grad V (radiation arc): the Ehrenfest
+// dipole acceleration, reduced on the GPU against a precomputed grad-V field
+// (binding 4, packed vec4 (gx,gy,gz,0)). vec4 partials (binding 2) tree-
+// reduced per workgroup; the caller sums the 256 partials and scales by dV.
+inline const char* kMeanForceSrc = R"(#version 430 core
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer PsiBuf { vec2 psi[]; };
+layout(std430, binding = 4) readonly buffer GradBuf { vec4 grad_v[]; };
+layout(std430, binding = 2) writeonly buffer PartialsBuf { vec4 partials[]; };
+uniform uint n;
+
+shared vec4 s_acc[256];
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint stride = gl_NumWorkGroups.x * 256u;
+    vec4 acc = vec4(0.0);
+    for (uint i = gl_GlobalInvocationID.x; i < n; i += stride) {
+        vec2 p = psi[i];
+        acc += dot(p, p) * grad_v[i];  // |psi|^2 * (gx,gy,gz,0)
+    }
+    s_acc[tid] = acc;
+    barrier();
+    for (uint half_len = 128u; half_len > 0u; half_len >>= 1u) {
+        if (tid < half_len) {
+            s_acc[tid] += s_acc[tid + half_len];
+        }
+        barrier();
+    }
+    if (tid == 0u) {
+        partials[gl_WorkGroupID.x] = s_acc[0];
+    }
+}
+)";
+
 // ---- helpers ---------------------------------------------------------------
 
 inline std::string instantiate(std::string tmpl, const char* token, int value) {
@@ -510,10 +545,11 @@ public:
         axpy_prog_ = build_program(gl, kAxpySrc, "axpy");
         kick_prog_ = build_program(gl, kDipoleKickSrc, "dipole kick");
         shear_prog_ = build_program(gl, kShearSrc, "shear");
+        force_prog_ = build_program(gl, kMeanForceSrc, "mean force");
         fft_progs_ = build_fft_programs(gl, grid);
         if (mul_prog_ == 0 || conj_prog_ == 0 || bridge_prog_ == 0 || norm_prog_ == 0 ||
             scale_prog_ == 0 || inner_prog_ == 0 || axpy_prog_ == 0 || kick_prog_ == 0 ||
-            shear_prog_ == 0 ||
+            shear_prog_ == 0 || force_prog_ == 0 ||
             fft_progs_.axis[0] == 0 || fft_progs_.axis[1] == 0 ||
             fft_progs_.axis[2] == 0) {
             return false;
@@ -523,6 +559,8 @@ public:
         half_buf_ = make_buffer(gl, to_rg32f(half_v));
         kin_buf_ = make_buffer(gl, to_rg32f(kinetic));
         partials_buf_ = make_buffer(gl, std::vector<float>(2 * kNormPeakGroups, 0.0f));
+        force_partials_buf_ =
+            make_buffer(gl, std::vector<float>(4 * kNormPeakGroups, 0.0f));
         return true;
     }
 
@@ -605,6 +643,79 @@ public:
         }
         const double dv = grid_.cell_volume();
         return NormPeak{re * dv, im * dv};
+    }
+
+    // Upload the potential-gradient field grad V (central differences on the
+    // periodic grid, packed vec4 (gx,gy,gz,0) fp32) so mean_force can reduce
+    // against it. Rebuild when the potential changes.
+    void set_potential_gradient(Gl& gl, const std::vector<double>& v) {
+        const int nx = grid_.x.n;
+        const int ny = grid_.y.n;
+        const int nz = grid_.z.n;
+        const double i2hx = 1.0 / (2.0 * grid_.x.spacing());
+        const double i2hy = 1.0 / (2.0 * grid_.y.spacing());
+        const double i2hz = 1.0 / (2.0 * grid_.z.spacing());
+        std::vector<float> packed(4 * cells_, 0.0f);
+        for (int k = 0; k < nz; ++k) {
+            const int kp = (k + 1) % nz;
+            const int km = (k - 1 + nz) % nz;
+            for (int j = 0; j < ny; ++j) {
+                const int jp = (j + 1) % ny;
+                const int jm = (j - 1 + ny) % ny;
+                for (int i = 0; i < nx; ++i) {
+                    const int ip = (i + 1) % nx;
+                    const int im = (i - 1 + nx) % nx;
+                    const std::size_t idx = static_cast<std::size_t>(grid_.flat(i, j, k));
+                    packed[4 * idx + 0] = static_cast<float>(
+                        (v[static_cast<std::size_t>(grid_.flat(ip, j, k))] -
+                         v[static_cast<std::size_t>(grid_.flat(im, j, k))]) * i2hx);
+                    packed[4 * idx + 1] = static_cast<float>(
+                        (v[static_cast<std::size_t>(grid_.flat(i, jp, k))] -
+                         v[static_cast<std::size_t>(grid_.flat(i, jm, k))]) * i2hy);
+                    packed[4 * idx + 2] = static_cast<float>(
+                        (v[static_cast<std::size_t>(grid_.flat(i, j, kp))] -
+                         v[static_cast<std::size_t>(grid_.flat(i, j, km))]) * i2hz);
+                }
+            }
+        }
+        if (grad_v_buf_ == 0) {
+            grad_v_buf_ = make_buffer(gl, packed);
+        } else {
+            gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, grad_v_buf_);
+            gl.glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
+                               static_cast<GLsizeiptr>(packed.size() * sizeof(float)),
+                               packed.data());
+        }
+    }
+
+    // <grad V> = sum |psi|^2 grad V * dV -- the Ehrenfest dipole acceleration
+    // for the semiclassical radiated power. Zero if no gradient was uploaded.
+    ses::Vec3d mean_force(Gl& gl) {
+        if (grad_v_buf_ == 0) {
+            return ses::Vec3d{};
+        }
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, psi_buf_);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, grad_v_buf_);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, force_partials_buf_);
+        gl.glUseProgram(force_prog_);
+        gl.glUniform1ui(gl.glGetUniformLocation(force_prog_, "n"),
+                        static_cast<GLuint>(cells_));
+        gl.glDispatchCompute(kNormPeakGroups, 1, 1);
+        gl.glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+
+        float partials[4 * kNormPeakGroups];
+        gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, force_partials_buf_);
+        gl.glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(partials), partials);
+        double gx = 0.0;
+        double gy = 0.0;
+        double gz = 0.0;
+        for (int g = 0; g < kNormPeakGroups; ++g) {
+            gx += partials[4 * g + 0];
+            gy += partials[4 * g + 1];
+            gz += partials[4 * g + 2];
+        }
+        const double dv = grid_.cell_volume();
+        return ses::Vec3d{gx * dv, gy * dv, gz * dv};
     }
 
     // psi <- psi - c * phi (complex c = (cre, cim)): projects phi out when
@@ -880,6 +991,8 @@ private:
     GLuint relax_kin_buf_ = 0;
     double relax_dtau_ = 0.0;
     GLuint partials_buf_ = 0;
+    GLuint force_partials_buf_ = 0;  // vec4 partials for mean_force
+    GLuint grad_v_buf_ = 0;          // grad V field (vec4 per cell)
     GLuint mul_prog_ = 0;
     GLuint conj_prog_ = 0;
     GLuint bridge_prog_ = 0;
@@ -889,6 +1002,7 @@ private:
     GLuint axpy_prog_ = 0;
     GLuint kick_prog_ = 0;
     GLuint shear_prog_ = 0;
+    GLuint force_prog_ = 0;
     FftPrograms fft_progs_;
 };
 

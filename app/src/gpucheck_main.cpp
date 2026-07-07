@@ -29,6 +29,7 @@
 #include <core/fft.hpp>
 #include <core/field.hpp>
 #include <core/grid.hpp>
+#include <core/emission.hpp>
 #include <core/imaginary_time.hpp>
 #include <core/magnetic.hpp>
 #include <core/potential.hpp>
@@ -443,6 +444,31 @@ bool check_magnetic(Gl& gl) {
     return ok;
 }
 
+// Radiation: the GPU mean-force reduction <grad V> vs core
+// mean_potential_gradient (the Ehrenfest dipole acceleration).
+bool check_mean_force(Gl& gl) {
+    const ses::Grid1D axis{-8.0, 8.0, 32};
+    const ses::Grid3D g{axis, axis, axis};
+    const std::vector<double> v = ses::soft_coulomb_potential(g, 1.0, 1.0, ses::Vec3d{});
+    const ses::SplitOperator3D prop{g, v, 0.02};
+    const ses::Field3D psi = ses::gaussian_wavepacket(
+        g, ses::Vec3d{2.0, 1.0, -0.5}, ses::Vec3d{1.4, 1.4, 1.4}, ses::Vec3d{0.0, 0.3, 0.0});
+    ses_gpu::GpuEngine eng;
+    if (!eng.initialize(gl, g, prop.half_potential_phase(), prop.kinetic_phase(), psi)) {
+        std::printf("engine init: FAIL\n");
+        return false;
+    }
+    eng.set_potential_gradient(gl, v);
+    const ses::Vec3d gpu = eng.mean_force(gl);
+    const ses::Vec3d cpu = ses::mean_potential_gradient(psi, v, g);
+    const double err = std::max({std::abs(gpu.x - cpu.x), std::abs(gpu.y - cpu.y),
+                                 std::abs(gpu.z - cpu.z)});
+    const bool ok = err < 1e-5;
+    std::printf("mean force <grad V>: max |gpu - cpu| = %.3e  [%s]\n", err,
+                ok ? "PASS" : "FAIL");
+    return ok;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -489,6 +515,7 @@ int main(int argc, char** argv) {
     ok = check_deflation(gl) && ok;
     ok = check_driven_step(gl) && ok;
     ok = check_magnetic(gl) && ok;
+    ok = check_mean_force(gl) && ok;
 
     return ok ? 0 : 1;
 }
