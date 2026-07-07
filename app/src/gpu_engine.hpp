@@ -252,6 +252,56 @@ void main() {
 }
 )";
 
+// Rigid rotation of psi about a coordinate axis by `angle` (Larmor precession
+// for display): dst(r) = src(R(-angle) r), trilinearly sampled. Mirrors the
+// core ses::rotate_field / sample_trilinear (cell clamped to [0, n-2]).
+inline const char* kRotateSrc = R"(#version 430 core
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) writeonly buffer DstBuf { vec2 dst[]; };
+layout(std430, binding = 1) readonly buffer SrcBuf { vec2 src[]; };
+uniform uint n;
+uniform int nx;
+uniform int ny;
+uniform int nz;
+uniform vec3 box_min;
+uniform vec3 cell_h;
+uniform int axis;
+uniform float cosA;
+uniform float sinA;
+vec2 sample_src(vec3 p) {
+    vec3 t = (p - box_min) / cell_h;
+    ivec3 c = clamp(ivec3(floor(t)), ivec3(0), ivec3(nx - 2, ny - 2, nz - 2));
+    vec3 f = t - vec3(c);
+    uint sy = uint(nx);
+    uint sz = uint(nx * ny);
+    uint b = uint(c.x) + sy * uint(c.y) + sz * uint(c.z);
+    vec2 x00 = mix(src[b], src[b + 1u], f.x);
+    vec2 x10 = mix(src[b + sy], src[b + 1u + sy], f.x);
+    vec2 x01 = mix(src[b + sz], src[b + 1u + sz], f.x);
+    vec2 x11 = mix(src[b + sy + sz], src[b + 1u + sy + sz], f.x);
+    return mix(mix(x00, x10, f.y), mix(x01, x11, f.y), f.z);
+}
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= n) {
+        return;
+    }
+    int i = int(idx) % nx;
+    int j = (int(idx) / nx) % ny;
+    int k = int(idx) / (nx * ny);
+    vec3 r = box_min + vec3(float(i), float(j), float(k)) * cell_h;
+    vec3 s;
+    if (axis == 0) {
+        s = vec3(r.x, r.y * cosA + r.z * sinA, -r.y * sinA + r.z * cosA);
+    } else if (axis == 1) {
+        s = vec3(r.x * cosA - r.z * sinA, r.y, r.x * sinA + r.z * cosA);
+    } else {
+        s = vec3(r.x * cosA + r.y * sinA, -r.x * sinA + r.y * cosA, r.z);
+    }
+    dst[idx] = sample_src(s);
+}
+)";
+
 // SSBO psi -> RG32F 3D image (the volume renderer's texture), no CPU trip.
 inline const char* kBridgeSrc = R"(#version 430 core
 layout(local_size_x = 256) in;
@@ -457,9 +507,11 @@ public:
         inner_prog_ = build_program(gl, kInnerProductSrc, "inner product");
         axpy_prog_ = build_program(gl, kAxpySrc, "axpy");
         kick_prog_ = build_program(gl, kDipoleKickSrc, "dipole kick");
+        rot_prog_ = build_program(gl, kRotateSrc, "rotate");
         fft_progs_ = build_fft_programs(gl, grid);
         if (mul_prog_ == 0 || conj_prog_ == 0 || bridge_prog_ == 0 || norm_prog_ == 0 ||
             scale_prog_ == 0 || inner_prog_ == 0 || axpy_prog_ == 0 || kick_prog_ == 0 ||
+            rot_prog_ == 0 ||
             fft_progs_.axis[0] == 0 || fft_progs_.axis[1] == 0 ||
             fft_progs_.axis[2] == 0) {
             return false;
@@ -468,6 +520,7 @@ public:
         psi_buf_ = make_buffer(gl, to_rg32f(psi0.data()));
         half_buf_ = make_buffer(gl, to_rg32f(half_v));
         kin_buf_ = make_buffer(gl, to_rg32f(kinetic));
+        rot_buf_ = make_buffer(gl, to_rg32f(psi0.data()));  // scratch for display rotation
         partials_buf_ = make_buffer(gl, std::vector<float>(2 * kNormPeakGroups, 0.0f));
         return true;
     }
@@ -683,7 +736,12 @@ public:
 
     // Write psi into the volume renderer's RG32F 3D texture, GPU-to-GPU.
     void write_psi_texture(Gl& gl, GLuint texture) {
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, psi_buf_);
+        write_texture_from(gl, psi_buf_, texture);
+    }
+
+    // Bridge an SSBO (psi or a rotated copy) into the RG32F volume texture.
+    void write_texture_from(Gl& gl, GLuint src_buf, GLuint texture) {
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, src_buf);
         gl.glBindImageTexture(0, texture, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RG32F);
         gl.glUseProgram(bridge_prog_);
         gl.glUniform1i(gl.glGetUniformLocation(bridge_prog_, "nx"), grid_.x.n);
@@ -691,6 +749,52 @@ public:
         gl.glUniform1i(gl.glGetUniformLocation(bridge_prog_, "nz"), grid_.z.n);
         gl.glDispatchCompute(static_cast<GLuint>((cells_ + 255) / 256), 1, 1);
         gl.glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT);
+    }
+
+    // Bridge psi to the volume texture RIGIDLY ROTATED by `angle` about the axis
+    // (0=x,1=y,2=z) -- the Larmor precession, for DISPLAY only. psi_buf_ is left
+    // untouched (it evolves under H0), so successive frames never accumulate
+    // resampling blur.
+    void write_texture_rotated(Gl& gl, GLuint texture, int axis, double angle) {
+        rotate_into(gl, psi_buf_, rot_buf_, axis, angle);
+        write_texture_from(gl, rot_buf_, texture);
+    }
+
+    // Rotate psi in place (through the scratch buffer). Used by sesolver_gpucheck
+    // to compare the rotation kernel against core ses::rotate_field.
+    void rotate_psi(Gl& gl, int axis, double angle) {
+        rotate_into(gl, psi_buf_, rot_buf_, axis, angle);
+        gl.glBindBuffer(GL_COPY_READ_BUFFER, rot_buf_);
+        gl.glBindBuffer(GL_COPY_WRITE_BUFFER, psi_buf_);
+        gl.glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0,
+                               static_cast<GLsizeiptr>(2 * cells_ * sizeof(float)));
+        gl.glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    }
+
+    // dst(r) <- src(R(-angle) r), trilinearly (mirrors core ses::rotate_field).
+    // src and dst must be distinct buffers.
+    void rotate_into(Gl& gl, GLuint src, GLuint dst, int axis, double angle) {
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, dst);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, src);
+        gl.glUseProgram(rot_prog_);
+        gl.glUniform1ui(gl.glGetUniformLocation(rot_prog_, "n"), static_cast<GLuint>(cells_));
+        gl.glUniform1i(gl.glGetUniformLocation(rot_prog_, "nx"), grid_.x.n);
+        gl.glUniform1i(gl.glGetUniformLocation(rot_prog_, "ny"), grid_.y.n);
+        gl.glUniform1i(gl.glGetUniformLocation(rot_prog_, "nz"), grid_.z.n);
+        gl.glUniform3f(gl.glGetUniformLocation(rot_prog_, "box_min"),
+                       static_cast<float>(grid_.x.xmin), static_cast<float>(grid_.y.xmin),
+                       static_cast<float>(grid_.z.xmin));
+        gl.glUniform3f(gl.glGetUniformLocation(rot_prog_, "cell_h"),
+                       static_cast<float>(grid_.x.spacing()),
+                       static_cast<float>(grid_.y.spacing()),
+                       static_cast<float>(grid_.z.spacing()));
+        gl.glUniform1i(gl.glGetUniformLocation(rot_prog_, "axis"), axis);
+        gl.glUniform1f(gl.glGetUniformLocation(rot_prog_, "cosA"),
+                       static_cast<float>(std::cos(angle)));
+        gl.glUniform1f(gl.glGetUniformLocation(rot_prog_, "sinA"),
+                       static_cast<float>(std::sin(angle)));
+        gl.glDispatchCompute(static_cast<GLuint>((cells_ + 255) / 256), 1, 1);
+        gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     }
 
 private:
@@ -739,6 +843,7 @@ private:
     GLuint psi_buf_ = 0;
     GLuint half_buf_ = 0;
     GLuint kin_buf_ = 0;
+    GLuint rot_buf_ = 0;  // scratch for the display-rotation (Larmor precession)
     GLuint relax_half_buf_ = 0;
     GLuint relax_kin_buf_ = 0;
     double relax_dtau_ = 0.0;
@@ -751,6 +856,7 @@ private:
     GLuint inner_prog_ = 0;
     GLuint axpy_prog_ = 0;
     GLuint kick_prog_ = 0;
+    GLuint rot_prog_ = 0;
     FftPrograms fft_progs_;
 };
 

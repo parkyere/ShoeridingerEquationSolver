@@ -554,7 +554,7 @@ protected:
                 // Bridge immediately: with an empty step queue (paused R/M,
                 // first frame) the block below would never refresh psi_tex_
                 // and the screen would keep the stale (or undefined) cloud.
-                engine_.write_psi_texture(*this, psi_tex_);
+                write_display_texture();
             }
             // Projective ENERGY measurement (Key E): sample an eigenstate n
             // from P_n = |<phi_n|psi>|^2 over the tracked manifold and collapse
@@ -575,7 +575,7 @@ protected:
                 last_measured_index_ = n;  // >=0 eigenstate, -1 outside manifold
                 if (n >= 0) {
                     engine_.copy_into_psi(*this, state_buf_[static_cast<std::size_t>(n)]);
-                    engine_.write_psi_texture(*this, psi_tex_);
+                    write_display_texture();
                     last_measure_ =
                         QStringLiteral("%1 (E %2 eV)")
                             .arg(QLatin1String(kStateSpec[static_cast<std::size_t>(n)].name))
@@ -633,6 +633,14 @@ protected:
                     // is untouched; imaginary-time relaxation never runs this.
                     if (mask_buf_ != 0) {
                         engine_.apply_mask(*this, mask_buf_);
+                    }
+
+                    // Magnetic field: accumulate the Larmor angle (omega = B/2).
+                    // The state stays pristine under H0 -- the rotation is applied
+                    // only for DISPLAY (write_display_texture), never blurring.
+                    if (bfield_b_ > 0.0) {
+                        larmor_angle_ +=
+                            0.5 * bfield_b_ * pending_gpu_steps_ * sim_.dt();
                     }
 
                     // T4/T5/T7: competing-channels Poisson trials over the
@@ -722,7 +730,7 @@ protected:
                     }
                 }
                 pending_gpu_steps_ = 0;
-                engine_.write_psi_texture(*this, psi_tex_);
+                write_display_texture();
                 volume_dirty_ = false;
                 if (gpu_title_due_) {
                     gpu_title_due_ = false;
@@ -949,6 +957,7 @@ public:
         sim_ = make_simulation();
         stepping_ = Stepping::RealTime;
         laser_pol_ = LaserPol::Off;  // reset returns to the vanilla packet demo
+        larmor_angle_ = 0.0;  // fresh state: no accumulated Larmor rotation
         cpu_is_truth_ = true;  // GPU state discarded with the reset
         gpu_time_ = 0.0;
         pending_gpu_steps_ = 0;
@@ -1122,6 +1131,27 @@ public:
         refresh_title();
         update();
     }
+
+    // Magnetic field strength (au) along the current axis (z or x); 0 = off. The
+    // cloud precesses (Larmor) about the axis at omega = B/2 -- applied as a
+    // rigid rotation of the DISPLAY (the central potential commutes with it).
+    void set_bfield_b(double b) {
+        bfield_b_ = b;
+        if (b > 0.0 && !solving()) {
+            stepping_ = Stepping::RealTime;
+        }
+        refresh_title();
+        update();
+    }
+    // Swap the Larmor axis z <-> x. Resets the accumulated angle so the new-axis
+    // precession starts clean (mixing rotations about different axes is wrong).
+    void toggle_bfield_axis() {
+        bfield_axis_ = (bfield_axis_ == 2) ? 0 : 2;
+        larmor_angle_ = 0.0;
+        refresh_title();
+        update();
+    }
+    bool bfield_axis_is_z() const { return bfield_axis_ == 2; }
 
     long long photon_count() const { return photon_count_; }
     // Result of the most recent energy measurement: eigenstate index, -1 for
@@ -1302,7 +1332,7 @@ protected:
                 peak_ = pk;
             }
             engine_.upload_state(*this, f);
-            engine_.write_psi_texture(*this, psi_tex_);
+            write_display_texture();
             volume_dirty_ = false;
             montage_hold_ = kAtlasMontageFrames;
             if (synth_queue_.empty()) {
@@ -1669,12 +1699,29 @@ private:
                        .arg(efield_e0_, 0, 'f', 4)
                        .arg(efield_e0_ * 5.14220674e11, 0, 'e', 2)
                  : QString()) +
+            (bfield_b_ > 0.0
+                 ? QStringLiteral("  B-field %1: %2 au, Larmor %3 rad")
+                       .arg(bfield_axis_ == 2 ? QStringLiteral("z") : QStringLiteral("x"))
+                       .arg(bfield_b_, 0, 'f', 4)
+                       .arg(larmor_angle_, 0, 'f', 2)
+                 : QString()) +
             (last_measure_.isEmpty()
                  ? QString()
                  : QStringLiteral("  measured %1").arg(last_measure_)));
     }
 
     // ---- GL uploads (current context required: called from initializeGL/paintGL) ----
+
+    // Bridge psi to the display texture, applying the Larmor precession when a
+    // magnetic field is (or was) on. psi_buf_ stays pristine (H0), so the
+    // rotation is one fresh resample per frame -- no accumulating blur.
+    void write_display_texture() {
+        if (larmor_angle_ != 0.0) {
+            engine_.write_texture_rotated(*this, psi_tex_, bfield_axis_, larmor_angle_);
+        } else {
+            engine_.write_psi_texture(*this, psi_tex_);
+        }
+    }
 
     // XYZ orientation gizmo: three arrows from the origin -- X red, Y green,
     // Z blue -- baked into the mesh vertex format (per-vertex color). Uploaded
@@ -1965,6 +2012,9 @@ private:
     double laser_omega_ = 0.0;
     double laser_e0_ = 0.0;
     double efield_e0_ = 0.0;  // static +z electric field magnitude (au); 0 = off
+    double bfield_b_ = 0.0;      // magnetic field strength (au); 0 = off
+    int bfield_axis_ = 2;        // Larmor axis: 2 = z, 0 = x
+    double larmor_angle_ = 0.0;  // accumulated precession angle (display-only)
     double dipole_z_ = 0.0;   // |<2p_z| z |1s>| from the cached states
     double pop_ground_ = 0.0;
     double pop_excited_ = 0.0;
@@ -2108,6 +2158,38 @@ int main(int argc, char** argv) {
             });
         controls->addWidget(efield_slider);
         controls->addWidget(efield_val);
+    }
+    // Magnetic field: axis toggle (z <-> x) + strength slider. The cloud
+    // precesses (Larmor) about the axis at omega = B/2. Non-axis-symmetric
+    // states (p_x, d_xy, ...) visibly rotate; s / p_z about z do not.
+    {
+        constexpr double kMaxB = 0.2;  // au at full slider
+        QLabel* b_axis_label = new QLabel(QStringLiteral(" B-field z "));
+        controls->addWidget(b_axis_label);
+        controls->addAction(QStringLiteral("axis"), viewport, [viewport, b_axis_label] {
+            viewport->toggle_bfield_axis();
+            b_axis_label->setText(viewport->bfield_axis_is_z() ? QStringLiteral(" B-field z ")
+                                                               : QStringLiteral(" B-field x "));
+        });
+        auto* b_val = new QLabel(QStringLiteral("off"));
+        b_val->setMinimumWidth(60);
+        auto* b_slider = new QSlider(Qt::Horizontal);
+        b_slider->setRange(0, 100);
+        b_slider->setFixedWidth(140);
+        b_slider->setFocusPolicy(Qt::NoFocus);
+        b_slider->setToolTip(QStringLiteral(
+            "Magnetic field along the chosen axis (z or x). The cloud precesses "
+            "(Larmor) at omega = B/2. Prepare a p_x / d_xy state to see it rotate; "
+            "s and p_z do not precess about z."));
+        QObject::connect(b_slider, &QSlider::valueChanged, viewport,
+                         [viewport, b_val](int val) {
+                             const double b = val / 100.0 * kMaxB;
+                             viewport->set_bfield_b(b);
+                             b_val->setText(b > 0.0 ? QStringLiteral("%1 au").arg(b, 0, 'f', 3)
+                                                    : QStringLiteral("off"));
+                         });
+        controls->addWidget(b_slider);
+        controls->addWidget(b_val);
     }
     controls->addSeparator();
     controls->addAction(QStringLiteral("Reset packet (R)"), viewport,

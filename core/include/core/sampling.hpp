@@ -51,6 +51,38 @@ inline Complex<double> sample_trilinear(const Field3D& f, Vec3d p) {
     return lerp(lerp(c00, c10, ty), lerp(c01, c11, ty), tz);
 }
 
+// Rigid rotation of the complex field by `angle` radians about a coordinate
+// axis (0 = x, 1 = y, 2 = z): out(r) = f(R(-angle) r), trilinearly sampled.
+// This is exactly exp(-i angle L_axis) f -- the Larmor precession of the cloud
+// in a magnetic field along that axis (the central potential commutes with the
+// rotation, so it factors cleanly out of the atomic evolution). Points that
+// rotate outside the box clamp to the edge value (the cloud is ~0 there).
+inline Field3D rotate_field(const Field3D& f, int axis, double angle) {
+    const Grid3D& g = f.grid();
+    Field3D out{g};
+    const double c = std::cos(angle);
+    const double s = std::sin(angle);
+    for (int k = 0; k < g.z.n; ++k) {
+        for (int j = 0; j < g.y.n; ++j) {
+            for (int i = 0; i < g.x.n; ++i) {
+                const double x = g.x.coord(i);
+                const double y = g.y.coord(j);
+                const double z = g.z.coord(k);
+                Vec3d src;
+                if (axis == 0) {  // about x: rotate the (y, z) plane by -angle
+                    src = Vec3d{x, y * c + z * s, -y * s + z * c};
+                } else if (axis == 1) {  // about y: rotate the (z, x) plane
+                    src = Vec3d{x * c - z * s, y, x * s + z * c};
+                } else {  // about z: rotate the (x, y) plane
+                    src = Vec3d{x * c + y * s, -x * s + y * c, z};
+                }
+                out(i, j, k) = sample_trilinear(f, src);
+            }
+        }
+    }
+    return out;
+}
+
 // One cyclic phase color per mesh vertex: arg(psi) sampled at the vertex.
 inline std::vector<Rgb> phase_colors(const Mesh& mesh, const Field3D& psi) {
     std::vector<Rgb> colors;

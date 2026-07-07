@@ -16,6 +16,7 @@
 #include <core/field.hpp>
 #include <core/grid.hpp>
 #include <core/marching_cubes.hpp>
+#include <core/observables.hpp>
 #include <core/sampling.hpp>
 #include <core/vec.hpp>
 
@@ -33,6 +34,62 @@ using ses::Grid3D;
 using ses::Mesh;
 using ses::Rgb;
 using ses::Vec3d;
+
+// A p-like test field: coordinate component `comp` times a Gaussian envelope,
+// normalized. p_like(.,0,.) ~ p_x, (.,1,.) ~ p_y.
+Field3D p_like(const Grid3D& g, int comp, double sigma) {
+    Field3D f{g};
+    for (int k = 0; k < g.z.n; ++k) {
+        for (int j = 0; j < g.y.n; ++j) {
+            for (int i = 0; i < g.x.n; ++i) {
+                const double c[3] = {g.x.coord(i), g.y.coord(j), g.z.coord(k)};
+                const double r2 = c[0] * c[0] + c[1] * c[1] + c[2] * c[2];
+                f(i, j, k) = Complex<double>{
+                    c[comp] * std::exp(-r2 / (2.0 * sigma * sigma)), 0.0};
+            }
+        }
+    }
+    ses::normalize(f);
+    return f;
+}
+
+TEST(RotateField, ByZeroIsIdentityInTheInterior) {
+    const Grid1D ax{-8.0, 8.0, 48};
+    const Grid3D g{ax, ax, ax};
+    const Field3D f = p_like(g, 0, 2.0);
+    const Field3D r = ses::rotate_field(f, 2, 0.0);
+    for (int i = 4; i < g.x.n - 4; i += 9) {
+        EXPECT_NEAR(r(i, 12, 20).real(), f(i, 12, 20).real(), 1e-12);
+    }
+}
+
+TEST(RotateField, SphericalFieldIsInvariantUnderZRotation) {
+    const Grid1D ax{-8.0, 8.0, 48};
+    const Grid3D g{ax, ax, ax};
+    Field3D f{g};  // spherically symmetric Gaussian
+    for (int k = 0; k < g.z.n; ++k) {
+        for (int j = 0; j < g.y.n; ++j) {
+            for (int i = 0; i < g.x.n; ++i) {
+                const double x = g.x.coord(i), y = g.y.coord(j), z = g.z.coord(k);
+                f(i, j, k) = Complex<double>{std::exp(-(x * x + y * y + z * z) / 8.0), 0.0};
+            }
+        }
+    }
+    ses::normalize(f);
+    const Field3D r = ses::rotate_field(f, 2, 0.7);
+    EXPECT_GT(std::abs(ses::inner_product(f, r)), 0.99);  // rotation-invariant
+}
+
+TEST(RotateField, RotatesPxIntoPyAboutZ) {
+    const Grid1D ax{-8.0, 8.0, 48};
+    const Grid3D g{ax, ax, ax};
+    const Field3D px = p_like(g, 0, 2.0);
+    const Field3D py = p_like(g, 1, 2.0);
+    Field3D r = ses::rotate_field(px, 2, 1.5707963267948966);  // +90 deg about z
+    ses::normalize(r);
+    EXPECT_GT(std::abs(ses::inner_product(py, r)), 0.9);   // aligned with p_y
+    EXPECT_LT(std::abs(ses::inner_product(px, r)), 0.15);  // no longer p_x
+}
 
 Grid3D integer_grid() {
     const Grid1D axis{0.0, 8.0, 8};  // coords 0..7 exactly
