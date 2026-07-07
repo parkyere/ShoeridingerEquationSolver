@@ -613,6 +613,14 @@ public:
     // Strang step, fully GPU-resident:
     //   psi <- halfV . IFFT . kinetic . FFT . halfV psi
     // with IFFT = conj -> FFT -> conj/N (the same identity as the CPU core).
+    // psi <- psi * mask, with the mask stored as a (real, 0) complex buffer so
+    // the tested elementwise multiply applies a real per-cell damping. Binds
+    // psi first, so it is safe to call standalone (the boundary absorber).
+    void apply_mask(Gl& gl, GLuint mask_buf) {
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, psi_buf_);
+        multiply(gl, mask_buf);
+    }
+
     void step(Gl& gl, int nsteps) {
         gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, psi_buf_);
         for (int s = 0; s < nsteps; ++s) {

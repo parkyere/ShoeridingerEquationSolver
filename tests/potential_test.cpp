@@ -23,6 +23,26 @@ using ses::Grid1D;
 // Integer coordinates: [0,8) with n=8 -> x_i = 0,1,...,7 exactly.
 const Grid1D kGrid{0.0, 8.0, 8};
 
+TEST(AbsorbingMask, OneInInteriorTapersToZeroAtWalls) {
+    const ses::Grid1D ax{-8.0, 8.0, 16};  // h = 1: coords -8 .. 7
+    const ses::Grid3D g{ax, ax, ax};
+    const std::vector<double> m = ses::absorbing_mask(g, 3.0);
+    ASSERT_EQ(m.size(), static_cast<std::size_t>(g.size()));
+    // Deep interior (coord 0 on every axis) is exactly 1 -- the atom is safe.
+    EXPECT_DOUBLE_EQ(m[static_cast<std::size_t>(g.flat(8, 8, 8))], 1.0);
+    // The low corner (coords -8,-8,-8) sits on the wall: fully absorbed.
+    EXPECT_NEAR(m[static_cast<std::size_t>(g.flat(0, 0, 0))], 0.0, 1e-12);
+    // Every entry is a damping factor in [0, 1].
+    for (double v : m) {
+        EXPECT_GE(v, 0.0);
+        EXPECT_LE(v, 1.0 + 1e-12);
+    }
+    // One step inside the low x-wall (coord -7): only the x-axis is in the
+    // 3-wide layer (d = 1 -> sin^2(pi/6) = 0.25); y, z are interior (1).
+    const double s = std::sin(0.5 * 3.14159265358979323846 * (1.0 / 3.0));
+    EXPECT_NEAR(m[static_cast<std::size_t>(g.flat(1, 8, 8))], s * s, 1e-12);
+}
+
 TEST(HarmonicPotential, ExactValuesAndMinimum) {
     // omega = 2, x0 = 1:  V(x) = 2 (x-1)^2
     const std::vector<double> v = ses::harmonic_potential(kGrid, 2.0, 1.0);

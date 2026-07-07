@@ -152,6 +152,9 @@ constexpr double kMeasureSigma = 0.5;  // position measurement resolution (Bohr)
 constexpr double kDecayGammaDisplay = 0.125;
 constexpr double kProtonMarkerRadius = 0.35;  // symbolic (a real proton is ~1e-5 Bohr)
 constexpr double kHaToEv = 27.211386;  // 1 Hartree in eV (physicist-facing display)
+constexpr double kAbsorbWidth = 10.0;  // Bohr: boundary absorber layer thickness
+                                       // (interior +-54 Bohr stays untouched --
+                                       // clears the n<=5 states; real-time only)
 // T3 laser: E0 is derived from a TARGET Rabi frequency over the computed
 // dipole matrix element (Omega = E0 |<2p|z|1s>|). Omega = 0.04 keeps the
 // drive well under the ~0.163 Ha gap (RWA-ish two-level flopping) while a
@@ -449,6 +452,18 @@ protected:
             for (int idx = 0; idx < kNumStates; ++idx) {
                 synth_queue_.push_back(idx);
             }
+            // Boundary absorber: build the mask (interior = 1) and upload it as
+            // a (mask, 0) complex buffer so the tested elementwise multiply can
+            // damp outgoing flux each real-time step (no wrap-around).
+            {
+                const std::vector<double> mask =
+                    ses::absorbing_mask(sim_.grid(), kAbsorbWidth);
+                ses::Field3D mf{sim_.grid()};
+                for (std::size_t i = 0; i < mf.data().size(); ++i) {
+                    mf.data()[i] = ses::Complex<double>{mask[i], 0.0};
+                }
+                mask_buf_ = engine_.create_state_buffer(*this, mf);
+            }
         } else {
             decay_on_ = false;  // jump trials are GPU-only
             atlas_done_ = true;
@@ -611,6 +626,14 @@ protected:
                     // Time is credited where steps EXECUTE, so a stalled or
                     // occluded paint cannot desync the clock from the state.
                     gpu_time_ += pending_gpu_steps_ * sim_.dt();
+
+                    // Boundary absorber (real-time only): damp outgoing/ionized
+                    // flux at the walls so it leaves instead of wrapping around
+                    // the periodic FFT box. Interior mask = 1, so the bound atom
+                    // is untouched; imaginary-time relaxation never runs this.
+                    if (mask_buf_ != 0) {
+                        engine_.apply_mask(*this, mask_buf_);
+                    }
 
                     // T4/T5/T7: competing-channels Poisson trials over the
                     // whole tracked manifold. The exponential is memoryless,
@@ -1975,6 +1998,7 @@ private:
     int gizmo_vertex_count_ = 0;
     GLuint z_label_vao_ = 0;
     GLuint z_label_vbo_ = 0;  // billboarded "z" glyph, rebuilt each frame
+    GLuint mask_buf_ = 0;     // boundary absorber (mask, 0) complex buffer
     std::mt19937 rng_{std::random_device{}()};
 
     GLuint volume_program_ = 0;

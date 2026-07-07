@@ -71,4 +71,36 @@ inline std::vector<double> soft_coulomb_potential(const Grid3D& g, double Z, dou
     return v;
 }
 
+// Boundary absorbing mask for the FFT (periodic) box: 1.0 in the interior,
+// tapering smoothly to 0 within `width` of each wall (per-axis cos^2 ramps
+// multiplied -- a rounded-box absorber). Multiplying psi by this each real-time
+// step damps outgoing (ionized) flux at the edges instead of letting the
+// periodic grid wrap it around to the opposite wall. The interior is exactly 1,
+// so the bound atom is untouched (and it is applied only in real time, never
+// during imaginary-time state prep).
+inline std::vector<double> absorbing_mask(const Grid3D& g, double width) {
+    auto axis = [width](const Grid1D& ax, int i) {
+        const double x = ax.coord(i);
+        const double d_lo = x - ax.xmin;
+        const double d_hi = ax.xmax - x;
+        const double d = d_lo < d_hi ? d_lo : d_hi;  // distance to nearest wall
+        if (d >= width) {
+            return 1.0;
+        }
+        const double t = d / width;  // 0 at the wall, 1 at the layer inner edge
+        const double s = std::sin(0.5 * 3.14159265358979323846 * t);
+        return s * s;  // smooth cos^2 ramp
+    };
+    std::vector<double> m(static_cast<std::size_t>(g.size()));
+    for (int k = 0; k < g.z.n; ++k) {
+        for (int j = 0; j < g.y.n; ++j) {
+            for (int i = 0; i < g.x.n; ++i) {
+                m[static_cast<std::size_t>(g.flat(i, j, k))] =
+                    axis(g.x, i) * axis(g.y, j) * axis(g.z, k);
+            }
+        }
+    }
+    return m;
+}
+
 }  // namespace ses
