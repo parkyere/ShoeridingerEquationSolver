@@ -456,8 +456,19 @@ protected:
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         const double aspect = static_cast<double>(width()) / std::max(1, height());
+        // The far plane must always enclose the whole box BEHIND the target, or
+        // the volume's back-face proxy geometry (we cull front faces) gets
+        // clipped and leaves dark triangular holes when zoomed out. Track the
+        // camera distance plus the box's center-to-corner reach -- the farthest
+        // any box point can sit from the eye at any orientation.
+        const ses::Grid3D& gbox = sim_.grid();
+        const double bx = std::max(std::abs(gbox.x.xmin), std::abs(gbox.x.xmax));
+        const double by = std::max(std::abs(gbox.y.xmin), std::abs(gbox.y.xmax));
+        const double bz = std::max(std::abs(gbox.z.xmin), std::abs(gbox.z.xmax));
+        const double box_reach = std::sqrt(bx * bx + by * by + bz * bz);
+        const double zfar = distance_ + box_reach + 1.0;
         const ses::Mat4 proj =
-            ses::perspective(45.0 * 3.14159265358979323846 / 180.0, aspect, 0.1, 200.0);
+            ses::perspective(45.0 * 3.14159265358979323846 / 180.0, aspect, 0.1, zfar);
         const ses::Vec3d eye = ses::orbit_eye(azimuth_, elevation_, distance_, ses::Vec3d{});
         const ses::Mat4 view = ses::look_at(eye, ses::Vec3d{}, ses::Vec3d{0.0, 1.0, 0.0});
         const ses::Mat4 mvp = proj * view;
