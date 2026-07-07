@@ -41,8 +41,8 @@
 // T7 (lifetimes to n = 10): the potential is spherical, so the radial
 // engine (core/radial.hpp) solves EVERY bound level to n = 10 in 1D --
 // energies and E1 lifetimes for all 55 levels, printed at startup. The 3D
-// tracked manifold is what the +-64 Bohr box can hold: n <= 5 (55 states,
-// 5s/5p/5d box-critical), each synthesized as (u/r) Y_lm from the
+// tracked manifold is what the +-80 Bohr box can hold: n <= 6 (91 states,
+// 6s/6p box-critical), each synthesized as (u/r) Y_lm from the
 // radial solutions (core/harmonics.hpp) -- no imaginary-time ladder, no
 // fp32 drift. Key 5 excites an n = 3 state to watch the CASCADE (e.g.
 // 3d -> 2p -> 1s, two photons). Relaxation demos auto-complete: when the
@@ -105,29 +105,33 @@ namespace {
     std::exit(EXIT_FAILURE);
 }
 
-// Soft-Coulomb softening length a (Bohr) for -Z/sqrt(r^2 + a^2). At a = 0.5 = h
-// (the grid spacing) the well is as sharp as the +-64/256 grid resolves: the
-// bottom deepens to -1/a = -2 Ha and E(1s) moves toward the true -0.5 Ha, while
-// the startup h-audit (E_radial vs <H>_grid) still holds. Sharper (a < h) is not
-// unstable -- the split-operator stays unitary -- but under-resolves the
-// well/cusp and diverges the audit. The 3D grid and BOTH radial solves must use
-// the same a (kSoftening / kSoftening^2) or the synthesized orbitals stop being
-// eigenstates of the simulated Hamiltonian.
-constexpr double kSoftening = 0.5;  // a in Bohr (= h; sharpest this grid holds)
+// Soft-Coulomb softening length a (Bohr) for -Z/sqrt(r^2 + a^2). Pinned to a = h
+// (the grid spacing) so the well is as sharp as the grid resolves: the bottom
+// deepens to -1/a and E(1s) moves toward the true -0.5 Ha, while the startup
+// h-audit (E_radial vs <H>_grid) still holds. Sharper (a < h) is not unstable
+// -- the split-operator stays unitary -- but under-resolves the well/cusp and
+// diverges the audit. The 3D grid and BOTH radial solves must use the same a
+// (kSoftening / kSoftening^2) or the synthesized orbitals stop being
+// eigenstates of the simulated Hamiltonian. Widening the box to hold n = 6
+// (below) at a fixed 256^3 raises h to 0.625, so a tracks it up to 0.625: the
+// low-n cusp gets a touch rounder, the trade for reaching the n = 6 shell.
+constexpr double kSoftening = 0.625;  // a in Bohr (= h; sharpest this grid holds)
 
 ses::WavepacketSimulation make_simulation() {
     // 128^3: real-time stepping runs on the GPU engine (docs/GPU_PLAN.md G5);
     // the CPU session stays the double-precision truth for relax / measure /
     // surface meshing, synced on demand.
     //
-    // Box +-64 Bohr at 256^3 (h = 0.5): holds the n <= 5 shell, though n = 5
-    // is box-critical (5s classical turning point ~50 Bohr, tail near the
-    // u(R_box) = 0 wall). Spectral accuracy keeps h = 0.5 cheap (h = 0.375
-    // was proven exact to 1e-6; the startup atlas cross-check E_radial vs
-    // <H>_grid audits h on every launch). The full m-resolved n <= 5
-    // manifold is 55 state buffers (~7.3 GB VRAM; ~15 GB host RAM held
-    // transiently during the dipole-integral phase, freed right after).
-    const ses::Grid1D axis{-64.0, 64.0, 256};
+    // Box +-80 Bohr at 256^3 (h = 0.625): holds the n <= 6 shell, box-critical
+    // at n = 6 (the diffuse 6s is ~92% enclosed, its tail kissing the
+    // u(R_box) = 0 wall; the structured 6d/6f/6g/6h are 97-99.9% held). Fixed
+    // at 256^3 because the split-operator FFT demands a power-of-two size (512
+    // would be 8x the work), so reaching n = 6 spends grid spacing: h grows
+    // 0.5 -> 0.625. The startup atlas cross-check E_radial vs <H>_grid audits h
+    // on every launch. The full m-resolved n <= 6 manifold is 91 state buffers
+    // (~12 GB VRAM -- also box-critical; ~24 GB host RAM held transiently
+    // during the dipole-integral phase, freed right after).
+    const ses::Grid1D axis{-80.0, 80.0, 256};
     const ses::Grid3D grid{axis, axis, axis};
     return ses::WavepacketSimulation{ses::WavepacketSimulation::Config{
         grid,
@@ -146,9 +150,9 @@ constexpr double kRelaxDtau = 0.05;
 constexpr int kTickMs = 16;
 constexpr double kIsoFraction = 0.25;
 constexpr int kPhaseLutSize = 256;
-constexpr double kMeasureSigma = 0.5;  // position measurement resolution (Bohr):
-                                       // the sharpest a h = 0.5 grid resolves
-                                       // without aliasing (smaller needs finer h)
+constexpr double kMeasureSigma = 0.625;  // position measurement resolution (Bohr):
+                                         // the sharpest a h = 0.625 grid resolves
+                                         // without aliasing (smaller needs finer h)
 // Display decay rate: the TRUE Einstein-A lifetime is ~1e8 a.u. (unwatchable);
 // this gives tau_display ~ 8 a.u. (~3 s of wall time). The title reports the
 // true lifetime and the acceleration factor honestly.
@@ -156,8 +160,8 @@ constexpr double kDecayGammaDisplay = 0.125;
 constexpr double kProtonMarkerRadius = 0.35;  // symbolic (a real proton is ~1e-5 Bohr)
 constexpr double kHaToEv = 27.211386;  // 1 Hartree in eV (physicist-facing display)
 constexpr double kAbsorbWidth = 10.0;  // Bohr: boundary absorber layer thickness
-                                       // (interior +-54 Bohr stays untouched --
-                                       // clears the n<=5 states; real-time only)
+                                       // (interior +-70 Bohr stays untouched --
+                                       // clears the n<=6 states; real-time only)
 // T3 laser: E0 is derived from a TARGET Rabi frequency over the computed
 // dipole matrix element (Omega = E0 |<2p|z|1s>|). Omega = 0.04 keeps the
 // drive well under the ~0.163 Ha gap (RWA-ish two-level flopping) while a
@@ -272,7 +276,7 @@ void main() {
         t_stop = sp.x;
     }
 
-    const int kSteps = 384;  // ~0.6 Bohr/sample across the +-64 box
+    const int kSteps = 384;  // ~0.42 Bohr/sample across the +-80 box
     float step_len = (t_stop - tn) / float(kSteps);
     // Per-pixel jitter of the ray start kills wood-grain banding.
     float jitter = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
@@ -314,30 +318,32 @@ enum class ViewMode { Cloud, Surface };
 enum class Stepping { RealTime, Relaxing, RelaxingExcited };
 enum class LaserPol { Off, Z, X };
 
-// T5/T7/T8: the tracked eigenstate manifold -- the full m-resolved n <= 5
-// shell (55 states). n = 5 is box-critical on the +-64 Bohr grid (its u(r)
-// tail approaches the u(R_box) = 0 wall, so 5s/5p/5d are mildly distorted);
-// the startup h-audit cross-checks 5s against <H>_grid. First five indices
-// frozen (selftests).
+// T5/T7/T8/T10: the tracked eigenstate manifold -- the full m-resolved n <= 6
+// shell (91 states). n = 6 is box-critical on the +-80 Bohr grid (the diffuse
+// 6s/6p tails approach the u(R_box) = 0 wall; the structured 6d/6f/6g/6h are
+// well held); the startup h-audit cross-checks 5s and 6s against <H>_grid.
+// First five indices frozen (selftests).
 enum StateIndex : int {
     kS1 = 0, kP2X = 1, kP2Y = 2, kP2Z = 3, kS2 = 4,
     k3S = 5, k3PX = 6, k3PY = 7, k3PZ = 8,
     k3DXY = 9, k3DYZ = 10, k3DZ0 = 11, k3DZX = 12, k3DX2Y2 = 13,
     k4S = 14, k4F0 = 26,  // named entries the shell refers to
     k5S = 30,             // first n = 5 state (box-critical, h-audited)
+    k6S = 55,             // first n = 6 state (box-critical, h-audited)
 };
-constexpr int kNumStates = 55;
+constexpr int kNumStates = 91;
 
 // Radial levels backing the manifold (l, nodes k); n = l + 1 + k.
 struct RadialLevelSpec {
     int l;
     int k;
 };
-constexpr int kNumLevels = 15;  // 1s 2s 2p 3s 3p 3d 4s 4p 4d 4f + 5s 5p 5d 5f 5g
+constexpr int kNumLevels = 21;  // n<=5 (15) + 6s 6p 6d 6f 6g 6h
 constexpr RadialLevelSpec kLevelSpec[kNumLevels] = {
     {0, 0}, {0, 1}, {1, 0}, {0, 2}, {1, 1}, {2, 0},
     {0, 3}, {1, 2}, {2, 1}, {3, 0},
     {0, 4}, {1, 3}, {2, 2}, {3, 1}, {4, 0},
+    {0, 5}, {1, 4}, {2, 3}, {3, 2}, {4, 1}, {5, 0},
 };
 
 struct StateSpec {
@@ -371,6 +377,20 @@ constexpr StateSpec kStateSpec[kNumStates] = {
     {14, 4, -4, "5g_-4"}, {14, 4, -3, "5g_-3"}, {14, 4, -2, "5g_-2"},
     {14, 4, -1, "5g_-1"}, {14, 4, 0, "5g_0"}, {14, 4, 1, "5g_+1"},
     {14, 4, 2, "5g_+2"}, {14, 4, 3, "5g_+3"}, {14, 4, 4, "5g_+4"},
+    {15, 0, 0, "6s"},
+    {16, 1, 1, "6p_x"}, {16, 1, -1, "6p_y"}, {16, 1, 0, "6p_z"},
+    {17, 2, -2, "6d_xy"}, {17, 2, -1, "6d_yz"}, {17, 2, 0, "6d_z2"},
+    {17, 2, 1, "6d_zx"}, {17, 2, 2, "6d_x2y2"},
+    {18, 3, -3, "6f_-3"}, {18, 3, -2, "6f_-2"}, {18, 3, -1, "6f_-1"},
+    {18, 3, 0, "6f_0"}, {18, 3, 1, "6f_+1"}, {18, 3, 2, "6f_+2"},
+    {18, 3, 3, "6f_+3"},
+    {19, 4, -4, "6g_-4"}, {19, 4, -3, "6g_-3"}, {19, 4, -2, "6g_-2"},
+    {19, 4, -1, "6g_-1"}, {19, 4, 0, "6g_0"}, {19, 4, 1, "6g_+1"},
+    {19, 4, 2, "6g_+2"}, {19, 4, 3, "6g_+3"}, {19, 4, 4, "6g_+4"},
+    {20, 5, -5, "6h_-5"}, {20, 5, -4, "6h_-4"}, {20, 5, -3, "6h_-3"},
+    {20, 5, -2, "6h_-2"}, {20, 5, -1, "6h_-1"}, {20, 5, 0, "6h_0"},
+    {20, 5, 1, "6h_+1"}, {20, 5, 2, "6h_+2"}, {20, 5, 3, "6h_+3"},
+    {20, 5, 4, "6h_+4"}, {20, 5, 5, "6h_+5"},
 };
 
 struct ShellChannel {
@@ -450,7 +470,7 @@ protected:
             engine_.set_potential_gradient(*this, sim_.potential());
             // T6/T7: solve the atom up front. The radial engine gets every
             // bound level to n = 10 (the full lifetime table, printed
-            // below); the 3D tracked manifold (n <= 3, what the box holds)
+            // below); the 3D tracked manifold (n <= 6, what the box holds)
             // is then synthesized chunked across frames so decay is armed
             // BY DEFAULT and every demo entry point is instant afterwards.
             solve_radial_atom();
@@ -936,7 +956,7 @@ protected:
 
     void wheelEvent(QWheelEvent* e) override {
         distance_ *= std::pow(0.999, e->angleDelta().y());
-        distance_ = std::clamp(distance_, 4.0, 300.0);  // out past the +-64 box
+        distance_ = std::clamp(distance_, 4.0, 300.0);  // out past the +-80 box
                                                          // (dynamic zfar follows)
         update();
     }
@@ -1392,8 +1412,8 @@ protected:
             const ses::Field3D& f = *state_cpu_[s];
             // The h-audit: cross-check the 1D radial energy against the
             // full 3D spectral <H> for the resolution-critical 1s and the
-            // box-critical 4s/5s (a full-grid CPU FFT each -- 3 states only).
-            if (idx == kS1 || idx == k4S || idx == k5S) {
+            // box-critical 4s/5s/6s (a full-grid CPU FFT each -- 4 states only).
+            if (idx == kS1 || idx == k4S || idx == k5S || idx == k6S) {
                 std::fprintf(stderr,
                              "atlas: %-8s E_radial = %.6f Ha   <H>_grid = %.6f Ha\n",
                              kStateSpec[s].name, state_energy_[s],
@@ -1741,8 +1761,8 @@ private:
                          : (stepping_ == Stepping::Relaxing
                                 ? QStringLiteral("relaxing->1s")
                                 : QStringLiteral("relaxing->%1").arg(relax_label_)))
-                .arg(use_gpu_path() ? QStringLiteral("gpu 128^3")
-                                    : QStringLiteral("cpu 128^3")) +
+                .arg(use_gpu_path() ? QStringLiteral("gpu 256^3")
+                                    : QStringLiteral("cpu 256^3")) +
             (stepping_ == Stepping::RealTime && !solving()
                  ? QStringLiteral("  emit P = %1 au").arg(radiated_power_, 0, 'e', 2)
                  : QString()) +
@@ -2149,8 +2169,8 @@ private:
 
     double azimuth_ = 0.6;
     double elevation_ = 0.4;
-    double distance_ = 120.0;  // default frames ~+-50 Bohr (45 deg fovy): the
-                               // whole n<=5 manifold, incl. the ~50 Bohr 5s tail
+    double distance_ = 150.0;  // default frames ~+-62 Bohr (45 deg fovy): the
+                               // n<=6 manifold body, incl. the ~60 Bohr 6s/6p
                                // (wheel in toward 4 for a close-up of small ones)
     QPointF last_pos_;
 };
