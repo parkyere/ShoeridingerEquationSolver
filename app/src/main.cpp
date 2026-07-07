@@ -77,6 +77,8 @@
 #include <QString>
 #include <QSurfaceFormat>
 #include <QTimer>
+#include <QLabel>
+#include <QSlider>
 #include <QToolBar>
 #include <QWheelEvent>
 
@@ -149,6 +151,7 @@ constexpr double kMeasureSigma = 0.5;  // position measurement resolution (Bohr)
 // true lifetime and the acceleration factor honestly.
 constexpr double kDecayGammaDisplay = 0.125;
 constexpr double kProtonMarkerRadius = 0.35;  // symbolic (a real proton is ~1e-5 Bohr)
+constexpr double kHaToEv = 27.211386;  // 1 Hartree in eV (physicist-facing display)
 // T3 laser: E0 is derived from a TARGET Rabi frequency over the computed
 // dipole matrix element (Omega = E0 |<2p|z|1s>|). Omega = 0.04 keeps the
 // drive well under the ~0.163 Ha gap (RWA-ish two-level flopping) while a
@@ -559,9 +562,10 @@ protected:
                     engine_.copy_into_psi(*this, state_buf_[static_cast<std::size_t>(n)]);
                     engine_.write_psi_texture(*this, psi_tex_);
                     last_measure_ =
-                        QStringLiteral("%1 (E %2 Ha)")
+                        QStringLiteral("%1 (E %2 eV)")
                             .arg(QLatin1String(kStateSpec[static_cast<std::size_t>(n)].name))
-                            .arg(state_energy_[static_cast<std::size_t>(n)], 0, 'f', 4);
+                            .arg(state_energy_[static_cast<std::size_t>(n)] * kHaToEv, 0,
+                                 'f', 3);
                 } else {
                     last_measure_ = QStringLiteral("outside tracked manifold");
                 }
@@ -591,6 +595,14 @@ protected:
                         // that credits gpu_time_, so the carrier phase
                         // cos(w t) stays continuous across batches/pauses.
                         const ses::DipoleDrive d{laser_axis(), laser_e0_, laser_omega_};
+                        engine_.driven_step(*this, d, sim_.time() + gpu_time_,
+                                            sim_.dt(), pending_gpu_steps_);
+                    } else if (efield_e0_ > 0.0) {
+                        // Static uniform electric field along +z: the SAME
+                        // dipole drive at omega = 0 (Stark). The nucleus is the
+                        // fixed potential; only the cloud responds (polarizes,
+                        // then field-ionizes toward +z if driven hard).
+                        const ses::DipoleDrive d{ses::Vec3d{0.0, 0.0, 1.0}, efield_e0_, 0.0};
                         engine_.driven_step(*this, d, sim_.time() + gpu_time_,
                                             sim_.dt(), pending_gpu_steps_);
                     } else {
@@ -1018,6 +1030,18 @@ public:
             laser_pol_ = LaserPol::Off;
         }
         after_control();
+    }
+
+    // Static uniform E-field magnitude along +z (atomic units); 0 = off. Driven
+    // by the toolbar slider. Acts in the GPU cloud/real-time path; the laser, if
+    // on, takes precedence in the stepping branch.
+    void set_efield_e0(double e0) {
+        efield_e0_ = e0;
+        if (e0 > 0.0 && !solving()) {
+            stepping_ = Stepping::RealTime;  // let the field actually act
+        }
+        refresh_title();
+        update();
     }
 
     long long photon_count() const { return photon_count_; }
@@ -1502,11 +1526,12 @@ private:
         QString energy;
         if (stepping_ != Stepping::RealTime) {
             energy = cpu_is_truth_
-                         ? QStringLiteral("E = %1 Ha   ")
-                               .arg(ses::mean_energy(sim_.psi(), sim_.potential()), 0,
-                                    'f', 4)
-                         : QStringLiteral("E ~ %1 Ha   ")
-                               .arg(relax_energy_display_, 0, 'f', 4);
+                         ? QStringLiteral("E = %1 eV   ")
+                               .arg(ses::mean_energy(sim_.psi(), sim_.potential()) *
+                                        kHaToEv,
+                                    0, 'f', 3)
+                         : QStringLiteral("E ~ %1 eV   ")
+                               .arg(relax_energy_display_ * kHaToEv, 0, 'f', 3);
         }
         window()->setWindowTitle(
             QStringLiteral("Electron near a soft-Coulomb nucleus   t = %1   %2"
@@ -1553,6 +1578,11 @@ private:
                        .arg(laser_e0_, 0, 'f', 4)
                        .arg(pop_ground_, 0, 'f', 3)
                        .arg(pop_excited_, 0, 'f', 3)
+                 : QString()) +
+            (efield_e0_ > 0.0 && laser_pol_ == LaserPol::Off
+                 ? QStringLiteral("  E-field +z: %1 au (%2 V/m)")
+                       .arg(efield_e0_, 0, 'f', 4)
+                       .arg(efield_e0_ * 5.14220674e11, 0, 'e', 2)
                  : QString()) +
             (last_measure_.isEmpty()
                  ? QString()
@@ -1833,6 +1863,7 @@ private:
     LaserPol laser_pol_ = LaserPol::Off;
     double laser_omega_ = 0.0;
     double laser_e0_ = 0.0;
+    double efield_e0_ = 0.0;  // static +z electric field magnitude (au); 0 = off
     double dipole_z_ = 0.0;   // |<2p_z| z |1s>| from the cached states
     double pop_ground_ = 0.0;
     double pop_excited_ = 0.0;
@@ -1943,6 +1974,24 @@ int main(int argc, char** argv) {
                         [viewport] { viewport->toggle_decay(); });
     controls->addAction(QStringLiteral("Laser (L)"), viewport,
                         [viewport] { viewport->toggle_laser(); });
+    // Draggable static E-field (+z) magnitude: 0 = off, full-scale = 0.05 au.
+    // The field is the dipole drive at omega = 0 (Stark). Drag up to polarize
+    // (and, hard enough, field-ionize) the cloud along +z -- the blue Z gizmo
+    // arrow shows the direction.
+    controls->addWidget(new QLabel(QStringLiteral(" E-field +z ")));
+    {
+        auto* efield_slider = new QSlider(Qt::Horizontal);
+        efield_slider->setRange(0, 100);
+        efield_slider->setFixedWidth(140);
+        efield_slider->setFocusPolicy(Qt::NoFocus);  // keep the hotkeys live
+        efield_slider->setToolTip(QStringLiteral(
+            "Static uniform electric field along +z (Stark). 0 = off."));
+        QObject::connect(efield_slider, &QSlider::valueChanged, viewport,
+                         [viewport](int val) {
+                             viewport->set_efield_e0(val / 100.0 * 0.05);
+                         });
+        controls->addWidget(efield_slider);
+    }
     controls->addSeparator();
     controls->addAction(QStringLiteral("Reset packet (R)"), viewport,
                         [viewport] { viewport->reset_simulation(); });
