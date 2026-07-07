@@ -30,6 +30,7 @@
 #include <core/field.hpp>
 #include <core/grid.hpp>
 #include <core/imaginary_time.hpp>
+#include <core/magnetic.hpp>
 #include <core/potential.hpp>
 #include <core/propagator.hpp>
 #include <core/sampling.hpp>
@@ -422,6 +423,48 @@ bool check_rotate(Gl& gl) {
     return ok;
 }
 
+// B-field PROPER solve: the exact three-shear rotate_z on the GPU psi SSBO vs
+// core ses::rotate_z, and the full magnetic Strang step vs core
+// MagneticPropagator3D (diamagnetic potential + paramagnetic rotation).
+bool check_magnetic(Gl& gl) {
+    const ses::Grid1D axis{-8.0, 8.0, 32};
+    const ses::Grid3D g{axis, axis, axis};
+    const std::vector<double> v = ses::soft_coulomb_potential(g, 1.0, 1.0, ses::Vec3d{});
+    const double dt = 0.02;
+    const double b = 0.5;
+    const ses::Field3D psi0 = ses::gaussian_wavepacket(
+        g, ses::Vec3d{2.0, 0.0, 0.5}, ses::Vec3d{1.4, 1.4, 1.4}, ses::Vec3d{0.0, 0.4, 0.0});
+
+    const ses::SplitOperator3D base{g, v, dt};
+    ses_gpu::GpuEngine eng;
+    if (!eng.initialize(gl, g, base.half_potential_phase(), base.kinetic_phase(), psi0)) {
+        std::printf("engine init: FAIL\n");
+        return false;
+    }
+
+    // Exact three-shear rotation vs core rotate_z.
+    eng.rotate_z_shear(gl, 0.6);
+    std::vector<float> gpu_out;
+    eng.readback(gl, gpu_out);
+    ses::Field3D cpu = psi0;
+    ses::rotate_z(cpu, 0.6);
+    bool ok = compare("magnetic rotate_z (three-shear)", gpu_out, cpu, 1e-3);
+
+    // Full magnetic step vs core MagneticPropagator3D. Kinetic table is
+    // B-independent (already correct); only the half-potential gains the
+    // diamagnetic term.
+    const ses::MagneticPropagator3D mprop{g, v, dt, b};
+    const ses::SplitOperator3D core_diamag{g, mprop.effective_potential(), dt};
+    eng.upload_state(gl, psi0);
+    eng.set_half_potential(gl, core_diamag.half_potential_phase());
+    eng.magnetic_step(gl, 0.5 * b * (0.5 * dt), 20);
+    eng.readback(gl, gpu_out);
+    ses::Field3D cpu2 = psi0;
+    mprop.step(cpu2, 20);
+    ok = compare("magnetic step 20", gpu_out, cpu2, 2e-3) && ok;
+    return ok;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -468,6 +511,7 @@ int main(int argc, char** argv) {
     ok = check_deflation(gl) && ok;
     ok = check_driven_step(gl) && ok;
     ok = check_rotate(gl) && ok;
+    ok = check_magnetic(gl) && ok;
 
     return ok ? 0 : 1;
 }

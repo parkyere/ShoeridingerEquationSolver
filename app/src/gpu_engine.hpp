@@ -322,6 +322,42 @@ void main() {
 }
 )";
 
+// One shear of the three-shear Fourier rotation (magnetic core): after a 1D
+// FFT along the freq axis, shift each line by d = coeff * (perp coord) via
+// the shift theorem psi(k) *= e^{-i k d}. This is the GPU transcription of
+// core/rotation.hpp's per-line phase ramp -- exact and unitary (no resample
+// blur), the paramagnetic (B/2)L_z evolution of the ACTUAL psi.
+inline const char* kShearSrc = R"(#version 430 core
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) buffer PsiBuf { vec2 psi[]; };
+uniform uint n;
+uniform int nx;
+uniform int ny;
+uniform int nf;         // length of the FFT (freq) axis
+uniform int freq_is_x;  // 1: freq axis = x (shift coord = y); 0: freq = y
+uniform float kscale;   // 2*pi / L_freq  (signed wavenumber = kscale * signed_f)
+uniform float cmin;     // shift-coordinate axis min
+uniform float ch;       // shift-coordinate axis spacing
+uniform float coeff;    // shear coefficient
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= n) {
+        return;
+    }
+    int i = int(idx) % nx;
+    int j = (int(idx) / nx) % ny;
+    int f = (freq_is_x == 1) ? i : j;   // index along the freq axis
+    int p = (freq_is_x == 1) ? j : i;   // index along the shift-coord axis
+    int sf = (f < nf / 2) ? f : f - nf;  // signed fftfreq
+    float kf = kscale * float(sf);
+    float d = coeff * (cmin + float(p) * ch);
+    float ph = -kf * d;
+    vec2 w = vec2(cos(ph), sin(ph));
+    vec2 a = psi[idx];
+    psi[idx] = vec2(a.x * w.x - a.y * w.y, a.x * w.y + a.y * w.x);
+}
+)";
+
 // ---- helpers ---------------------------------------------------------------
 
 inline std::string instantiate(std::string tmpl, const char* token, int value) {
@@ -423,6 +459,21 @@ inline void run_fft3(Gl& gl, const ses::Grid3D& g, const FftPrograms& progs) {
     }
 }
 
+// Forward 1D FFT along a single axis (0=x,1=y,2=z) of the SSBO at binding 0.
+inline void run_fft_axis(Gl& gl, const ses::Grid3D& g, const FftPrograms& progs,
+                         int a) {
+    AxisPass p[3];
+    axis_passes(g, p);
+    gl.glUseProgram(progs.axis[a]);
+    gl.glUniform1i(gl.glGetUniformLocation(progs.axis[a], "mod_a"), p[a].mod_a);
+    gl.glUniform1i(gl.glGetUniformLocation(progs.axis[a], "mul_b"), p[a].mul_b);
+    gl.glUniform1i(gl.glGetUniformLocation(progs.axis[a], "mul_c"), p[a].mul_c);
+    gl.glUniform1i(gl.glGetUniformLocation(progs.axis[a], "stride"), p[a].stride);
+    gl.glUniform1i(gl.glGetUniformLocation(progs.axis[a], "n_lines"), p[a].n_lines);
+    gl.glDispatchCompute(static_cast<GLuint>(p[a].n_lines), 1, 1);
+    gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+}
+
 inline void run_conj_scale(Gl& gl, GLuint prog, std::size_t n, float scale) {
     gl.glUseProgram(prog);
     gl.glUniform1ui(gl.glGetUniformLocation(prog, "n"), static_cast<GLuint>(n));
@@ -508,10 +559,11 @@ public:
         axpy_prog_ = build_program(gl, kAxpySrc, "axpy");
         kick_prog_ = build_program(gl, kDipoleKickSrc, "dipole kick");
         rot_prog_ = build_program(gl, kRotateSrc, "rotate");
+        shear_prog_ = build_program(gl, kShearSrc, "shear");
         fft_progs_ = build_fft_programs(gl, grid);
         if (mul_prog_ == 0 || conj_prog_ == 0 || bridge_prog_ == 0 || norm_prog_ == 0 ||
             scale_prog_ == 0 || inner_prog_ == 0 || axpy_prog_ == 0 || kick_prog_ == 0 ||
-            rot_prog_ == 0 ||
+            rot_prog_ == 0 || shear_prog_ == 0 ||
             fft_progs_.axis[0] == 0 || fft_progs_.axis[1] == 0 ||
             fft_progs_.axis[2] == 0) {
             return false;
@@ -523,6 +575,17 @@ public:
         rot_buf_ = make_buffer(gl, to_rg32f(psi0.data()));  // scratch for display rotation
         partials_buf_ = make_buffer(gl, std::vector<float>(2 * kNormPeakGroups, 0.0f));
         return true;
+    }
+
+    // Replace the half-potential phase table in place. Used to fold in the
+    // diamagnetic (B^2/8) rho^2 term for the magnetic step (and to restore the
+    // base atom when the field is off); the table size is unchanged.
+    void set_half_potential(Gl& gl, const std::vector<ses::Complex<double>>& half_v) {
+        const std::vector<float> staged = to_rg32f(half_v);
+        gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, half_buf_);
+        gl.glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
+                           static_cast<GLsizeiptr>(staged.size() * sizeof(float)),
+                           staged.data());
     }
 
     // Imaginary-time weight tables (from ImaginaryTimePropagator3D's tested
@@ -687,6 +750,29 @@ public:
         }
     }
 
+    // Exact three-shear rotation of psi about z by theta (magnetic paramagnetic
+    // (B/2)L_z term), GPU transcription of core/rotation.hpp. In place.
+    void rotate_z_shear(Gl& gl, double theta) {
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, psi_buf_);
+        const double t = std::tan(0.5 * theta);
+        const double s = std::sin(theta);
+        apply_shear(gl, 0, -t);  // x-shear by -tan(theta/2)
+        apply_shear(gl, 1, s);   // y-shear by sin(theta)
+        apply_shear(gl, 0, -t);  // x-shear by -tan(theta/2)
+    }
+
+    // Magnetic Strang step: R(a) . core-step . R(a), a = (B/2)(dt/2). The core
+    // step uses half_buf_, which the caller must have set to the diamagnetic-
+    // augmented V + (B^2/8)rho^2 (set_half_potential). Chained half-rotations
+    // between steps merge into the per-step Larmor angle (B/2) dt.
+    void magnetic_step(Gl& gl, double half_angle, int nsteps) {
+        for (int s = 0; s < nsteps; ++s) {
+            rotate_z_shear(gl, half_angle);
+            step(gl, 1);
+            rotate_z_shear(gl, half_angle);
+        }
+    }
+
     // One dipole half-kick on psi (T3). theta = E0 cos(omega t) dt/2 is
     // computed by the caller in double (core/drive.hpp's formula); the
     // kernel only does the pointwise complex rotation.
@@ -798,6 +884,39 @@ public:
     }
 
 private:
+    // One shear of the three-shear rotation: FFT along freq_axis (0=x,1=y),
+    // shift each line by coeff*(perpendicular coord) via the phase kernel,
+    // then inverse FFT along that axis (conj -> fft -> conj/N). In place on
+    // whatever is bound at binding 0 (rotate_z_shear binds psi).
+    void apply_shear(Gl& gl, int freq_axis, double coeff) {
+        run_fft_axis(gl, grid_, fft_progs_, freq_axis);
+        const bool fx = (freq_axis == 0);
+        const ses::Grid1D& fa = fx ? grid_.x : grid_.y;  // freq axis
+        const ses::Grid1D& ca = fx ? grid_.y : grid_.x;  // shift-coord axis
+        const double two_pi = 6.283185307179586;
+        gl.glUseProgram(shear_prog_);
+        gl.glUniform1ui(gl.glGetUniformLocation(shear_prog_, "n"),
+                        static_cast<GLuint>(cells_));
+        gl.glUniform1i(gl.glGetUniformLocation(shear_prog_, "nx"), grid_.x.n);
+        gl.glUniform1i(gl.glGetUniformLocation(shear_prog_, "ny"), grid_.y.n);
+        gl.glUniform1i(gl.glGetUniformLocation(shear_prog_, "nf"), fa.n);
+        gl.glUniform1i(gl.glGetUniformLocation(shear_prog_, "freq_is_x"), fx ? 1 : 0);
+        gl.glUniform1f(gl.glGetUniformLocation(shear_prog_, "kscale"),
+                       static_cast<float>(two_pi / (fa.xmax - fa.xmin)));
+        gl.glUniform1f(gl.glGetUniformLocation(shear_prog_, "cmin"),
+                       static_cast<float>(ca.xmin));
+        gl.glUniform1f(gl.glGetUniformLocation(shear_prog_, "ch"),
+                       static_cast<float>(ca.spacing()));
+        gl.glUniform1f(gl.glGetUniformLocation(shear_prog_, "coeff"),
+                       static_cast<float>(coeff));
+        gl.glDispatchCompute(static_cast<GLuint>((cells_ + 255) / 256), 1, 1);
+        gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+        run_conj_scale(gl, conj_prog_, cells_, 1.0f);
+        run_fft_axis(gl, grid_, fft_progs_, freq_axis);
+        run_conj_scale(gl, conj_prog_, cells_, 1.0f / static_cast<float>(fa.n));
+    }
+
     // One e^{-H dtau} Strang pass over psi (no normalization).
     void strang_imaginary(Gl& gl) {
         multiply(gl, relax_half_buf_);
@@ -857,6 +976,7 @@ private:
     GLuint axpy_prog_ = 0;
     GLuint kick_prog_ = 0;
     GLuint rot_prog_ = 0;
+    GLuint shear_prog_ = 0;
     FftPrograms fft_progs_;
 };
 
