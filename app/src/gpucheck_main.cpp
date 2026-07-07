@@ -450,18 +450,22 @@ bool check_magnetic(Gl& gl) {
     ses::rotate_z(cpu, 0.6);
     bool ok = compare("magnetic rotate_z (three-shear)", gpu_out, cpu, 1e-3);
 
-    // Full magnetic step vs core MagneticPropagator3D. Kinetic table is
-    // B-independent (already correct); only the half-potential gains the
-    // diamagnetic term.
-    const ses::MagneticPropagator3D mprop{g, v, dt, b};
-    const ses::SplitOperator3D core_diamag{g, mprop.effective_potential(), dt};
-    eng.upload_state(gl, psi0);
-    eng.set_half_potential(gl, core_diamag.half_potential_phase());
-    eng.magnetic_step(gl, 0.5 * b * (0.5 * dt), 20);
-    eng.readback(gl, gpu_out);
-    ses::Field3D cpu2 = psi0;
-    mprop.step(cpu2, 20);
-    ok = compare("magnetic step 20", gpu_out, cpu2, 2e-3) && ok;
+    // Full magnetic step vs core MagneticPropagator3D, for a field along z
+    // and along x. Kinetic table is B-independent (already correct); only the
+    // half-potential gains the (axis-dependent) diamagnetic term.
+    for (int fa = 2; fa >= 0; fa -= 2) {  // axis z then x
+        const ses::MagneticPropagator3D mprop{g, v, dt, b, fa};
+        const ses::SplitOperator3D core_diamag{g, mprop.effective_potential(), dt};
+        eng.upload_state(gl, psi0);
+        eng.set_half_potential(gl, core_diamag.half_potential_phase());
+        eng.magnetic_step(gl, fa, 0.5 * b * (0.5 * dt), 20);
+        eng.readback(gl, gpu_out);
+        ses::Field3D cpu2 = psi0;
+        mprop.step(cpu2, 20);
+        ok = compare(fa == 2 ? "magnetic step z" : "magnetic step x", gpu_out, cpu2,
+                     2e-3) &&
+             ok;
+    }
     return ok;
 }
 

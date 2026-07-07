@@ -333,21 +333,22 @@ layout(std430, binding = 0) buffer PsiBuf { vec2 psi[]; };
 uniform uint n;
 uniform int nx;
 uniform int ny;
-uniform int nf;         // length of the FFT (freq) axis
-uniform int freq_is_x;  // 1: freq axis = x (shift coord = y); 0: freq = y
-uniform float kscale;   // 2*pi / L_freq  (signed wavenumber = kscale * signed_f)
-uniform float cmin;     // shift-coordinate axis min
-uniform float ch;       // shift-coordinate axis spacing
-uniform float coeff;    // shear coefficient
+uniform int nz;
+uniform int freq_axis;   // 0=x,1=y,2=z: the FFT (freq) axis
+uniform int coord_axis;  // the shift-coordinate axis (perpendicular)
+uniform int nf;          // length of the freq axis
+uniform float kscale;    // 2*pi / L_freq  (signed wavenumber = kscale*signed_f)
+uniform float cmin;      // shift-coordinate axis min
+uniform float ch;        // shift-coordinate axis spacing
+uniform float coeff;     // shear coefficient
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= n) {
         return;
     }
-    int i = int(idx) % nx;
-    int j = (int(idx) / nx) % ny;
-    int f = (freq_is_x == 1) ? i : j;   // index along the freq axis
-    int p = (freq_is_x == 1) ? j : i;   // index along the shift-coord axis
+    int e[3] = int[3](int(idx) % nx, (int(idx) / nx) % ny, int(idx) / (nx * ny));
+    int f = e[freq_axis];
+    int p = e[coord_axis];
     int sf = (f < nf / 2) ? f : f - nf;  // signed fftfreq
     float kf = kscale * float(sf);
     float d = coeff * (cmin + float(p) * ch);
@@ -750,26 +751,31 @@ public:
         }
     }
 
-    // Exact three-shear rotation of psi about z by theta (magnetic paramagnetic
-    // (B/2)L_z term), GPU transcription of core/rotation.hpp. In place.
-    void rotate_z_shear(Gl& gl, double theta) {
+    // Exact three-shear rotation of psi about coordinate `axis` by theta (the
+    // magnetic paramagnetic (B/2)L_axis term), GPU transcription of
+    // core/rotation.hpp rotate_axis. In place.
+    void rotate_axis_shear(Gl& gl, int axis, double theta) {
         gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, psi_buf_);
+        const int b = (axis + 1) % 3;  // in-plane axes (b x c = axis)
+        const int c = (axis + 2) % 3;
         const double t = std::tan(0.5 * theta);
         const double s = std::sin(theta);
-        apply_shear(gl, 0, -t);  // x-shear by -tan(theta/2)
-        apply_shear(gl, 1, s);   // y-shear by sin(theta)
-        apply_shear(gl, 0, -t);  // x-shear by -tan(theta/2)
+        apply_shear(gl, b, c, -t);
+        apply_shear(gl, c, b, s);
+        apply_shear(gl, b, c, -t);
     }
+    void rotate_z_shear(Gl& gl, double theta) { rotate_axis_shear(gl, 2, theta); }
 
-    // Magnetic Strang step: R(a) . core-step . R(a), a = (B/2)(dt/2). The core
-    // step uses half_buf_, which the caller must have set to the diamagnetic-
-    // augmented V + (B^2/8)rho^2 (set_half_potential). Chained half-rotations
-    // between steps merge into the per-step Larmor angle (B/2) dt.
-    void magnetic_step(Gl& gl, double half_angle, int nsteps) {
+    // Magnetic Strang step: R(a) . core-step . R(a), a = (B/2)(dt/2), rotating
+    // about the field `axis`. The core step uses half_buf_, which the caller
+    // must have set to the diamagnetic-augmented V + (B^2/8)rho_perp^2
+    // (set_half_potential). Chained half-rotations between steps merge into
+    // the per-step Larmor angle (B/2) dt.
+    void magnetic_step(Gl& gl, int axis, double half_angle, int nsteps) {
         for (int s = 0; s < nsteps; ++s) {
-            rotate_z_shear(gl, half_angle);
+            rotate_axis_shear(gl, axis, half_angle);
             step(gl, 1);
-            rotate_z_shear(gl, half_angle);
+            rotate_axis_shear(gl, axis, half_angle);
         }
     }
 
@@ -884,23 +890,28 @@ public:
     }
 
 private:
-    // One shear of the three-shear rotation: FFT along freq_axis (0=x,1=y),
-    // shift each line by coeff*(perpendicular coord) via the phase kernel,
+    const ses::Grid1D& axis_grid(int a) const {
+        return a == 0 ? grid_.x : (a == 1 ? grid_.y : grid_.z);
+    }
+
+    // One shear of the three-shear rotation: FFT along freq_axis (0=x,1=y,2=z),
+    // shift each line by coeff*(its coord_axis coordinate) via the phase kernel,
     // then inverse FFT along that axis (conj -> fft -> conj/N). In place on
-    // whatever is bound at binding 0 (rotate_z_shear binds psi).
-    void apply_shear(Gl& gl, int freq_axis, double coeff) {
+    // whatever is bound at binding 0 (rotate_axis_shear binds psi).
+    void apply_shear(Gl& gl, int freq_axis, int coord_axis, double coeff) {
         run_fft_axis(gl, grid_, fft_progs_, freq_axis);
-        const bool fx = (freq_axis == 0);
-        const ses::Grid1D& fa = fx ? grid_.x : grid_.y;  // freq axis
-        const ses::Grid1D& ca = fx ? grid_.y : grid_.x;  // shift-coord axis
+        const ses::Grid1D& fa = axis_grid(freq_axis);
+        const ses::Grid1D& ca = axis_grid(coord_axis);
         const double two_pi = 6.283185307179586;
         gl.glUseProgram(shear_prog_);
         gl.glUniform1ui(gl.glGetUniformLocation(shear_prog_, "n"),
                         static_cast<GLuint>(cells_));
         gl.glUniform1i(gl.glGetUniformLocation(shear_prog_, "nx"), grid_.x.n);
         gl.glUniform1i(gl.glGetUniformLocation(shear_prog_, "ny"), grid_.y.n);
+        gl.glUniform1i(gl.glGetUniformLocation(shear_prog_, "nz"), grid_.z.n);
+        gl.glUniform1i(gl.glGetUniformLocation(shear_prog_, "freq_axis"), freq_axis);
+        gl.glUniform1i(gl.glGetUniformLocation(shear_prog_, "coord_axis"), coord_axis);
         gl.glUniform1i(gl.glGetUniformLocation(shear_prog_, "nf"), fa.n);
-        gl.glUniform1i(gl.glGetUniformLocation(shear_prog_, "freq_is_x"), fx ? 1 : 0);
         gl.glUniform1f(gl.glGetUniformLocation(shear_prog_, "kscale"),
                        static_cast<float>(two_pi / (fa.xmax - fa.xmin)));
         gl.glUniform1f(gl.glGetUniformLocation(shear_prog_, "cmin"),

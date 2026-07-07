@@ -56,6 +56,7 @@
 #include <core/field.hpp>
 #include <core/grid.hpp>
 #include <core/imaginary_time.hpp>
+#include <core/magnetic.hpp>
 #include <core/marching_cubes.hpp>
 #include <core/observables.hpp>
 #include <core/potential.hpp>
@@ -620,7 +621,8 @@ protected:
                         // paramagnetic L_z is the exact three-shear rotation.
                         // No display trick: the cloud genuinely precesses (and
                         // diamagnetically contracts) in psi itself.
-                        engine_.magnetic_step(*this, 0.5 * bfield_b_ * (0.5 * sim_.dt()),
+                        engine_.magnetic_step(*this, bfield_axis_,
+                                              0.5 * bfield_b_ * (0.5 * sim_.dt()),
                                               pending_gpu_steps_);
                     } else if (efield_e0_ > 0.0) {
                         // Static uniform electric field along +z: the SAME
@@ -1149,27 +1151,29 @@ public:
         update();
     }
 
+    // Cycle the field axis z -> x -> y -> z. The diamagnetic term is
+    // perpendicular to the axis, so the half-potential table is rebuilt.
+    void toggle_bfield_axis() {
+        bfield_axis_ = (bfield_axis_ == 2) ? 0 : (bfield_axis_ == 0 ? 1 : 2);
+        upload_magnetic_tables();
+        refresh_title();
+        update();
+    }
+    int bfield_axis() const { return bfield_axis_; }
+
     // The half-potential table the GPU step should use for the current field:
-    // V + (B^2/8) rho^2 when B is on, the base atom when off.
+    // V + (B^2/8) rho_perp^2 (via core MagneticPropagator) when B is on, the
+    // base atom when off.
     void upload_magnetic_tables() {
         if (!gpu_ok_) {
             return;
         }
         makeCurrent();
         if (bfield_b_ > 0.0) {
-            const ses::Grid3D& g = sim_.grid();
-            std::vector<double> v = sim_.potential();
-            const double c = bfield_b_ * bfield_b_ / 8.0;
-            for (int k = 0; k < g.z.n; ++k) {
-                for (int j = 0; j < g.y.n; ++j) {
-                    for (int i = 0; i < g.x.n; ++i) {
-                        const double rho2 = g.x.coord(i) * g.x.coord(i) +
-                                            g.y.coord(j) * g.y.coord(j);
-                        v[static_cast<std::size_t>(g.flat(i, j, k))] += c * rho2;
-                    }
-                }
-            }
-            const ses::SplitOperator3D aug{g, v, sim_.dt()};
+            const ses::MagneticPropagator3D mprop{sim_.grid(), sim_.potential(),
+                                                  sim_.dt(), bfield_b_, bfield_axis_};
+            const ses::SplitOperator3D aug{sim_.grid(), mprop.effective_potential(),
+                                           sim_.dt()};
             engine_.set_half_potential(*this, aug.half_potential_phase());
         } else {
             engine_.set_half_potential(*this, sim_.propagator().half_potential_phase());
@@ -1724,7 +1728,10 @@ private:
                        .arg(efield_e0_ * 5.14220674e11, 0, 'e', 2)
                  : QString()) +
             (bfield_b_ > 0.0
-                 ? QStringLiteral("  B-field z: %1 au, omega_L %2 au (psi evolved)")
+                 ? QStringLiteral("  B-field %1: %2 au, omega_L %3 au (psi evolved)")
+                       .arg(bfield_axis_ == 2 ? QStringLiteral("z")
+                                              : (bfield_axis_ == 0 ? QStringLiteral("x")
+                                                                   : QStringLiteral("y")))
                        .arg(bfield_b_, 0, 'f', 4)
                        .arg(0.5 * bfield_b_, 0, 'f', 4)
                  : QString()) +
@@ -2033,6 +2040,7 @@ private:
     double laser_e0_ = 0.0;
     double efield_e0_ = 0.0;  // static +z electric field magnitude (au); 0 = off
     double bfield_b_ = 0.0;      // magnetic field strength (au); 0 = off
+    int bfield_axis_ = 2;        // field direction: 2=z, 0=x, 1=y
     double dipole_z_ = 0.0;   // |<2p_z| z |1s>| from the cached states
     double pop_ground_ = 0.0;
     double pop_excited_ = 0.0;
@@ -2177,14 +2185,23 @@ int main(int argc, char** argv) {
         controls->addWidget(efield_slider);
         controls->addWidget(efield_val);
     }
-    // Magnetic field along +z: strength slider. psi evolves under the proper
-    // minimal-coupling Hamiltonian (paramagnetic precession at omega = B/2 +
-    // diamagnetic contraction). Non-axis-symmetric states (p_x, d_xy, ...)
-    // visibly precess; s / p_z about z do not (they only diamagnetically
-    // contract).
+    // Magnetic field: axis cycle (z -> x -> y) + strength slider. psi evolves
+    // under the proper minimal-coupling Hamiltonian (paramagnetic precession
+    // at omega = B/2 about the axis + diamagnetic contraction). States not
+    // symmetric about the axis visibly precess.
     {
         constexpr double kMaxB = 0.2;  // au at full slider
-        controls->addWidget(new QLabel(QStringLiteral(" B-field z ")));
+        auto axis_text = [](int a) {
+            return a == 2 ? QStringLiteral(" B z ")
+                          : (a == 0 ? QStringLiteral(" B x ") : QStringLiteral(" B y "));
+        };
+        QLabel* b_axis_label = new QLabel(axis_text(2));
+        controls->addWidget(b_axis_label);
+        controls->addAction(QStringLiteral("axis"), viewport,
+                            [viewport, b_axis_label, axis_text] {
+                                viewport->toggle_bfield_axis();
+                                b_axis_label->setText(axis_text(viewport->bfield_axis()));
+                            });
         auto* b_val = new QLabel(QStringLiteral("off"));
         b_val->setMinimumWidth(60);
         auto* b_slider = new QSlider(Qt::Horizontal);
