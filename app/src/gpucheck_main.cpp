@@ -25,6 +25,7 @@
 #include "gpu_engine.hpp"
 
 #include <core/complex.hpp>
+#include <core/decay.hpp>
 #include <core/drive.hpp>
 #include <core/fft.hpp>
 #include <core/field.hpp>
@@ -469,6 +470,56 @@ bool check_mean_force(Gl& gl) {
     return ok;
 }
 
+// T10: the atlas dipole integral <to| r |from> reduced on the GPU from two
+// resident state buffers vs ses::dipole_matrix_element. Compare against the
+// core sum over the SAME fp32 data the GPU integrates (state buffers are
+// fp32), so the residual is pure tree-vs-sequential reduction order.
+bool check_dipole(Gl& gl) {
+    const ses::Grid1D axis{-8.0, 8.0, 32};
+    const ses::Grid3D g{axis, axis, axis};
+    const std::vector<double> v = ses::soft_coulomb_potential(g, 1.0, 1.0, ses::Vec3d{});
+    const ses::SplitOperator3D prop{g, v, 0.02};
+    const ses::Field3D seed = ses::gaussian_wavepacket(
+        g, ses::Vec3d{0.0, 0.0, 0.0}, ses::Vec3d{1.5, 1.5, 1.5}, ses::Vec3d{});
+    ses_gpu::GpuEngine eng;
+    if (!eng.initialize(gl, g, prop.half_potential_phase(), prop.kinetic_phase(), seed)) {
+        std::printf("engine init: FAIL\n");
+        return false;
+    }
+    // Two distinct states; the "from" carries a momentum kick so both real
+    // and imaginary parts of the matrix element are exercised.
+    const ses::Field3D fto = ses::gaussian_wavepacket(
+        g, ses::Vec3d{1.0, -0.5, 0.3}, ses::Vec3d{1.3, 1.3, 1.3}, ses::Vec3d{});
+    const ses::Field3D ffrom = ses::gaussian_wavepacket(
+        g, ses::Vec3d{-0.7, 0.4, -0.2}, ses::Vec3d{1.1, 1.1, 1.1}, ses::Vec3d{0.3, 0.0, 0.2});
+    const GLuint to_buf = eng.create_state_buffer(gl, fto);
+    const GLuint from_buf = eng.create_state_buffer(gl, ffrom);
+    const ses::DipoleMatrixElement gpu = eng.dipole_between(gl, to_buf, from_buf);
+    // fp32-truncate to match the uploaded buffers exactly.
+    auto trunc = [](const ses::Field3D& f) {
+        ses::Field3D o{f.grid()};
+        const auto& s = f.data();
+        auto& d = o.data();
+        for (std::size_t i = 0; i < s.size(); ++i) {
+            d[i] = ses::Complex<double>{static_cast<double>(static_cast<float>(s[i].real())),
+                                        static_cast<double>(static_cast<float>(s[i].imag()))};
+        }
+        return o;
+    };
+    const ses::DipoleMatrixElement cpu =
+        ses::dipole_matrix_element(trunc(fto), trunc(ffrom));
+    const double err = std::max({std::abs(gpu.x.real() - cpu.x.real()),
+                                 std::abs(gpu.x.imag() - cpu.x.imag()),
+                                 std::abs(gpu.y.real() - cpu.y.real()),
+                                 std::abs(gpu.y.imag() - cpu.y.imag()),
+                                 std::abs(gpu.z.real() - cpu.z.real()),
+                                 std::abs(gpu.z.imag() - cpu.z.imag())});
+    const bool ok = err < 1e-5;
+    std::printf("dipole <to|r|from> reduce: max |gpu - cpu| = %.3e  [%s]\n", err,
+                ok ? "PASS" : "FAIL");
+    return ok;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -516,6 +567,7 @@ int main(int argc, char** argv) {
     ok = check_driven_step(gl) && ok;
     ok = check_magnetic(gl) && ok;
     ok = check_mean_force(gl) && ok;
+    ok = check_dipole(gl) && ok;
 
     return ok ? 0 : 1;
 }

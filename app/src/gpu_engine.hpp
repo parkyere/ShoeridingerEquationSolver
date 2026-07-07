@@ -11,6 +11,7 @@
 // re-derived on the GPU side except the FFT twiddles (in-shader, fp32).
 
 #include <core/complex.hpp>
+#include <core/decay.hpp>
 #include <core/drive.hpp>
 #include <core/field.hpp>
 #include <core/grid.hpp>
@@ -344,6 +345,70 @@ void main() {
 }
 )";
 
+// Dipole matrix element <to| r |from> = sum conj(to) * (x,y,z) * from * dV,
+// reduced on the GPU straight from two resident state buffers (no CPU copy).
+// conj(to)*from is the inner-product complex product; the coordinate comes
+// from the flat index (x fastest), matching Grid1D::coord. Three complex
+// components -> 6 floats per work group in the partials buffer; the caller
+// sums the groups and scales by dV. Verified against core dipole_matrix_element
+// by sesolver_gpucheck.
+inline const char* kDipoleSrc = R"(#version 430 core
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer ToBuf { vec2 fto[]; };
+layout(std430, binding = 3) readonly buffer FromBuf { vec2 ffrom[]; };
+layout(std430, binding = 2) writeonly buffer PartialsBuf { float partials[]; };
+uniform uint n;
+uniform int nx;
+uniform int ny;
+uniform vec3 box_min;
+uniform vec3 cell_h;
+
+shared vec2 sx[256];
+shared vec2 sy[256];
+shared vec2 sz[256];
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint stride = gl_NumWorkGroups.x * 256u;
+    vec2 ax = vec2(0.0);
+    vec2 ay = vec2(0.0);
+    vec2 az = vec2(0.0);
+    for (uint idx = gl_GlobalInvocationID.x; idx < n; idx += stride) {
+        vec2 a = fto[idx];
+        vec2 b = ffrom[idx];
+        vec2 c = vec2(a.x * b.x + a.y * b.y, a.x * b.y - a.y * b.x);  // conj(to)*from
+        int i = int(idx) % nx;
+        int j = (int(idx) / nx) % ny;
+        int k = int(idx) / (nx * ny);
+        vec3 r = box_min + vec3(float(i), float(j), float(k)) * cell_h;
+        ax += c * r.x;
+        ay += c * r.y;
+        az += c * r.z;
+    }
+    sx[tid] = ax;
+    sy[tid] = ay;
+    sz[tid] = az;
+    barrier();
+    for (uint half_len = 128u; half_len > 0u; half_len >>= 1u) {
+        if (tid < half_len) {
+            sx[tid] += sx[tid + half_len];
+            sy[tid] += sy[tid + half_len];
+            sz[tid] += sz[tid + half_len];
+        }
+        barrier();
+    }
+    if (tid == 0u) {
+        uint g = gl_WorkGroupID.x;
+        partials[6u * g + 0u] = sx[0].x;
+        partials[6u * g + 1u] = sx[0].y;
+        partials[6u * g + 2u] = sy[0].x;
+        partials[6u * g + 3u] = sy[0].y;
+        partials[6u * g + 4u] = sz[0].x;
+        partials[6u * g + 5u] = sz[0].y;
+    }
+}
+)";
+
 // ---- helpers ---------------------------------------------------------------
 
 inline std::string instantiate(std::string tmpl, const char* token, int value) {
@@ -546,10 +611,11 @@ public:
         kick_prog_ = build_program(gl, kDipoleKickSrc, "dipole kick");
         shear_prog_ = build_program(gl, kShearSrc, "shear");
         force_prog_ = build_program(gl, kMeanForceSrc, "mean force");
+        dipole_prog_ = build_program(gl, kDipoleSrc, "dipole");
         fft_progs_ = build_fft_programs(gl, grid);
         if (mul_prog_ == 0 || conj_prog_ == 0 || bridge_prog_ == 0 || norm_prog_ == 0 ||
             scale_prog_ == 0 || inner_prog_ == 0 || axpy_prog_ == 0 || kick_prog_ == 0 ||
-            shear_prog_ == 0 || force_prog_ == 0 ||
+            shear_prog_ == 0 || force_prog_ == 0 || dipole_prog_ == 0 ||
             fft_progs_.axis[0] == 0 || fft_progs_.axis[1] == 0 ||
             fft_progs_.axis[2] == 0) {
             return false;
@@ -561,6 +627,8 @@ public:
         partials_buf_ = make_buffer(gl, std::vector<float>(2 * kNormPeakGroups, 0.0f));
         force_partials_buf_ =
             make_buffer(gl, std::vector<float>(4 * kNormPeakGroups, 0.0f));
+        dipole_partials_buf_ =
+            make_buffer(gl, std::vector<float>(6 * kNormPeakGroups, 0.0f));
         return true;
     }
 
@@ -716,6 +784,47 @@ public:
         }
         const double dv = grid_.cell_volume();
         return ses::Vec3d{gx * dv, gy * dv, gz * dv};
+    }
+
+    // <to| r |from> = sum conj(to) * (x,y,z) * from * dV, straight from two
+    // resident state buffers -- the atlas dipole integrals with NO CPU copy of
+    // the states (they already live on the GPU). Component-wise complex.
+    ses::DipoleMatrixElement dipole_between(Gl& gl, GLuint to_buf, GLuint from_buf) {
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, to_buf);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, from_buf);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, dipole_partials_buf_);
+        gl.glUseProgram(dipole_prog_);
+        gl.glUniform1ui(gl.glGetUniformLocation(dipole_prog_, "n"),
+                        static_cast<GLuint>(cells_));
+        gl.glUniform1i(gl.glGetUniformLocation(dipole_prog_, "nx"), grid_.x.n);
+        gl.glUniform1i(gl.glGetUniformLocation(dipole_prog_, "ny"), grid_.y.n);
+        gl.glUniform3f(gl.glGetUniformLocation(dipole_prog_, "box_min"),
+                       static_cast<float>(grid_.x.xmin), static_cast<float>(grid_.y.xmin),
+                       static_cast<float>(grid_.z.xmin));
+        gl.glUniform3f(gl.glGetUniformLocation(dipole_prog_, "cell_h"),
+                       static_cast<float>(grid_.x.spacing()),
+                       static_cast<float>(grid_.y.spacing()),
+                       static_cast<float>(grid_.z.spacing()));
+        gl.glDispatchCompute(kNormPeakGroups, 1, 1);
+        gl.glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+
+        float partials[6 * kNormPeakGroups];
+        gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, dipole_partials_buf_);
+        gl.glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(partials), partials);
+        double dxr = 0.0, dxi = 0.0, dyr = 0.0, dyi = 0.0, dzr = 0.0, dzi = 0.0;
+        for (int g = 0; g < kNormPeakGroups; ++g) {
+            dxr += partials[6 * g + 0];
+            dxi += partials[6 * g + 1];
+            dyr += partials[6 * g + 2];
+            dyi += partials[6 * g + 3];
+            dzr += partials[6 * g + 4];
+            dzi += partials[6 * g + 5];
+        }
+        const double dv = grid_.cell_volume();
+        return ses::DipoleMatrixElement{
+            ses::Complex<double>{dxr * dv, dxi * dv},
+            ses::Complex<double>{dyr * dv, dyi * dv},
+            ses::Complex<double>{dzr * dv, dzi * dv}};
     }
 
     // psi <- psi - c * phi (complex c = (cre, cim)): projects phi out when
@@ -991,8 +1100,9 @@ private:
     GLuint relax_kin_buf_ = 0;
     double relax_dtau_ = 0.0;
     GLuint partials_buf_ = 0;
-    GLuint force_partials_buf_ = 0;  // vec4 partials for mean_force
-    GLuint grad_v_buf_ = 0;          // grad V field (vec4 per cell)
+    GLuint force_partials_buf_ = 0;    // vec4 partials for mean_force
+    GLuint dipole_partials_buf_ = 0;   // 6-float partials for dipole_between
+    GLuint grad_v_buf_ = 0;            // grad V field (vec4 per cell)
     GLuint mul_prog_ = 0;
     GLuint conj_prog_ = 0;
     GLuint bridge_prog_ = 0;
@@ -1003,6 +1113,7 @@ private:
     GLuint kick_prog_ = 0;
     GLuint shear_prog_ = 0;
     GLuint force_prog_ = 0;
+    GLuint dipole_prog_ = 0;
     FftPrograms fft_progs_;
 };
 
