@@ -612,6 +612,16 @@ protected:
                         const ses::DipoleDrive d{laser_axis(), laser_e0_, laser_omega_};
                         engine_.driven_step(*this, d, sim_.time() + gpu_time_,
                                             sim_.dt(), pending_gpu_steps_);
+                    } else if (bfield_b_ > 0.0) {
+                        // Magnetic field along +z: the PROPER minimal-coupling
+                        // solve. psi evolves under H = H0 + (B/2)L_z +
+                        // (B^2/8)rho^2 -- the diamagnetic term is already in the
+                        // half-potential table (uploaded on set_bfield_b), the
+                        // paramagnetic L_z is the exact three-shear rotation.
+                        // No display trick: the cloud genuinely precesses (and
+                        // diamagnetically contracts) in psi itself.
+                        engine_.magnetic_step(*this, 0.5 * bfield_b_ * (0.5 * sim_.dt()),
+                                              pending_gpu_steps_);
                     } else if (efield_e0_ > 0.0) {
                         // Static uniform electric field along +z: the SAME
                         // dipole drive at omega = 0 (Stark). The nucleus is the
@@ -633,14 +643,6 @@ protected:
                     // is untouched; imaginary-time relaxation never runs this.
                     if (mask_buf_ != 0) {
                         engine_.apply_mask(*this, mask_buf_);
-                    }
-
-                    // Magnetic field: accumulate the Larmor angle (omega = B/2).
-                    // The state stays pristine under H0 -- the rotation is applied
-                    // only for DISPLAY (write_display_texture), never blurring.
-                    if (bfield_b_ > 0.0) {
-                        larmor_angle_ +=
-                            0.5 * bfield_b_ * pending_gpu_steps_ * sim_.dt();
                     }
 
                     // T4/T5/T7: competing-channels Poisson trials over the
@@ -957,7 +959,8 @@ public:
         sim_ = make_simulation();
         stepping_ = Stepping::RealTime;
         laser_pol_ = LaserPol::Off;  // reset returns to the vanilla packet demo
-        larmor_angle_ = 0.0;  // fresh state: no accumulated Larmor rotation
+        bfield_b_ = 0.0;             // and to no magnetic field
+        upload_magnetic_tables();    // restore the base half-potential
         cpu_is_truth_ = true;  // GPU state discarded with the reset
         gpu_time_ = 0.0;
         pending_gpu_steps_ = 0;
@@ -1132,26 +1135,47 @@ public:
         update();
     }
 
-    // Magnetic field strength (au) along the current axis (z or x); 0 = off. The
-    // cloud precesses (Larmor) about the axis at omega = B/2 -- applied as a
-    // rigid rotation of the DISPLAY (the central potential commutes with it).
+    // Magnetic field strength (au) along +z; 0 = off. PROPER minimal-coupling
+    // solve: psi evolves under H = H0 + (B/2)L_z + (B^2/8)rho^2. Uploading the
+    // diamagnetic-augmented half-potential here means the per-frame
+    // magnetic_step only has to add the paramagnetic rotation.
     void set_bfield_b(double b) {
         bfield_b_ = b;
+        upload_magnetic_tables();
         if (b > 0.0 && !solving()) {
             stepping_ = Stepping::RealTime;
         }
         refresh_title();
         update();
     }
-    // Swap the Larmor axis z <-> x. Resets the accumulated angle so the new-axis
-    // precession starts clean (mixing rotations about different axes is wrong).
-    void toggle_bfield_axis() {
-        bfield_axis_ = (bfield_axis_ == 2) ? 0 : 2;
-        larmor_angle_ = 0.0;
-        refresh_title();
-        update();
+
+    // The half-potential table the GPU step should use for the current field:
+    // V + (B^2/8) rho^2 when B is on, the base atom when off.
+    void upload_magnetic_tables() {
+        if (!gpu_ok_) {
+            return;
+        }
+        makeCurrent();
+        if (bfield_b_ > 0.0) {
+            const ses::Grid3D& g = sim_.grid();
+            std::vector<double> v = sim_.potential();
+            const double c = bfield_b_ * bfield_b_ / 8.0;
+            for (int k = 0; k < g.z.n; ++k) {
+                for (int j = 0; j < g.y.n; ++j) {
+                    for (int i = 0; i < g.x.n; ++i) {
+                        const double rho2 = g.x.coord(i) * g.x.coord(i) +
+                                            g.y.coord(j) * g.y.coord(j);
+                        v[static_cast<std::size_t>(g.flat(i, j, k))] += c * rho2;
+                    }
+                }
+            }
+            const ses::SplitOperator3D aug{g, v, sim_.dt()};
+            engine_.set_half_potential(*this, aug.half_potential_phase());
+        } else {
+            engine_.set_half_potential(*this, sim_.propagator().half_potential_phase());
+        }
+        doneCurrent();
     }
-    bool bfield_axis_is_z() const { return bfield_axis_ == 2; }
 
     long long photon_count() const { return photon_count_; }
     // Result of the most recent energy measurement: eigenstate index, -1 for
@@ -1700,10 +1724,9 @@ private:
                        .arg(efield_e0_ * 5.14220674e11, 0, 'e', 2)
                  : QString()) +
             (bfield_b_ > 0.0
-                 ? QStringLiteral("  B-field %1: %2 au, Larmor %3 rad")
-                       .arg(bfield_axis_ == 2 ? QStringLiteral("z") : QStringLiteral("x"))
+                 ? QStringLiteral("  B-field z: %1 au, omega_L %2 au (psi evolved)")
                        .arg(bfield_b_, 0, 'f', 4)
-                       .arg(larmor_angle_, 0, 'f', 2)
+                       .arg(0.5 * bfield_b_, 0, 'f', 4)
                  : QString()) +
             (last_measure_.isEmpty()
                  ? QString()
@@ -1712,15 +1735,12 @@ private:
 
     // ---- GL uploads (current context required: called from initializeGL/paintGL) ----
 
-    // Bridge psi to the display texture, applying the Larmor precession when a
-    // magnetic field is (or was) on. psi_buf_ stays pristine (H0), so the
-    // rotation is one fresh resample per frame -- no accumulating blur.
+    // Bridge psi to the display texture. The magnetic field now evolves psi
+    // itself (MagneticPropagator on the GPU: diamagnetic in the potential +
+    // exact three-shear paramagnetic rotation), so the display is just the
+    // real wavefunction -- no display-only rotation trick.
     void write_display_texture() {
-        if (larmor_angle_ != 0.0) {
-            engine_.write_texture_rotated(*this, psi_tex_, bfield_axis_, larmor_angle_);
-        } else {
-            engine_.write_psi_texture(*this, psi_tex_);
-        }
+        engine_.write_psi_texture(*this, psi_tex_);
     }
 
     // XYZ orientation gizmo: three arrows from the origin -- X red, Y green,
@@ -2013,8 +2033,6 @@ private:
     double laser_e0_ = 0.0;
     double efield_e0_ = 0.0;  // static +z electric field magnitude (au); 0 = off
     double bfield_b_ = 0.0;      // magnetic field strength (au); 0 = off
-    int bfield_axis_ = 2;        // Larmor axis: 2 = z, 0 = x
-    double larmor_angle_ = 0.0;  // accumulated precession angle (display-only)
     double dipole_z_ = 0.0;   // |<2p_z| z |1s>| from the cached states
     double pop_ground_ = 0.0;
     double pop_excited_ = 0.0;
@@ -2159,18 +2177,14 @@ int main(int argc, char** argv) {
         controls->addWidget(efield_slider);
         controls->addWidget(efield_val);
     }
-    // Magnetic field: axis toggle (z <-> x) + strength slider. The cloud
-    // precesses (Larmor) about the axis at omega = B/2. Non-axis-symmetric
-    // states (p_x, d_xy, ...) visibly rotate; s / p_z about z do not.
+    // Magnetic field along +z: strength slider. psi evolves under the proper
+    // minimal-coupling Hamiltonian (paramagnetic precession at omega = B/2 +
+    // diamagnetic contraction). Non-axis-symmetric states (p_x, d_xy, ...)
+    // visibly precess; s / p_z about z do not (they only diamagnetically
+    // contract).
     {
         constexpr double kMaxB = 0.2;  // au at full slider
-        QLabel* b_axis_label = new QLabel(QStringLiteral(" B-field z "));
-        controls->addWidget(b_axis_label);
-        controls->addAction(QStringLiteral("axis"), viewport, [viewport, b_axis_label] {
-            viewport->toggle_bfield_axis();
-            b_axis_label->setText(viewport->bfield_axis_is_z() ? QStringLiteral(" B-field z ")
-                                                               : QStringLiteral(" B-field x "));
-        });
+        controls->addWidget(new QLabel(QStringLiteral(" B-field z ")));
         auto* b_val = new QLabel(QStringLiteral("off"));
         b_val->setMinimumWidth(60);
         auto* b_slider = new QSlider(Qt::Horizontal);
