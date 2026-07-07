@@ -41,8 +41,8 @@
 // T7 (lifetimes to n = 10): the potential is spherical, so the radial
 // engine (core/radial.hpp) solves EVERY bound level to n = 10 in 1D --
 // energies and E1 lifetimes for all 55 levels, printed at startup. The 3D
-// tracked manifold is what the +-64 Bohr box can physically hold: n <= 4
-// (30 states, ~150 channels), each synthesized as (u/r) Y_lm from the
+// tracked manifold is what the +-64 Bohr box can hold: n <= 5 (55 states,
+// 5s/5p/5d box-critical), each synthesized as (u/r) Y_lm from the
 // radial solutions (core/harmonics.hpp) -- no imaginary-time ladder, no
 // fp32 drift. Key 5 excites an n = 3 state to watch the CASCADE (e.g.
 // 3d -> 2p -> 1s, two photons). Relaxation demos auto-complete: when the
@@ -105,12 +105,13 @@ ses::WavepacketSimulation make_simulation() {
     // the CPU session stays the double-precision truth for relax / measure /
     // surface meshing, synced on demand.
     //
-    // Box +-64 Bohr at 256^3 (h = 0.5): sized for the n = 4 shell (4s
-    // classical turning point ~37 Bohr + tails). Spectral accuracy keeps
-    // h = 0.5 cheap (h = 0.375 was proven exact to 1e-6; the startup atlas
-    // cross-check E_radial vs <H>_grid audits h on every launch). ~9x the
-    // per-step cost of 128^3 -- the P5000's honest ceiling for a full
-    // m-resolved n <= 4 manifold (30 state buffers ~ 4 GB VRAM).
+    // Box +-64 Bohr at 256^3 (h = 0.5): holds the n <= 5 shell, though n = 5
+    // is box-critical (5s classical turning point ~50 Bohr, tail near the
+    // u(R_box) = 0 wall). Spectral accuracy keeps h = 0.5 cheap (h = 0.375
+    // was proven exact to 1e-6; the startup atlas cross-check E_radial vs
+    // <H>_grid audits h on every launch). The full m-resolved n <= 5
+    // manifold is 55 state buffers (~7.3 GB VRAM; ~15 GB host RAM held
+    // transiently during the dipole-integral phase, freed right after).
     const ses::Grid1D axis{-64.0, 64.0, 256};
     const ses::Grid3D grid{axis, axis, axis};
     return ses::WavepacketSimulation{ses::WavepacketSimulation::Config{
@@ -292,25 +293,30 @@ enum class ViewMode { Cloud, Surface };
 enum class Stepping { RealTime, Relaxing, RelaxingExcited };
 enum class LaserPol { Off, Z, X };
 
-// T5/T7/T8: the tracked eigenstate manifold -- everything the box holds,
-// the full m-resolved n <= 4 shell. First five indices frozen (selftests).
+// T5/T7/T8: the tracked eigenstate manifold -- the full m-resolved n <= 5
+// shell (55 states). n = 5 is box-critical on the +-64 Bohr grid (its u(r)
+// tail approaches the u(R_box) = 0 wall, so 5s/5p/5d are mildly distorted);
+// the startup h-audit cross-checks 5s against <H>_grid. First five indices
+// frozen (selftests).
 enum StateIndex : int {
     kS1 = 0, kP2X = 1, kP2Y = 2, kP2Z = 3, kS2 = 4,
     k3S = 5, k3PX = 6, k3PY = 7, k3PZ = 8,
     k3DXY = 9, k3DYZ = 10, k3DZ0 = 11, k3DZX = 12, k3DX2Y2 = 13,
     k4S = 14, k4F0 = 26,  // named entries the shell refers to
+    k5S = 30,             // first n = 5 state (box-critical, h-audited)
 };
-constexpr int kNumStates = 30;
+constexpr int kNumStates = 55;
 
 // Radial levels backing the manifold (l, nodes k); n = l + 1 + k.
 struct RadialLevelSpec {
     int l;
     int k;
 };
-constexpr int kNumLevels = 10;  // 1s 2s 2p 3s 3p 3d 4s 4p 4d 4f
+constexpr int kNumLevels = 15;  // 1s 2s 2p 3s 3p 3d 4s 4p 4d 4f + 5s 5p 5d 5f 5g
 constexpr RadialLevelSpec kLevelSpec[kNumLevels] = {
     {0, 0}, {0, 1}, {1, 0}, {0, 2}, {1, 1}, {2, 0},
     {0, 3}, {1, 2}, {2, 1}, {3, 0},
+    {0, 4}, {1, 3}, {2, 2}, {3, 1}, {4, 0},
 };
 
 struct StateSpec {
@@ -334,6 +340,16 @@ constexpr StateSpec kStateSpec[kNumStates] = {
     {9, 3, -3, "4f_-3"}, {9, 3, -2, "4f_-2"}, {9, 3, -1, "4f_-1"},
     {9, 3, 0, "4f_0"}, {9, 3, 1, "4f_+1"}, {9, 3, 2, "4f_+2"},
     {9, 3, 3, "4f_+3"},
+    {10, 0, 0, "5s"},
+    {11, 1, 1, "5p_x"}, {11, 1, -1, "5p_y"}, {11, 1, 0, "5p_z"},
+    {12, 2, -2, "5d_xy"}, {12, 2, -1, "5d_yz"}, {12, 2, 0, "5d_z2"},
+    {12, 2, 1, "5d_zx"}, {12, 2, 2, "5d_x2y2"},
+    {13, 3, -3, "5f_-3"}, {13, 3, -2, "5f_-2"}, {13, 3, -1, "5f_-1"},
+    {13, 3, 0, "5f_0"}, {13, 3, 1, "5f_+1"}, {13, 3, 2, "5f_+2"},
+    {13, 3, 3, "5f_+3"},
+    {14, 4, -4, "5g_-4"}, {14, 4, -3, "5g_-3"}, {14, 4, -2, "5g_-2"},
+    {14, 4, -1, "5g_-1"}, {14, 4, 0, "5g_0"}, {14, 4, 1, "5g_+1"},
+    {14, 4, 2, "5g_+2"}, {14, 4, 3, "5g_+3"}, {14, 4, 4, "5g_+4"},
 };
 
 struct ShellChannel {
@@ -1050,8 +1066,8 @@ protected:
             const ses::Field3D& f = *state_cpu_[s];
             // The h-audit: cross-check the 1D radial energy against the
             // full 3D spectral <H> for the resolution-critical 1s and the
-            // box-critical 4s (a full-grid CPU FFT each -- 2 states only).
-            if (idx == kS1 || idx == k4S) {
+            // box-critical 4s/5s (a full-grid CPU FFT each -- 3 states only).
+            if (idx == kS1 || idx == k4S || idx == k5S) {
                 std::fprintf(stderr,
                              "atlas: %-8s E_radial = %.6f Ha   <H>_grid = %.6f Ha\n",
                              kStateSpec[s].name, state_energy_[s],

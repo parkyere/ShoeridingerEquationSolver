@@ -1,6 +1,6 @@
 #pragma once
 
-// Real spherical harmonics (l <= 2) and 3D orbital synthesis (T7): with the
+// Real spherical harmonics (l <= 4) and 3D orbital synthesis (T7): with the
 // radial engine's u_nl(r), the 3D eigenstate is EXACTLY psi = (u/r) Y_lm --
 // separation of variables replaces the imaginary-time ladder for building
 // the tracked manifold. Cartesian polynomial forms avoid trigonometry and
@@ -22,6 +22,9 @@ namespace ses {
 //   l=2: -2 -> xy, -1 -> yz, 0 -> 3z^2-r^2, +1 -> zx, +2 -> x^2-y^2
 //   l=3: -3 -> y(3x^2-y^2), -2 -> xyz, -1 -> y(5z^2-r^2), 0 -> z(5z^2-3r^2),
 //        +1 -> x(5z^2-r^2), +2 -> z(x^2-y^2), +3 -> x(x^2-3y^2)
+//   l=4: -4 -> xy(x^2-y^2), -3 -> yz(3x^2-y^2), -2 -> xy(7z^2-r^2),
+//        -1 -> yz(7z^2-3r^2), 0 -> 35z^4-30z^2r^2+3r^4, +1 -> xz(7z^2-3r^2),
+//        +2 -> (x^2-y^2)(7z^2-r^2), +3 -> xz(x^2-3y^2), +4 -> x^4-6x^2y^2+y^4
 inline double real_spherical_harmonic(int l, int m, double x, double y, double z) {
     constexpr double kPi = 3.14159265358979323846;
     const double r2 = x * x + y * y + z * z;
@@ -49,16 +52,35 @@ inline double real_spherical_harmonic(int l, int m, double x, double y, double z
             default: return 0.25 * c * (x * x - y * y);
         }
     }
-    // l == 3
-    const double r3 = r2 * std::sqrt(r2);
+    if (l == 3) {
+        const double r3 = r2 * std::sqrt(r2);
+        switch (m) {
+            case -3: return 0.25 * std::sqrt(35.0 / (2.0 * kPi)) * y * (3.0 * x * x - y * y) / r3;
+            case -2: return 0.5 * std::sqrt(105.0 / kPi) * x * y * z / r3;
+            case -1: return 0.25 * std::sqrt(21.0 / (2.0 * kPi)) * y * (5.0 * z * z - r2) / r3;
+            case 0: return 0.25 * std::sqrt(7.0 / kPi) * z * (5.0 * z * z - 3.0 * r2) / r3;
+            case 1: return 0.25 * std::sqrt(21.0 / (2.0 * kPi)) * x * (5.0 * z * z - r2) / r3;
+            case 2: return 0.25 * std::sqrt(105.0 / kPi) * z * (x * x - y * y) / r3;
+            default: return 0.25 * std::sqrt(35.0 / (2.0 * kPi)) * x * (x * x - 3.0 * y * y) / r3;
+        }
+    }
+    // l == 4 (g): the five n = 5 shell's highest angular momentum. Same
+    // Cartesian-polynomial / r^l convention; default case is m = +4.
+    const double r4 = r2 * r2;
     switch (m) {
-        case -3: return 0.25 * std::sqrt(35.0 / (2.0 * kPi)) * y * (3.0 * x * x - y * y) / r3;
-        case -2: return 0.5 * std::sqrt(105.0 / kPi) * x * y * z / r3;
-        case -1: return 0.25 * std::sqrt(21.0 / (2.0 * kPi)) * y * (5.0 * z * z - r2) / r3;
-        case 0: return 0.25 * std::sqrt(7.0 / kPi) * z * (5.0 * z * z - 3.0 * r2) / r3;
-        case 1: return 0.25 * std::sqrt(21.0 / (2.0 * kPi)) * x * (5.0 * z * z - r2) / r3;
-        case 2: return 0.25 * std::sqrt(105.0 / kPi) * z * (x * x - y * y) / r3;
-        default: return 0.25 * std::sqrt(35.0 / (2.0 * kPi)) * x * (x * x - 3.0 * y * y) / r3;
+        case -4: return 0.75 * std::sqrt(35.0 / kPi) * x * y * (x * x - y * y) / r4;
+        case -3: return 0.75 * std::sqrt(35.0 / (2.0 * kPi)) * y * z * (3.0 * x * x - y * y) / r4;
+        case -2: return 0.75 * std::sqrt(5.0 / kPi) * x * y * (7.0 * z * z - r2) / r4;
+        case -1: return 0.75 * std::sqrt(5.0 / (2.0 * kPi)) * y * z * (7.0 * z * z - 3.0 * r2) / r4;
+        case 0:
+            return (3.0 / 16.0) * std::sqrt(1.0 / kPi) *
+                   (35.0 * z * z * z * z - 30.0 * z * z * r2 + 3.0 * r2 * r2) / r4;
+        case 1: return 0.75 * std::sqrt(5.0 / (2.0 * kPi)) * x * z * (7.0 * z * z - 3.0 * r2) / r4;
+        case 2: return 0.375 * std::sqrt(5.0 / kPi) * (x * x - y * y) * (7.0 * z * z - r2) / r4;
+        case 3: return 0.75 * std::sqrt(35.0 / (2.0 * kPi)) * x * z * (x * x - 3.0 * y * y) / r4;
+        default:
+            return (3.0 / 16.0) * std::sqrt(35.0 / kPi) *
+                   (x * x * x * x - 6.0 * x * x * y * y + y * y * y * y) / r4;
     }
 }
 

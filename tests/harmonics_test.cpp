@@ -79,6 +79,25 @@ TEST(RealSphericalHarmonic, LEqualsThreePointValues) {
     EXPECT_NEAR(ses::real_spherical_harmonic(3, 2, 1.0, 1.0, 1.0), 0.0, 1e-12);
 }
 
+TEST(RealSphericalHarmonic, LEqualsFourPointValues) {
+    // g_z4 (m=0) at the +z pole: (35 z^4 - 30 z^2 r^2 + 3 r^4)/r^4 = 8 there.
+    EXPECT_NEAR(ses::real_spherical_harmonic(4, 0, 0.0, 0.0, 1.0),
+                (3.0 / 16.0) * std::sqrt(1.0 / kPi) * 8.0, 1e-12);
+    // g (m=+4) on the +x axis: (x^4 - 6 x^2 y^2 + y^4)/r^4 = 1.
+    EXPECT_NEAR(ses::real_spherical_harmonic(4, 4, 1.0, 0.0, 0.0),
+                (3.0 / 16.0) * std::sqrt(35.0 / kPi), 1e-12);
+    // g (m=+2) on the +x axis: (x^2 - y^2)(7 z^2 - r^2)/r^4 = (1)(-1) = -1.
+    EXPECT_NEAR(ses::real_spherical_harmonic(4, 2, 1.0, 0.0, 0.0),
+                -0.375 * std::sqrt(5.0 / kPi), 1e-12);
+    // g (m=+3) on the (1,0,1)/sqrt2 diagonal: x z (x^2 - 3 y^2)/r^4 = 1/4.
+    const double s = 1.0 / std::sqrt(2.0);
+    EXPECT_NEAR(ses::real_spherical_harmonic(4, 3, s, 0.0, s),
+                0.25 * 0.75 * std::sqrt(35.0 / (2.0 * kPi)), 1e-12);
+    // Nodal: m=+4 vanishes at the pole; m=-4 vanishes on the x = y diagonal.
+    EXPECT_NEAR(ses::real_spherical_harmonic(4, 4, 0.0, 0.0, 1.0), 0.0, 1e-12);
+    EXPECT_NEAR(ses::real_spherical_harmonic(4, -4, s, s, 0.0), 0.0, 1e-12);
+}
+
 struct SynthCase {
     int l;
     int m;
@@ -97,11 +116,13 @@ TEST(SynthesizeOrbital, HarmonicTrapEnergiesThroughTheFull3DMachinery) {
         vr[static_cast<std::size_t>(i)] = 0.5 * rg.r(i) * rg.r(i);
     }
 
-    // E = w (2k + l + 3/2): s, p_z, d_z2, d_xy, the 2s-like k=1, and the
-    // l = 3 f states (E = 4.5) for the n = 4 shell.
+    // E = w (2k + l + 3/2): s, p_z, d_z2, d_xy, the 2s-like k=1, the
+    // l = 3 f states (E = 4.5), and the l = 4 g states (E = 5.5) for the
+    // n = 5 shell.
     const SynthCase cases[] = {
         {0, 0, 0, 1.5}, {1, 0, 0, 2.5}, {2, 0, 0, 3.5}, {2, -2, 0, 3.5},
         {0, 0, 1, 3.5}, {3, 0, 0, 4.5}, {3, -2, 0, 4.5}, {3, 3, 0, 4.5},
+        {4, 0, 0, 5.5}, {4, -4, 0, 5.5}, {4, 2, 0, 5.5},
     };
     for (const SynthCase& c : cases) {
         const ses::RadialState st =
@@ -131,6 +152,9 @@ TEST(SynthesizeOrbital, SetIsOrthonormalOnTheGrid) {
         {2, 2, 0, 0.0},                                                    // d
         {3, -3, 0, 0.0}, {3, -2, 0, 0.0}, {3, -1, 0, 0.0}, {3, 0, 0, 0.0},
         {3, 1, 0, 0.0}, {3, 2, 0, 0.0}, {3, 3, 0, 0.0},                    // f
+        {4, -4, 0, 0.0}, {4, -3, 0, 0.0}, {4, -2, 0, 0.0}, {4, -1, 0, 0.0},
+        {4, 0, 0, 0.0}, {4, 1, 0, 0.0}, {4, 2, 0, 0.0}, {4, 3, 0, 0.0},
+        {4, 4, 0, 0.0},                                                    // g
     };
     for (const SynthCase& c : cases) {
         const ses::RadialState st =
