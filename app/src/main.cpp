@@ -100,6 +100,16 @@ namespace {
     std::exit(EXIT_FAILURE);
 }
 
+// Soft-Coulomb softening length a (Bohr) for -Z/sqrt(r^2 + a^2). At a = 0.5 = h
+// (the grid spacing) the well is as sharp as the +-64/256 grid resolves: the
+// bottom deepens to -1/a = -2 Ha and E(1s) moves toward the true -0.5 Ha, while
+// the startup h-audit (E_radial vs <H>_grid) still holds. Sharper (a < h) is not
+// unstable -- the split-operator stays unitary -- but under-resolves the
+// well/cusp and diverges the audit. The 3D grid and BOTH radial solves must use
+// the same a (kSoftening / kSoftening^2) or the synthesized orbitals stop being
+// eigenstates of the simulated Hamiltonian.
+constexpr double kSoftening = 0.5;  // a in Bohr (= h; sharpest this grid holds)
+
 ses::WavepacketSimulation make_simulation() {
     // 128^3: real-time stepping runs on the GPU engine (docs/GPU_PLAN.md G5);
     // the CPU session stays the double-precision truth for relax / measure /
@@ -116,7 +126,7 @@ ses::WavepacketSimulation make_simulation() {
     const ses::Grid3D grid{axis, axis, axis};
     return ses::WavepacketSimulation{ses::WavepacketSimulation::Config{
         grid,
-        ses::soft_coulomb_potential(grid, 1.0, 1.0, ses::Vec3d{}),
+        ses::soft_coulomb_potential(grid, 1.0, kSoftening, ses::Vec3d{}),
         ses::Vec3d{3.0, 0.0, 0.0},  // r0: beside the nucleus
         ses::Vec3d{1.5, 1.5, 1.5},  // sigma
         ses::Vec3d{0.0, 0.4, 0.0},  // k0: tangential kick
@@ -1038,7 +1048,7 @@ protected:
         std::vector<double> v(static_cast<std::size_t>(radial_grid_.n));
         for (int i = 0; i < radial_grid_.n; ++i) {
             const double r = radial_grid_.r(i);
-            v[static_cast<std::size_t>(i)] = -1.0 / std::sqrt(r * r + 1.0);
+            v[static_cast<std::size_t>(i)] = -1.0 / std::sqrt(r * r + kSoftening * kSoftening);
         }
         for (int lev = 0; lev < kNumLevels; ++lev) {
             const ses::RadialState st = ses::radial_eigenstate(
@@ -1055,7 +1065,7 @@ protected:
         std::vector<double> vf(static_cast<std::size_t>(free_grid.n));
         for (int i = 0; i < free_grid.n; ++i) {
             const double r = free_grid.r(i);
-            vf[static_cast<std::size_t>(i)] = -1.0 / std::sqrt(r * r + 1.0);
+            vf[static_cast<std::size_t>(i)] = -1.0 / std::sqrt(r * r + kSoftening * kSoftening);
         }
         const std::vector<ses::LevelInfo> table =
             ses::bound_level_table(free_grid, vf, 10);
