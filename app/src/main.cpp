@@ -51,6 +51,7 @@
 #include <core/camera.hpp>
 #include <core/colormap.hpp>
 #include <core/decay.hpp>
+#include <core/emission.hpp>
 #include <core/harmonics.hpp>
 #include <core/radial.hpp>
 #include <core/field.hpp>
@@ -444,6 +445,9 @@ protected:
                                                          kRelaxDtau};
             engine_.set_relax_tables(*this, relaxer.half_potential_weight(),
                                      relaxer.kinetic_weight(), kRelaxDtau);
+            // Radiation: the atomic potential gradient (for the live
+            // semiclassical radiated power <grad V> reduction).
+            engine_.set_potential_gradient(*this, sim_.potential());
             // T6/T7: solve the atom up front. The radial engine gets every
             // bound level to n = 10 (the full lifetime table, printed
             // below); the 3D tracked manifold (n <= 3, what the box holds)
@@ -606,6 +610,11 @@ protected:
                             engine_.scale(*this,
                                           static_cast<float>(1.0 / std::sqrt(np.sum)));
                         }
+                        // Radiation: the semiclassical radiated power from the
+                        // oscillating dipole, P = (2/3)alpha^3|<grad V>|^2, via
+                        // the GPU mean-force reduction (a 4 KB readback). ~0 for
+                        // a stationary eigenstate, nonzero for a superposition.
+                        radiated_power_ = ses::larmor_power(engine_.mean_force(*this));
                     }
                     if (laser_pol_ != LaserPol::Off) {
                         // T3: resonant dipole drive. t0 is the same clock
@@ -1734,6 +1743,9 @@ private:
                                 : QStringLiteral("relaxing->%1").arg(relax_label_)))
                 .arg(use_gpu_path() ? QStringLiteral("gpu 128^3")
                                     : QStringLiteral("cpu 128^3")) +
+            (stepping_ == Stepping::RealTime && !solving()
+                 ? QStringLiteral("  emit P = %1 au").arg(radiated_power_, 0, 'e', 2)
+                 : QString()) +
             (solving()
                  ? (synth_queue_.empty()
                         ? QStringLiteral("  solving atom: dipole channels (%1 left)")
@@ -2042,6 +2054,7 @@ private:
     double gpu_time_ = 0.0;
     double norm_display_ = 1.0;
     double relax_energy_display_ = 0.0;
+    double radiated_power_ = 0.0;  // semiclassical Larmor power (au)
     std::vector<float> readback_buf_;
 
     // Transitions arc T1/T4/T5: the cached eigenstate manifold, the decay
