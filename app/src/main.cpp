@@ -1742,7 +1742,8 @@ private:
     std::vector<ses::Rgb> colors_;
     std::vector<float> psi_staging_;
     double peak_ = 0.0;
-    double absorbance_ = 1.5;
+    double absorbance_ = 0.68;  // was 1.5; lightened ~3 '[' steps (/1.3^3) --
+                                // the default cloud was too opaque
 
     QTimer timer_;
     bool paused_ = false;
