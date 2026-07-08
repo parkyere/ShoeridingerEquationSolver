@@ -236,6 +236,39 @@ inline void run_scale(Gl& gl, GLuint prog, std::size_t n, float scale) {
     gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 }
 
+// SSBO creation helpers (shared by the engine and the concern modules). The
+// usage hint matters: GL_DYNAMIC_COPY for buffers re-uploaded often, GL_STATIC_COPY
+// for write-once data (index tables, eigenstates) so the driver keeps no host shadow.
+inline GLuint make_buffer(Gl& gl, const std::vector<float>& data) {
+    GLuint buf = 0;
+    gl.glGenBuffers(1, &buf);
+    gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, buf);
+    gl.glBufferData(GL_SHADER_STORAGE_BUFFER,
+                    static_cast<GLsizeiptr>(data.size() * sizeof(float)), data.data(),
+                    GL_DYNAMIC_COPY);
+    return buf;
+}
+
+inline GLuint make_u32_buffer(Gl& gl, const std::vector<std::uint32_t>& data) {
+    GLuint buf = 0;
+    gl.glGenBuffers(1, &buf);
+    gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, buf);
+    gl.glBufferData(GL_SHADER_STORAGE_BUFFER,
+                    static_cast<GLsizeiptr>(data.size() * sizeof(std::uint32_t)),
+                    data.data(), GL_STATIC_COPY);
+    return buf;
+}
+
+inline GLuint make_static_buffer(Gl& gl, const std::vector<float>& data) {
+    GLuint buf = 0;
+    gl.glGenBuffers(1, &buf);
+    gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, buf);
+    gl.glBufferData(GL_SHADER_STORAGE_BUFFER,
+                    static_cast<GLsizeiptr>(data.size() * sizeof(float)), data.data(),
+                    GL_STATIC_COPY);
+    return buf;
+}
+
 struct GpuState {
     ses::Grid3D grid_{};
     std::size_t cells_ = 0;
@@ -248,6 +281,11 @@ struct GpuState {
     GLuint scale_prog_ = 0;
     FftPrograms fft_progs_;
 };
+
+// Concern modules (self-contained, verified by sesolver_gpucheck). Included
+// here -- AFTER the shared utilities above (bind, build_program, make_*) -- so
+// they can use them; they are not standalone headers.
+#include "gpu_projection.hpp"
 
 // ---- the engine ------------------------------------------------------------
 
@@ -276,12 +314,12 @@ public:
         synth_prog_ = build_program(gl, kSynthSrc, "orbital synthesis");
         pack_prog_ = build_program(gl, kPackHalfSrc, "pack half");
         unpack_prog_ = build_program(gl, kUnpackHalfSrc, "unpack half");
-        proj_prog_ = build_program(gl, kProjectDepositSrc, "projection deposit");
+        projector_.build(gl);
         st_.fft_progs_ = build_fft_programs(gl, grid);
         if (st_.mul_prog_ == 0 || st_.conj_prog_ == 0 || st_.bridge_prog_ == 0 || st_.norm_prog_ == 0 ||
             st_.scale_prog_ == 0 || inner_prog_ == 0 || axpy_prog_ == 0 || kick_prog_ == 0 ||
             shear_prog_ == 0 || force_prog_ == 0 || dipole_prog_ == 0 || synth_prog_ == 0 ||
-            pack_prog_ == 0 || unpack_prog_ == 0 || proj_prog_ == 0 ||
+            pack_prog_ == 0 || unpack_prog_ == 0 || projector_.prog_ == 0 ||
             st_.fft_progs_.axis[0] == 0 || st_.fft_progs_.axis[1] == 0 ||
             st_.fft_progs_.axis[2] == 0) {
             return false;
@@ -614,75 +652,15 @@ public:
         return dipole_between(gl, tb, fb);
     }
 
-    // ---- orbital-free angular-decomposition projection (Phase 3) --------
-    // Upload the static counting-sort geometry (ses::build_radial_bin_index) and
-    // allocate g_lm. Call once after the radial grid is fixed.
+    // ---- orbital-free projection -- forwarded to the Projector concern module.
     void set_projection_index(Gl& gl, const std::vector<std::uint32_t>& sorted_cell,
                               const std::vector<std::uint32_t>& bin_off, int n_radial,
                               double h_radial, int l_max) {
-        proj_nr_ = n_radial;
-        proj_ncomp_ = (l_max + 1) * (l_max + 1);
-        proj_h_radial_ = h_radial;
-        sorted_buf_ = make_u32_buffer(gl, sorted_cell);
-        binoff_buf_ = make_u32_buffer(gl, bin_off);
-        glm_buf_ = make_buffer(gl, std::vector<float>(
-            static_cast<std::size_t>(2 * proj_ncomp_ * proj_nr_), 0.0f));
+        projector_.set_index(gl, sorted_cell, bin_off, n_radial, h_radial, l_max);
     }
-
-    // Deposit psi -> g_lm (read back to host as double). ONE grid pass over psi,
-    // INDEPENDENT of the number of states; then call project_amplitude per state.
-    void project_psi(Gl& gl) {
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, st_.psi_buf_);
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kAux, sorted_buf_);
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kBinOff, binoff_buf_);
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kGlm, glm_buf_);
-        gl.glUseProgram(proj_prog_);
-        gl.glUniform1i(gl.glGetUniformLocation(proj_prog_, "nx"), st_.grid_.x.n);
-        gl.glUniform1i(gl.glGetUniformLocation(proj_prog_, "ny"), st_.grid_.y.n);
-        gl.glUniform3f(gl.glGetUniformLocation(proj_prog_, "box_min"),
-                       static_cast<float>(st_.grid_.x.xmin), static_cast<float>(st_.grid_.y.xmin),
-                       static_cast<float>(st_.grid_.z.xmin));
-        gl.glUniform3f(gl.glGetUniformLocation(proj_prog_, "cell_h"),
-                       static_cast<float>(st_.grid_.x.spacing()),
-                       static_cast<float>(st_.grid_.y.spacing()),
-                       static_cast<float>(st_.grid_.z.spacing()));
-        gl.glUniform1f(gl.glGetUniformLocation(proj_prog_, "h_radial"),
-                       static_cast<float>(proj_h_radial_));
-        gl.glUniform1f(gl.glGetUniformLocation(proj_prog_, "dv"),
-                       static_cast<float>(st_.grid_.cell_volume()));
-        gl.glUniform1i(gl.glGetUniformLocation(proj_prog_, "nr"), proj_nr_);
-        gl.glDispatchCompute(static_cast<GLuint>(proj_nr_), 1, 1);
-        gl.glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
-
-        std::vector<float> raw(static_cast<std::size_t>(2 * proj_ncomp_ * proj_nr_));
-        gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, glm_buf_);
-        gl.glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
-                              static_cast<GLsizeiptr>(raw.size() * sizeof(float)),
-                              raw.data());
-        glm_host_.assign(static_cast<std::size_t>(proj_ncomp_),
-                         std::vector<ses::Complex<double>>(static_cast<std::size_t>(proj_nr_)));
-        for (int c = 0; c < proj_ncomp_; ++c) {
-            for (int j = 0; j < proj_nr_; ++j) {
-                const std::size_t o = 2 * (static_cast<std::size_t>(c) * proj_nr_ +
-                                           static_cast<std::size_t>(j));
-                glm_host_[static_cast<std::size_t>(c)][static_cast<std::size_t>(j)] =
-                    ses::Complex<double>{raw[o], raw[o + 1]};
-            }
-        }
-    }
-
-    // <n|psi> raw amplitude = sum_j u_nl[j] g_lm[lm(l,m)][j] (double CPU finish).
-    // Population = norm_sq(raw) / (sum_j u^2 h). Needs a prior project_psi.
-    ses::Complex<double> project_amplitude(const std::vector<double>& u, int l,
-                                           int m) const {
-        const std::vector<ses::Complex<double>>& gc =
-            glm_host_[static_cast<std::size_t>(l * l + (l + m))];
-        ses::Complex<double> raw{};
-        const int n = std::min(static_cast<int>(u.size()), proj_nr_);
-        for (int j = 0; j < n; ++j) {
-            raw += u[static_cast<std::size_t>(j)] * gc[static_cast<std::size_t>(j)];
-        }
-        return raw;
+    void project_psi(Gl& gl) { projector_.project(gl, st_.psi_buf_, st_.grid_); }
+    ses::Complex<double> project_amplitude(const std::vector<double>& u, int l, int m) const {
+        return projector_.amplitude(u, l, m);
     }
 
     // Upload the radial u_nl(r) table (fp32) that kSynthSrc interpolates.
@@ -987,40 +965,6 @@ private:
         return stats;
     }
 
-    static GLuint make_buffer(Gl& gl, const std::vector<float>& data) {
-        GLuint buf = 0;
-        gl.glGenBuffers(1, &buf);
-        gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, buf);
-        gl.glBufferData(GL_SHADER_STORAGE_BUFFER,
-                        static_cast<GLsizeiptr>(data.size() * sizeof(float)), data.data(),
-                        GL_DYNAMIC_COPY);
-        return buf;
-    }
-
-    // Write-once uint32 SSBO (the static counting-sort index tables).
-    static GLuint make_u32_buffer(Gl& gl, const std::vector<std::uint32_t>& data) {
-        GLuint buf = 0;
-        gl.glGenBuffers(1, &buf);
-        gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, buf);
-        gl.glBufferData(GL_SHADER_STORAGE_BUFFER,
-                        static_cast<GLsizeiptr>(data.size() * sizeof(std::uint32_t)),
-                        data.data(), GL_STATIC_COPY);
-        return buf;
-    }
-
-    // Write-once GPU buffer (GL_STATIC_COPY): for data uploaded once and only
-    // read by shaders afterwards (the cached eigenstates / absorber mask).
-    // Signals the driver it need not keep a host staging copy for re-uploads.
-    static GLuint make_static_buffer(Gl& gl, const std::vector<float>& data) {
-        GLuint buf = 0;
-        gl.glGenBuffers(1, &buf);
-        gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, buf);
-        gl.glBufferData(GL_SHADER_STORAGE_BUFFER,
-                        static_cast<GLsizeiptr>(data.size() * sizeof(float)), data.data(),
-                        GL_STATIC_COPY);
-        return buf;
-    }
-
     // Lazily allocate a reusable fp32 scratch buffer (for unpacking an fp16
     // state before a tested fp32 consumer reads it). Never uploaded from host.
     GLuint ensure_scratch(Gl& gl, GLuint& slot) {
@@ -1065,14 +1009,7 @@ private:
     GLuint unpack_prog_ = 0;
     GLuint scratch_a_ = 0;  // fp32 unpack scratch for fp16 consumers
     GLuint scratch_b_ = 0;  // second scratch (dipole needs two operands)
-    GLuint proj_prog_ = 0;      // orbital-free projection deposit
-    GLuint sorted_buf_ = 0;     // static counting-sort: cells grouped by radial bin
-    GLuint binoff_buf_ = 0;     // static CSR offsets
-    GLuint glm_buf_ = 0;        // g_lm[ncomp*nr] deposit output (fp32)
-    int proj_nr_ = 0;           // radial bins
-    int proj_ncomp_ = 0;        // (l_max+1)^2
-    double proj_h_radial_ = 0.0;
-    std::vector<std::vector<ses::Complex<double>>> glm_host_;  // last project_psi readback
+    Projector projector_;       // orbital-free angular projection (gpu_projection.hpp)
 };
 
 }  // namespace ses_gpu
