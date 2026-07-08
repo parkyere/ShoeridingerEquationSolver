@@ -52,6 +52,17 @@ target_link_libraries(sesolver_gpucheck
 )
 target_compile_features(sesolver_gpucheck PRIVATE cxx_std_20)
 
+# Static Qt (e.g. the vcpkg x64-linux triplet) does NOT load plugins at
+# runtime -- the platform plugin must be linked in, or the executable aborts
+# with "no Qt platform plugin could be initialized". Import xcb (X11) for both
+# GUI executables when Qt6 is a static build; shared Qt loads plugins itself,
+# so both guards make this a no-op there (Windows MinGW/MSVC).
+get_target_property(_ses_qt_core_type Qt6::Core TYPE)
+if(_ses_qt_core_type STREQUAL "STATIC_LIBRARY" AND TARGET Qt6::QXcbIntegrationPlugin)
+    qt6_import_plugins(sesolver_app INCLUDE Qt6::QXcbIntegrationPlugin)
+    qt6_import_plugins(sesolver_gpucheck INCLUDE Qt6::QXcbIntegrationPlugin)
+endif()
+
 # Qt DLLs must be findable when ctest launches the harness.
 get_target_property(_qt6_core_dll Qt6::Core LOCATION)
 get_filename_component(_qt6_bin_dir "${_qt6_core_dll}" DIRECTORY)

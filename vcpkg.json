@@ -1,0 +1,20 @@
+{
+    "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg/master/scripts/vcpkg.schema.json",
+    "name": "schroedinger-equation-solver",
+    "version": "0.0.1",
+    "description": "Single-electron TDSE solver with hand-written OpenGL visualization.",
+    "builtin-baseline": "91d69d33e10b7ca9a478c363570a30edd1d4483b",
+    "dependencies": [
+        {
+            "name": "qtbase",
+            "default-features": false,
+            "features": [
+                "gui",
+                "widgets",
+                "opengl",
+                "xcb",
+                "fontconfig"
+            ]
+        }
+    ]
+}

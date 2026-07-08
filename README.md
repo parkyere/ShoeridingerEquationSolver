@@ -109,6 +109,28 @@ tests (compiler-dependent FP rounding -- not a bug; the app is unaffected);
 and `SES_WARNINGS_AS_ERRORS` is OFF by default, so a bleeding-edge clang's new
 `-Wall`/`-Wextra` diagnostics won't fail the build.
 
+**Static Qt via the vcpkg submodule (self-contained, portable).** `external/vcpkg`
+is a git submodule and `vcpkg.json` pins a static Qt, so the app can link Qt
+statically instead of using a system Qt:
+
+```sh
+git submodule update --init --recursive         # after clone (or clone --recursive)
+external/vcpkg/bootstrap-vcpkg.sh                # one-time
+# vcpkg's Qt still needs the X11/GL dev stack to build its xcb platform plugin:
+sudo apt install -y libx11-dev libxkbcommon-dev libgl1-mesa-dev \
+    libfontconfig1-dev '^libxcb.*-dev'
+cmake --preset linux-vcpkg                       # FIRST configure builds Qt from source (slow; cached after)
+cmake --build --preset linux-vcpkg
+```
+
+The `linux-vcpkg` preset points CMake at the vcpkg toolchain (`x64-linux` =
+static) so `find_package(Qt6)` resolves to the vcpkg build; the app CMake then
+imports the static xcb platform plugin automatically (a static Qt won't load it
+at runtime otherwise). Note this buys a **pinned, portable, static** binary --
+not a smaller apt footprint: Qt is a long one-time source build, and its xcb
+plugin still needs the X11/GL dev libraries above. For a quick dev loop the
+plain `linux` preset with system `qt6-base-dev` is far faster.
+
 ## Working agreement
 
 This project follows **strict TDD**. No production code is written without a

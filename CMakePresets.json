@@ -113,6 +113,16 @@
                 "CMAKE_C_COMPILER": "gcc",
                 "CMAKE_CXX_COMPILER": "g++"
             }
+        },
+        {
+            "name": "linux-vcpkg",
+            "displayName": "Linux static Qt via vcpkg",
+            "description": "Self-contained: Qt built statically by the external/vcpkg submodule (x64-linux triplet). First configure builds Qt from source -- slow once, then cached. Bootstrap the submodule first: external/vcpkg/bootstrap-vcpkg.sh.",
+            "inherits": "linux-base",
+            "cacheVariables": {
+                "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/external/vcpkg/scripts/buildsystems/vcpkg.cmake",
+                "VCPKG_TARGET_TRIPLET": "x64-linux"
+            }
         }
     ],
     "buildPresets": [
@@ -125,7 +135,8 @@
         { "name": "linux", "configurePreset": "linux" },
         { "name": "linux-native", "configurePreset": "linux-native" },
         { "name": "linux-clang", "configurePreset": "linux-clang" },
-        { "name": "linux-gcc", "configurePreset": "linux-gcc" }
+        { "name": "linux-gcc", "configurePreset": "linux-gcc" },
+        { "name": "linux-vcpkg", "configurePreset": "linux-vcpkg" }
     ],
     "testPresets": [
         { "name": "msvc", "configurePreset": "msvc", "output": { "outputOnFailure": true } },
@@ -133,6 +144,7 @@
         { "name": "mingw", "configurePreset": "mingw", "output": { "outputOnFailure": true } },
         { "name": "mingw-release", "configurePreset": "mingw-release", "output": { "outputOnFailure": true } },
         { "name": "linux", "configurePreset": "linux", "output": { "outputOnFailure": true } },
-        { "name": "linux-native", "configurePreset": "linux-native", "output": { "outputOnFailure": true } }
+        { "name": "linux-native", "configurePreset": "linux-native", "output": { "outputOnFailure": true } },
+        { "name": "linux-vcpkg", "configurePreset": "linux-vcpkg", "output": { "outputOnFailure": true } }
     ]
 }
