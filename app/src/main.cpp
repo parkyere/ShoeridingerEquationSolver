@@ -634,8 +634,7 @@ protected:
                 const int n = ses::sample_energy_eigenstate(pop, uniform(rng_));
                 last_measured_index_ = n;  // >=0 eigenstate, -1 outside manifold
                 if (n >= 0) {
-                    engine_.copy_into_psi_p(*this, state_buf_[static_cast<std::size_t>(n)],
-                                            state_is_fp16(n));
+                    collapse_onto(n);
                     write_display_texture();
                     last_measure_ =
                         QStringLiteral("%1 (E %2 eV)")
@@ -745,8 +744,7 @@ protected:
                             if (pick.channel >= 0) {
                                 const ShellChannel& ch =
                                     channels_[static_cast<std::size_t>(pick.channel)];
-                                engine_.copy_into_psi_p(*this, state_buf_[ch.to],
-                                                        state_is_fp16(ch.to));
+                                collapse_onto(ch.to);
                                 flash_ticks_ = 25;
                                 ++photon_count_;
                                 last_jump_ = QStringLiteral("%1->%2").arg(
@@ -761,7 +759,7 @@ protected:
                     // Rabi peak the selftest asserts on), on the title
                     // cadence -- two 2 KB reductions every ~10 ticks.
                     if (laser_pol_ != LaserPol::Off && gpu_title_due_ &&
-                        state_buf_[kP2Z] != 0) {
+                        manifold_ready()) {
                         pop_excited_ = project_population(kP2Z);
                         pop_ground_ = project_population(kS1);
                         rabi_peak_ = std::max(rabi_peak_, pop_excited_);
@@ -1153,8 +1151,7 @@ public:
         static constexpr int kCycle[] = {k3DZ0, k4F0, k3S, k4S};
         const int idx = kCycle[excite_cycle_++ % 4];
         makeCurrent();
-        engine_.copy_into_psi_p(*this, state_buf_[static_cast<std::size_t>(idx)],
-                                state_is_fp16(idx));
+        collapse_onto(idx);
         doneCurrent();
         cpu_is_truth_ = false;  // the GPU state is ahead now
         stepping_ = Stepping::RealTime;
@@ -1288,8 +1285,7 @@ public:
             return;
         }
         makeCurrent();
-        engine_.copy_into_psi_p(*this, state_buf_[static_cast<std::size_t>(idx)],
-                                state_is_fp16(idx));
+        collapse_onto(idx);
         doneCurrent();
         cpu_is_truth_ = false;
         stepping_ = Stepping::RealTime;
@@ -1300,11 +1296,10 @@ public:
             return 0.0;
         }
         makeCurrent();
-        const ses_gpu::NormPeak ip =
-            engine_.inner_with_psi_p(*this, state_buf_[static_cast<std::size_t>(idx)],
-                                     state_is_fp16(idx));
+        engine_.project_psi(*this);
+        const double p = project_population(idx);
         doneCurrent();
-        return ip.sum * ip.sum + ip.peak * ip.peak;
+        return p;
     }
 
 protected:
@@ -1515,6 +1510,33 @@ protected:
                n2;
     }
 
+    // Collapse psi onto eigenstate `idx` by synthesizing it ON DEMAND (no
+    // resident atlas): psi_buf_ is overwritten with the normalized orbital.
+    void collapse_onto(int idx) {
+        const StateSpec& sp = kStateSpec[static_cast<std::size_t>(idx)];
+        engine_.synthesize_into_psi(*this, radial_u_[static_cast<std::size_t>(sp.level)],
+                                    sp.l, sp.m, radial_grid_.h(), radial_grid_.rmax,
+                                    radial_grid_.n);
+    }
+
+    // Free the resident atlas once the channel table + per-state grid norms are
+    // captured: populations come from the projection and collapse re-synthesizes
+    // on demand, so only the deflation set (kS1/kP2X/kP2Y/kP2Z, read every relax
+    // frame as fp32 phi by relax_deflated_step) must stay resident. Called from
+    // paintGL, where the context is already current.
+    void release_resident_atlas() {
+        for (int s = 0; s < kNumStates; ++s) {
+            if (s == kS1 || s == kP2X || s == kP2Y || s == kP2Z) {
+                continue;
+            }
+            GLuint& b = state_buf_[static_cast<std::size_t>(s)];
+            if (b != 0) {
+                glDeleteBuffers(1, &b);
+                b = 0;
+            }
+        }
+    }
+
     // Ensure state `idx` has a resident GPU buffer, synthesized on the GPU.
     bool ensure_state(int idx) {
         const std::size_t s = static_cast<std::size_t>(idx);
@@ -1593,9 +1615,12 @@ protected:
             }
             if (pair_queue_.empty()) {
                 finalize_channel_table();
-                // Nothing to release: dipole integrals ran on the GPU straight
-                // from the resident state buffers, so no host copies were ever
-                // held (populations/jumps live on the GPU too).
+                // The orbital-free projection now supplies populations and
+                // collapse re-synthesizes on demand, so the resident atlas is no
+                // longer needed at runtime. Release all but the deflation set --
+                // ~11 GB freed at 256^3 (and 512^3 becomes feasible: the resident
+                // 91-state atlas would be ~97 GB, impossible).
+                release_resident_atlas();
                 atlas_done_ = true;
                 cpu_is_truth_ = true;  // resume the untouched wavepacket
                 refresh_title();

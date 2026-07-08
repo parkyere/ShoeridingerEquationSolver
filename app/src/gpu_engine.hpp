@@ -1211,6 +1211,16 @@ public:
         unpack_from_half(gl, src_half, psi_buf_);
     }
 
+    // Synthesize psi = (u/r) Y_lm (normalized) directly INTO psi_buf_ -- the
+    // quantum-jump / measurement collapse onto an eigenstate WITHOUT a resident
+    // atlas (a single transient orbital, built + copied + freed on demand).
+    void synthesize_into_psi(Gl& gl, const std::vector<double>& u, int l, int m,
+                             double h_radial, double rmax, int n_radial) {
+        const GLuint tmp = synthesize_state(gl, u, l, m, h_radial, rmax, n_radial);
+        copy_into_psi(gl, tmp);
+        gl.glDeleteBuffers(1, &tmp);
+    }
+
     // Synthesize psi = (u/r) Y_lm straight into a resident fp16 buffer: build +
     // normalize in fp32 (the tested path), then pack to half and free the fp32
     // temp. HALF the resident footprint. *out_peak (if given) is the fp32
