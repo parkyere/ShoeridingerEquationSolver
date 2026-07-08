@@ -63,7 +63,7 @@ Pure, testable geometry/color math in `core/`; thin GL drawing in `app/`.
 ### Notes
 - Atomic units throughout (ℏ=mₑ=e=1).
 - **The startup flow has since inverted:** the app now first SOLVES and
-  synthesizes the stationary **n ≤ 6 eigenstate atlas** on the GPU
+  synthesizes the stationary **eigenstate atlas** on the GPU
   (`ψ = (u/r)Yₗₘ`, no imaginary-time ladder), then runs the moving-wavepacket
   `|ψ(r,t)|²` demo with spontaneous decay armed. Imaginary time survives as the
   Key-2 "relax to 1s" cooling demo.
@@ -82,9 +82,9 @@ CPU oracles and (for GPU kernels) verified in `sesolver_gpucheck`:
   **and** energy-basis measurement, radiative cascades.
 - **GPU compute** (see [GPU_PLAN.md](GPU_PLAN.md)): all real- and
   imaginary-time evolution, orbital synthesis, and dipole / mean-force
-  reductions run on OpenGL 4.3 compute at 256³.
-- **Manifold:** the tracked m-resolved shell raised to **n ≤ 6** (91 states),
-  real Yₗₘ to **l = 5** (h orbitals).
+  reductions run on OpenGL 4.3 compute.
+- **Manifold:** the tracked m-resolved bound shell raised to the largest n the
+  box holds, with real Yₗₘ synthesized to the matching l.
 - **Static fields, solved as a proper Hamiltonian:** E-field (Stark, a dipole
   term in the half-potential) and magnetic field **z/x/y** (paramagnetic Larmor
   via an exact three-shear rotation, `core/rotation.hpp`; diamagnetic folded

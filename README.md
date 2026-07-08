@@ -123,28 +123,24 @@ git config core.hooksPath tools/git-hooks
 ## Status
 
 Phases 0-7 plus the GPU engine and the transitions, static-field, magnetic
-(Larmor), and radiation arcs delivered (216 tests green): the hand-rolled
+(Larmor), and radiation arcs are delivered: the hand-rolled
 Complex/FFT/split-operator/imaginary-time stack is validated against analytic
 oracles through 3D, and `sesolver_app` renders the TDSE as a TRUE
-VOLUME-RENDERED electron cloud at 256^3 -- propagation, relaxation, orbital
-synthesis, and rendering all GPU-resident (OpenGL 4.3 compute; every kernel
-verified against the unit-tested CPU double core by `sesolver_gpucheck`). The
-full atom-and-light demo works from first principles computed by the solver
-itself:
+VOLUME-RENDERED electron cloud -- propagation, relaxation, orbital synthesis,
+and rendering all GPU-resident (OpenGL 4.3 compute; every kernel verified
+against the unit-tested CPU double core by `sesolver_gpucheck`). The full
+atom-and-light demo works from first principles computed by the solver itself:
 
 At startup the app SOLVES the atom first. The spherical potential reduces
-exactly to 1D per angular momentum, so the hand-rolled radial engine
-(Sturm bisection + inverse iteration) finds ALL 55 bound levels to n = 10
-with their E1 lifetimes -- the full table prints to the console (soft-Coulomb
-a = 0.5: 2p 3.1 ns; 2s 337 ns through the degeneracy-lifted 2s->2p channel;
-10s 18 us). The 3D tracked manifold is everything the +-80 Bohr box (256^3,
-h = 0.625) and the GPU physically hold: the full m-resolved n <= 6 shell --
-91 states, real Y_lm to l = 5 (h orbitals), synthesized directly on the GPU
-as (u/r) Y_lm (no CPU field -- the atlas builds in seconds), with the decay
-channels and dipole matrix elements reduced on the GPU and E_radial audited
-vs <H>_grid on every launch. The m-selection physics emerges numerically
-(3d_z2 -> 2p branches 4:1:1, Clebsch-Gordan). Then the wavepacket demo
-begins with spontaneous decay ARMED, as in nature. Energies are shown in eV.
+exactly to 1D per angular momentum, so the hand-rolled radial engine (Sturm
+bisection + inverse iteration) finds every bound level and its E1 lifetime --
+the full spectrum table prints to the console. The 3D tracked manifold is the
+full m-resolved bound shell the box and the GPU can hold, synthesized directly
+on the GPU as (u/r) Y_lm (no CPU field), with the decay channels and dipole
+matrix elements reduced on the GPU and E_radial audited against <H>_grid on
+every launch. The m-selection physics emerges numerically (3d_z2 -> 2p branches
+4:1:1, Clebsch-Gordan). Then the wavepacket demo begins with spontaneous decay
+ARMED, as in nature. Energies are shown in eV.
 
 - **1** real time / **2** relax to 1s / **3** relax to 2p_z / **4** relax
   to 2s (deflated imaginary time, live energy readout; relaxation
