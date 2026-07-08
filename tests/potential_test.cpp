@@ -77,4 +77,41 @@ TEST(SoftCoulombPotential, DeepestAtNucleusAndAttractive) {
     EXPECT_DOUBLE_EQ(v[3], -4.0);    // -Z/a = -2/0.5
 }
 
+// Regularized true Coulomb (3D): the bare -Z/|r-c| everywhere EXCEPT the single
+// grid cell coincident with the nucleus, which -- where -Z/r would be -infinity
+// -- takes the analytic average of -Z/r over its cubic cell, -Z*C/h with
+// C = integral of 1/r over the unit cube. Unlike soft-Coulomb (which rounds the
+// WHOLE well and shifts the spectrum up), this keeps every non-nucleus cell exact.
+TEST(RegularizedCoulombPotential, ExactAwayFromNucleusAndFiniteAtIt) {
+    const ses::Grid1D ax{-8.0, 8.0, 16};  // h = 1, coords -8..7, nucleus point at index 8
+    const ses::Grid3D g{ax, ax, ax};
+    const std::vector<double> v = ses::regularized_coulomb_potential(g, 1.0, ses::Vec3d{});
+    ASSERT_EQ(v.size(), static_cast<std::size_t>(g.size()));
+    // Nucleus cell (coord 0,0,0): the analytic cell average -Z*C/h (h = 1), FINITE.
+    EXPECT_DOUBLE_EQ(v[static_cast<std::size_t>(g.flat(8, 8, 8))],
+                     -ses::kCoulombCellAverage);
+    // A cell one step along x (r = 1): EXACT bare Coulomb -Z/r = -1.
+    EXPECT_DOUBLE_EQ(v[static_cast<std::size_t>(g.flat(9, 8, 8))], -1.0);
+    // Body-diagonal neighbor (1,1,1): -Z/sqrt(3).
+    EXPECT_DOUBLE_EQ(v[static_cast<std::size_t>(g.flat(9, 9, 9))], -1.0 / std::sqrt(3.0));
+    // Attractive and finite everywhere; nucleus cell is the deepest.
+    const double center = v[static_cast<std::size_t>(g.flat(8, 8, 8))];
+    for (double x : v) {
+        EXPECT_LT(x, 0.0);
+        EXPECT_TRUE(std::isfinite(x));
+        EXPECT_GE(x, center);
+    }
+}
+
+TEST(RegularizedCoulombPotential, NucleusCellScalesWithChargeAndInverseSpacing) {
+    // The cell average -Z*C/h scales linearly with Z and with 1/h.
+    const ses::Grid1D ax{-4.0, 4.0, 16};  // h = 0.5, nucleus point at index 8
+    const ses::Grid3D g{ax, ax, ax};
+    const std::vector<double> v = ses::regularized_coulomb_potential(g, 2.0, ses::Vec3d{});
+    EXPECT_DOUBLE_EQ(v[static_cast<std::size_t>(g.flat(8, 8, 8))],
+                     -2.0 * ses::kCoulombCellAverage / 0.5);
+    // Away from the nucleus, still exact -Z/r (r = 0.5 one step along x).
+    EXPECT_DOUBLE_EQ(v[static_cast<std::size_t>(g.flat(9, 8, 8))], -2.0 / 0.5);
+}
+
 }  // namespace
