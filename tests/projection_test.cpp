@@ -221,4 +221,121 @@ TEST(RadialAngularProjection, DeterministicRepro) {
     }
 }
 
+// GO/NO-GO for the GPU deposit (scoping Phase 3, risk 6.2): the GPU accumulates
+// each radial bin's g_lm in fp32 (one workgroup per bin), strictly less precise
+// than this double CPU oracle. Will fp32-per-bin accumulation stay within the
+// gpucheck tolerance (~1e-4), even on the HARD cancelling / continuum cases
+// (a plane wave weights every outer bin fully and cancels hard against Y_lm)?
+// We answer it on the CPU by simulating the fp32 accumulation (conservatively:
+// sequential float, worse than the GPU's shared-memory tree reduction), then
+// finishing the u-dot in double as the shell will. If this passes, fp32-per-bin
+// is GO; if not, the kernel needs multiple fp32 partials per bin summed in
+// double. Sized to ~3000 cells/bin (near the production 256^3/5119 ratio).
+namespace {
+double fp32_accum_worst_rel(const ses::Field3D& psi, const ses::RadialGrid& rg,
+                            const std::vector<std::vector<double>>& u_by_level,
+                            const std::vector<ses::ProjectorState>& states) {
+    const ses::Grid3D& g = psi.grid();
+    const int nx = g.x.n, ny = g.y.n, nz = g.z.n, nr = rg.n;
+    const double h = rg.h(), rmax = rg.rmax, dV = g.cell_volume();
+    const int ncomp = ses::lm_count(5);
+    // fp32 accumulators, exactly the GPU's per-bin storage.
+    std::vector<std::vector<std::complex<float>>> g32(
+        static_cast<std::size_t>(ncomp),
+        std::vector<std::complex<float>>(static_cast<std::size_t>(nr)));
+    for (int k = 0; k < nz; ++k) {
+        const double z = g.z.coord(k);
+        for (int j = 0; j < ny; ++j) {
+            const double y = g.y.coord(j);
+            for (int i = 0; i < nx; ++i) {
+                const double x = g.x.coord(i);
+                const double r = std::sqrt(x * x + y * y + z * z);
+                if (r >= rmax) continue;
+                int b0 = 0, b1 = -1;
+                double w0 = 0.0, w1 = 0.0;
+                if (r < h) {
+                    w0 = 1.0 / h;
+                } else {
+                    const double t = r / h - 1.0;
+                    const int i0 = static_cast<int>(t);
+                    const double frac = t - static_cast<double>(i0);
+                    b0 = i0;
+                    w0 = (1.0 - frac) / r;
+                    if (i0 + 1 < nr) { b1 = i0 + 1; w1 = frac / r; }
+                }
+                const ses::Complex<double> pdV = psi(i, j, k) * dV;
+                for (int l = 0; l <= 5; ++l) {
+                    for (int m = -l; m <= l; ++m) {
+                        const double Y = ses::real_spherical_harmonic(l, m, x, y, z);
+                        const ses::Complex<double> c = pdV * Y;
+                        const std::size_t cc = static_cast<std::size_t>(ses::lm_index(l, m));
+                        // accumulate in fp32 (the GPU workgroup's precision)
+                        g32[cc][static_cast<std::size_t>(b0)] +=
+                            std::complex<float>{static_cast<float>(c.real() * w0),
+                                                static_cast<float>(c.imag() * w0)};
+                        if (b1 >= 0) {
+                            g32[cc][static_cast<std::size_t>(b1)] +=
+                                std::complex<float>{static_cast<float>(c.real() * w1),
+                                                    static_cast<float>(c.imag() * w1)};
+                        }
+                    }
+                }
+            }
+        }
+    }
+    const ses::RadialAngularProjection ref =
+        ses::project_radial_angular(psi, rg, u_by_level, states, 5);
+    double worst = 0.0;
+    for (std::size_t s = 0; s < states.size(); ++s) {
+        const std::vector<double>& u = u_by_level[static_cast<std::size_t>(states[s].level)];
+        const std::vector<std::complex<float>>& gc =
+            g32[static_cast<std::size_t>(ses::lm_index(states[s].l, states[s].m))];
+        ses::Complex<double> raw32{};
+        for (int jr = 0; jr < nr; ++jr) {
+            raw32 += u[static_cast<std::size_t>(jr)] *
+                     ses::Complex<double>{gc[static_cast<std::size_t>(jr)].real(),
+                                          gc[static_cast<std::size_t>(jr)].imag()};
+        }
+        const ses::Complex<double> raw64 =
+            ref.amp[s] * std::sqrt(ref.norm2[static_cast<std::size_t>(s)]);
+        worst = std::max(worst, std::abs(raw32 - raw64) / (1.0 + std::abs(raw64)));
+    }
+    return worst;
+}
+}  // namespace (helper)
+
+TEST(RadialAngularProjection, Fp32PerBinAccumulationHoldsTolerance) {
+    const Grid1D ax{-8.0, 8.0, 64};
+    const Grid3D g{ax, ax, ax};
+    const ses::RadialGrid rg{8.0, 80};  // ~3000 cells/bin, like 256^3/5119
+    const std::vector<std::vector<double>> u_by_level = {make_u(rg, 0), make_u(rg, 1)};
+    const std::vector<ses::ProjectorState> states = {
+        {0, 0, 0}, {1, 1, 0}, {0, 2, -1}, {1, 5, 3}, {0, 4, 0}};
+
+    // (1) bound-like: a Gaussian bump (u ~ e^{-r} suppresses the noisy outer bins).
+    const double e_bound = fp32_accum_worst_rel(
+        ses::gaussian_wavepacket(g, Vec3d{0.6, -0.4, 0.3}, Vec3d{1.8, 1.8, 1.8},
+                                 Vec3d{0.2, 0.1, -0.1}),
+        rg, u_by_level, states);
+    // (2) CONTINUUM stress: a plane wave fills every outer bin at full amplitude
+    //     and cancels hard against Y_lm -- the adversarial worst case.
+    ses::Field3D plane{g};
+    const Vec3d kk{2.3, -1.7, 1.1};
+    for (int k = 0; k < g.z.n; ++k)
+        for (int j = 0; j < g.y.n; ++j)
+            for (int i = 0; i < g.x.n; ++i) {
+                const double ph = kk.x * g.x.coord(i) + kk.y * g.y.coord(j) +
+                                  kk.z * g.z.coord(k);
+                plane(i, j, k) = ses::Complex<double>{std::cos(ph), std::sin(ph)};
+            }
+    const double e_continuum = fp32_accum_worst_rel(plane, rg, u_by_level, states);
+
+    std::printf("[fp32-per-bin go/no-go] bound rel err = %.3e, continuum rel err = %.3e\n",
+                e_bound, e_continuum);
+    // GO if fp32-per-bin stays under the gpucheck ~1e-4 tolerance even on the
+    // adversarial continuum case (the CPU sim is conservative vs the GPU tree).
+    EXPECT_LT(e_bound, 1e-4);
+    EXPECT_LT(e_continuum, 1e-4);
+}
+
 }  // namespace
