@@ -287,6 +287,7 @@ struct GpuState {
 // they can use them; they are not standalone headers.
 #include "gpu_projection.hpp"
 #include "gpu_orbital.hpp"
+#include "gpu_observables.hpp"
 
 // ---- the engine ------------------------------------------------------------
 
@@ -306,18 +307,16 @@ public:
         st_.bridge_prog_ = build_program(gl, kBridgeSrc, "texture bridge");
         st_.norm_prog_ = build_program(gl, kNormPeakSrc, "norm/peak reduce");
         st_.scale_prog_ = build_program(gl, kScaleSrc, "scale");
-        inner_prog_ = build_program(gl, kInnerProductSrc, "inner product");
         axpy_prog_ = build_program(gl, kAxpySrc, "axpy");
         kick_prog_ = build_program(gl, kDipoleKickSrc, "dipole kick");
         shear_prog_ = build_program(gl, kShearSrc, "shear");
-        force_prog_ = build_program(gl, kMeanForceSrc, "mean force");
-        dipole_prog_ = build_program(gl, kDipoleSrc, "dipole");
+        obs_.build(gl);
         orbital_.build(gl);
         projector_.build(gl);
         st_.fft_progs_ = build_fft_programs(gl, grid);
         if (st_.mul_prog_ == 0 || st_.conj_prog_ == 0 || st_.bridge_prog_ == 0 || st_.norm_prog_ == 0 ||
-            st_.scale_prog_ == 0 || inner_prog_ == 0 || axpy_prog_ == 0 || kick_prog_ == 0 ||
-            shear_prog_ == 0 || force_prog_ == 0 || dipole_prog_ == 0 ||
+            st_.scale_prog_ == 0 || axpy_prog_ == 0 || kick_prog_ == 0 || shear_prog_ == 0 ||
+            obs_.inner_prog_ == 0 || obs_.force_prog_ == 0 || obs_.dipole_prog_ == 0 ||
             orbital_.synth_prog_ == 0 || orbital_.pack_prog_ == 0 ||
             orbital_.unpack_prog_ == 0 || projector_.prog_ == 0 ||
             st_.fft_progs_.axis[0] == 0 || st_.fft_progs_.axis[1] == 0 ||
@@ -329,10 +328,7 @@ public:
         half_buf_ = make_buffer(gl, to_rg32f(half_v));
         kin_buf_ = make_buffer(gl, to_rg32f(kinetic));
         st_.partials_buf_ = make_buffer(gl, std::vector<float>(2 * kNormPeakGroups, 0.0f));
-        force_partials_buf_ =
-            make_buffer(gl, std::vector<float>(4 * kNormPeakGroups, 0.0f));
-        dipole_partials_buf_ =
-            make_buffer(gl, std::vector<float>(6 * kNormPeakGroups, 0.0f));
+        obs_.alloc_partials(gl);
         return true;
     }
 
@@ -392,143 +388,25 @@ public:
         return stats;
     }
 
-    // <phi|psi> via the GPU reduction; returned as NormPeak{re, im} (the
-    // partials pair is reused as a complex accumulator). Includes dV.
+    // <phi|psi> -- forwarded to the Observables concern module (binds the live
+    // psi as the first operand). Returned as NormPeak{re, im}, includes dV.
     NormPeak inner_with_psi(Gl& gl, GLuint phi_buf) {
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, st_.psi_buf_);
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPartials, st_.partials_buf_);
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPhi, phi_buf);
-        gl.glUseProgram(inner_prog_);
-        gl.glUniform1ui(gl.glGetUniformLocation(inner_prog_, "n"),
-                        static_cast<GLuint>(st_.cells_));
-        gl.glDispatchCompute(kNormPeakGroups, 1, 1);
-        gl.glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
-
-        float partials[2 * kNormPeakGroups];
-        gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, st_.partials_buf_);
-        gl.glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(partials), partials);
-        double re = 0.0;
-        double im = 0.0;
-        for (int g = 0; g < kNormPeakGroups; ++g) {
-            re += partials[2 * g];
-            im += partials[2 * g + 1];
-        }
-        const double dv = st_.grid_.cell_volume();
-        return NormPeak{re * dv, im * dv};
+        return obs_.inner(gl, st_, st_.psi_buf_, phi_buf);
     }
 
-    // Upload the potential-gradient field grad V (central differences on the
-    // periodic grid, packed vec4 (gx,gy,gz,0) fp32) so mean_force can reduce
-    // against it. Rebuild when the potential changes.
+    // Upload the potential-gradient field grad V so mean_force can reduce
+    // against it -- forwarded to the Observables concern module.
     void set_potential_gradient(Gl& gl, const std::vector<double>& v) {
-        const int nx = st_.grid_.x.n;
-        const int ny = st_.grid_.y.n;
-        const int nz = st_.grid_.z.n;
-        const double i2hx = 1.0 / (2.0 * st_.grid_.x.spacing());
-        const double i2hy = 1.0 / (2.0 * st_.grid_.y.spacing());
-        const double i2hz = 1.0 / (2.0 * st_.grid_.z.spacing());
-        std::vector<float> packed(4 * st_.cells_, 0.0f);
-        for (int k = 0; k < nz; ++k) {
-            const int kp = (k + 1) % nz;
-            const int km = (k - 1 + nz) % nz;
-            for (int j = 0; j < ny; ++j) {
-                const int jp = (j + 1) % ny;
-                const int jm = (j - 1 + ny) % ny;
-                for (int i = 0; i < nx; ++i) {
-                    const int ip = (i + 1) % nx;
-                    const int im = (i - 1 + nx) % nx;
-                    const std::size_t idx = static_cast<std::size_t>(st_.grid_.flat(i, j, k));
-                    packed[4 * idx + 0] = static_cast<float>(
-                        (v[static_cast<std::size_t>(st_.grid_.flat(ip, j, k))] -
-                         v[static_cast<std::size_t>(st_.grid_.flat(im, j, k))]) * i2hx);
-                    packed[4 * idx + 1] = static_cast<float>(
-                        (v[static_cast<std::size_t>(st_.grid_.flat(i, jp, k))] -
-                         v[static_cast<std::size_t>(st_.grid_.flat(i, jm, k))]) * i2hy);
-                    packed[4 * idx + 2] = static_cast<float>(
-                        (v[static_cast<std::size_t>(st_.grid_.flat(i, j, kp))] -
-                         v[static_cast<std::size_t>(st_.grid_.flat(i, j, km))]) * i2hz);
-                }
-            }
-        }
-        if (grad_v_buf_ == 0) {
-            grad_v_buf_ = make_buffer(gl, packed);
-        } else {
-            gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, grad_v_buf_);
-            gl.glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
-                               static_cast<GLsizeiptr>(packed.size() * sizeof(float)),
-                               packed.data());
-        }
+        obs_.set_potential_gradient(gl, st_, v);
     }
 
     // <grad V> = sum |psi|^2 grad V * dV -- the Ehrenfest dipole acceleration
-    // for the semiclassical radiated power. Zero if no gradient was uploaded.
-    ses::Vec3d mean_force(Gl& gl) {
-        if (grad_v_buf_ == 0) {
-            return ses::Vec3d{};
-        }
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, st_.psi_buf_);
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kGradV, grad_v_buf_);
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPartials, force_partials_buf_);
-        gl.glUseProgram(force_prog_);
-        gl.glUniform1ui(gl.glGetUniformLocation(force_prog_, "n"),
-                        static_cast<GLuint>(st_.cells_));
-        gl.glDispatchCompute(kNormPeakGroups, 1, 1);
-        gl.glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    // for the semiclassical radiated power. Forwarded to Observables.
+    ses::Vec3d mean_force(Gl& gl) { return obs_.mean_force(gl, st_, st_.psi_buf_); }
 
-        float partials[4 * kNormPeakGroups];
-        gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, force_partials_buf_);
-        gl.glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(partials), partials);
-        double gx = 0.0;
-        double gy = 0.0;
-        double gz = 0.0;
-        for (int g = 0; g < kNormPeakGroups; ++g) {
-            gx += partials[4 * g + 0];
-            gy += partials[4 * g + 1];
-            gz += partials[4 * g + 2];
-        }
-        const double dv = st_.grid_.cell_volume();
-        return ses::Vec3d{gx * dv, gy * dv, gz * dv};
-    }
-
-    // <to| r |from> = sum conj(to) * (x,y,z) * from * dV, straight from two
-    // resident state buffers -- the atlas dipole integrals with NO CPU copy of
-    // the states (they already live on the GPU). Component-wise complex.
+    // <to|r|from> from two resident state buffers -- forwarded to Observables.
     ses::DipoleMatrixElement dipole_between(Gl& gl, GLuint to_buf, GLuint from_buf) {
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, to_buf);
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPhi, from_buf);
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPartials, dipole_partials_buf_);
-        gl.glUseProgram(dipole_prog_);
-        gl.glUniform1ui(gl.glGetUniformLocation(dipole_prog_, "n"),
-                        static_cast<GLuint>(st_.cells_));
-        gl.glUniform1i(gl.glGetUniformLocation(dipole_prog_, "nx"), st_.grid_.x.n);
-        gl.glUniform1i(gl.glGetUniformLocation(dipole_prog_, "ny"), st_.grid_.y.n);
-        gl.glUniform3f(gl.glGetUniformLocation(dipole_prog_, "box_min"),
-                       static_cast<float>(st_.grid_.x.xmin), static_cast<float>(st_.grid_.y.xmin),
-                       static_cast<float>(st_.grid_.z.xmin));
-        gl.glUniform3f(gl.glGetUniformLocation(dipole_prog_, "cell_h"),
-                       static_cast<float>(st_.grid_.x.spacing()),
-                       static_cast<float>(st_.grid_.y.spacing()),
-                       static_cast<float>(st_.grid_.z.spacing()));
-        gl.glDispatchCompute(kNormPeakGroups, 1, 1);
-        gl.glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
-
-        float partials[6 * kNormPeakGroups];
-        gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, dipole_partials_buf_);
-        gl.glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(partials), partials);
-        double dxr = 0.0, dxi = 0.0, dyr = 0.0, dyi = 0.0, dzr = 0.0, dzi = 0.0;
-        for (int g = 0; g < kNormPeakGroups; ++g) {
-            dxr += partials[6 * g + 0];
-            dxi += partials[6 * g + 1];
-            dyr += partials[6 * g + 2];
-            dyi += partials[6 * g + 3];
-            dzr += partials[6 * g + 4];
-            dzi += partials[6 * g + 5];
-        }
-        const double dv = st_.grid_.cell_volume();
-        return ses::DipoleMatrixElement{
-            ses::Complex<double>{dxr * dv, dxi * dv},
-            ses::Complex<double>{dyr * dv, dyi * dv},
-            ses::Complex<double>{dzr * dv, dzi * dv}};
+        return obs_.dipole_between(gl, st_, to_buf, from_buf);
     }
 
     // psi <- psi - c * phi (complex c = (cre, cim)): projects phi out when
@@ -908,17 +786,12 @@ private:
     GLuint relax_half_buf_ = 0;
     GLuint relax_kin_buf_ = 0;
     double relax_dtau_ = 0.0;
-    GLuint force_partials_buf_ = 0;    // vec4 partials for mean_force
-    GLuint dipole_partials_buf_ = 0;   // 6-float partials for dipole_between
-    GLuint grad_v_buf_ = 0;            // grad V field (vec4 per cell)
-    GLuint inner_prog_ = 0;
     GLuint axpy_prog_ = 0;
     GLuint kick_prog_ = 0;
     GLuint shear_prog_ = 0;
-    GLuint force_prog_ = 0;
-    GLuint dipole_prog_ = 0;
     GLuint scratch_a_ = 0;  // fp32 unpack scratch for fp16 consumers
     GLuint scratch_b_ = 0;  // second scratch (dipole needs two operands)
+    Observables obs_;           // <a|b> / mean_force / dipole (gpu_observables.hpp)
     OrbitalSynth orbital_;      // orbital synthesis + fp16 codec (gpu_orbital.hpp)
     Projector projector_;       // orbital-free angular projection (gpu_projection.hpp)
 };
