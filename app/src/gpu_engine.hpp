@@ -236,6 +236,19 @@ inline void run_scale(Gl& gl, GLuint prog, std::size_t n, float scale) {
     gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 }
 
+struct GpuState {
+    ses::Grid3D grid_{};
+    std::size_t cells_ = 0;
+    GLuint psi_buf_ = 0;
+    GLuint partials_buf_ = 0;
+    GLuint mul_prog_ = 0;
+    GLuint conj_prog_ = 0;
+    GLuint bridge_prog_ = 0;
+    GLuint norm_prog_ = 0;
+    GLuint scale_prog_ = 0;
+    FftPrograms fft_progs_;
+};
+
 // ---- the engine ------------------------------------------------------------
 
 class GpuEngine {
@@ -246,14 +259,14 @@ public:
                     const std::vector<ses::Complex<double>>& half_v,
                     const std::vector<ses::Complex<double>>& kinetic,
                     const ses::Field3D& psi0) {
-        grid_ = grid;
-        cells_ = static_cast<std::size_t>(grid.size());
+        st_.grid_ = grid;
+        st_.cells_ = static_cast<std::size_t>(grid.size());
 
-        mul_prog_ = build_program(gl, kPhaseMultiplySrc, "phase multiply");
-        conj_prog_ = build_program(gl, kConjScaleSrc, "conj scale");
-        bridge_prog_ = build_program(gl, kBridgeSrc, "texture bridge");
-        norm_prog_ = build_program(gl, kNormPeakSrc, "norm/peak reduce");
-        scale_prog_ = build_program(gl, kScaleSrc, "scale");
+        st_.mul_prog_ = build_program(gl, kPhaseMultiplySrc, "phase multiply");
+        st_.conj_prog_ = build_program(gl, kConjScaleSrc, "conj scale");
+        st_.bridge_prog_ = build_program(gl, kBridgeSrc, "texture bridge");
+        st_.norm_prog_ = build_program(gl, kNormPeakSrc, "norm/peak reduce");
+        st_.scale_prog_ = build_program(gl, kScaleSrc, "scale");
         inner_prog_ = build_program(gl, kInnerProductSrc, "inner product");
         axpy_prog_ = build_program(gl, kAxpySrc, "axpy");
         kick_prog_ = build_program(gl, kDipoleKickSrc, "dipole kick");
@@ -264,20 +277,20 @@ public:
         pack_prog_ = build_program(gl, kPackHalfSrc, "pack half");
         unpack_prog_ = build_program(gl, kUnpackHalfSrc, "unpack half");
         proj_prog_ = build_program(gl, kProjectDepositSrc, "projection deposit");
-        fft_progs_ = build_fft_programs(gl, grid);
-        if (mul_prog_ == 0 || conj_prog_ == 0 || bridge_prog_ == 0 || norm_prog_ == 0 ||
-            scale_prog_ == 0 || inner_prog_ == 0 || axpy_prog_ == 0 || kick_prog_ == 0 ||
+        st_.fft_progs_ = build_fft_programs(gl, grid);
+        if (st_.mul_prog_ == 0 || st_.conj_prog_ == 0 || st_.bridge_prog_ == 0 || st_.norm_prog_ == 0 ||
+            st_.scale_prog_ == 0 || inner_prog_ == 0 || axpy_prog_ == 0 || kick_prog_ == 0 ||
             shear_prog_ == 0 || force_prog_ == 0 || dipole_prog_ == 0 || synth_prog_ == 0 ||
             pack_prog_ == 0 || unpack_prog_ == 0 || proj_prog_ == 0 ||
-            fft_progs_.axis[0] == 0 || fft_progs_.axis[1] == 0 ||
-            fft_progs_.axis[2] == 0) {
+            st_.fft_progs_.axis[0] == 0 || st_.fft_progs_.axis[1] == 0 ||
+            st_.fft_progs_.axis[2] == 0) {
             return false;
         }
 
-        psi_buf_ = make_buffer(gl, to_rg32f(psi0.data()));
+        st_.psi_buf_ = make_buffer(gl, to_rg32f(psi0.data()));
         half_buf_ = make_buffer(gl, to_rg32f(half_v));
         kin_buf_ = make_buffer(gl, to_rg32f(kinetic));
-        partials_buf_ = make_buffer(gl, std::vector<float>(2 * kNormPeakGroups, 0.0f));
+        st_.partials_buf_ = make_buffer(gl, std::vector<float>(2 * kNormPeakGroups, 0.0f));
         force_partials_buf_ =
             make_buffer(gl, std::vector<float>(4 * kNormPeakGroups, 0.0f));
         dipole_partials_buf_ =
@@ -315,7 +328,7 @@ public:
     // near an eigenstate, so the energy estimate is free.
     RelaxStats relax_step(Gl& gl, int nsteps) {
         RelaxStats stats;
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, psi_buf_);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, st_.psi_buf_);
         for (int s = 0; s < nsteps; ++s) {
             strang_imaginary(gl);
             stats = renormalize_and_estimate(gl);
@@ -329,7 +342,7 @@ public:
     // then reads that state's energy.
     RelaxStats relax_deflated_step(Gl& gl, const std::vector<GLuint>& lower, int nsteps) {
         RelaxStats stats;
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, psi_buf_);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, st_.psi_buf_);
         for (int s = 0; s < nsteps; ++s) {
             strang_imaginary(gl);
             for (const GLuint phi : lower) {
@@ -344,17 +357,17 @@ public:
     // <phi|psi> via the GPU reduction; returned as NormPeak{re, im} (the
     // partials pair is reused as a complex accumulator). Includes dV.
     NormPeak inner_with_psi(Gl& gl, GLuint phi_buf) {
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, psi_buf_);
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPartials, partials_buf_);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, st_.psi_buf_);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPartials, st_.partials_buf_);
         gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPhi, phi_buf);
         gl.glUseProgram(inner_prog_);
         gl.glUniform1ui(gl.glGetUniformLocation(inner_prog_, "n"),
-                        static_cast<GLuint>(cells_));
+                        static_cast<GLuint>(st_.cells_));
         gl.glDispatchCompute(kNormPeakGroups, 1, 1);
         gl.glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
 
         float partials[2 * kNormPeakGroups];
-        gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, partials_buf_);
+        gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, st_.partials_buf_);
         gl.glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(partials), partials);
         double re = 0.0;
         double im = 0.0;
@@ -362,7 +375,7 @@ public:
             re += partials[2 * g];
             im += partials[2 * g + 1];
         }
-        const double dv = grid_.cell_volume();
+        const double dv = st_.grid_.cell_volume();
         return NormPeak{re * dv, im * dv};
     }
 
@@ -370,13 +383,13 @@ public:
     // periodic grid, packed vec4 (gx,gy,gz,0) fp32) so mean_force can reduce
     // against it. Rebuild when the potential changes.
     void set_potential_gradient(Gl& gl, const std::vector<double>& v) {
-        const int nx = grid_.x.n;
-        const int ny = grid_.y.n;
-        const int nz = grid_.z.n;
-        const double i2hx = 1.0 / (2.0 * grid_.x.spacing());
-        const double i2hy = 1.0 / (2.0 * grid_.y.spacing());
-        const double i2hz = 1.0 / (2.0 * grid_.z.spacing());
-        std::vector<float> packed(4 * cells_, 0.0f);
+        const int nx = st_.grid_.x.n;
+        const int ny = st_.grid_.y.n;
+        const int nz = st_.grid_.z.n;
+        const double i2hx = 1.0 / (2.0 * st_.grid_.x.spacing());
+        const double i2hy = 1.0 / (2.0 * st_.grid_.y.spacing());
+        const double i2hz = 1.0 / (2.0 * st_.grid_.z.spacing());
+        std::vector<float> packed(4 * st_.cells_, 0.0f);
         for (int k = 0; k < nz; ++k) {
             const int kp = (k + 1) % nz;
             const int km = (k - 1 + nz) % nz;
@@ -386,16 +399,16 @@ public:
                 for (int i = 0; i < nx; ++i) {
                     const int ip = (i + 1) % nx;
                     const int im = (i - 1 + nx) % nx;
-                    const std::size_t idx = static_cast<std::size_t>(grid_.flat(i, j, k));
+                    const std::size_t idx = static_cast<std::size_t>(st_.grid_.flat(i, j, k));
                     packed[4 * idx + 0] = static_cast<float>(
-                        (v[static_cast<std::size_t>(grid_.flat(ip, j, k))] -
-                         v[static_cast<std::size_t>(grid_.flat(im, j, k))]) * i2hx);
+                        (v[static_cast<std::size_t>(st_.grid_.flat(ip, j, k))] -
+                         v[static_cast<std::size_t>(st_.grid_.flat(im, j, k))]) * i2hx);
                     packed[4 * idx + 1] = static_cast<float>(
-                        (v[static_cast<std::size_t>(grid_.flat(i, jp, k))] -
-                         v[static_cast<std::size_t>(grid_.flat(i, jm, k))]) * i2hy);
+                        (v[static_cast<std::size_t>(st_.grid_.flat(i, jp, k))] -
+                         v[static_cast<std::size_t>(st_.grid_.flat(i, jm, k))]) * i2hy);
                     packed[4 * idx + 2] = static_cast<float>(
-                        (v[static_cast<std::size_t>(grid_.flat(i, j, kp))] -
-                         v[static_cast<std::size_t>(grid_.flat(i, j, km))]) * i2hz);
+                        (v[static_cast<std::size_t>(st_.grid_.flat(i, j, kp))] -
+                         v[static_cast<std::size_t>(st_.grid_.flat(i, j, km))]) * i2hz);
                 }
             }
         }
@@ -415,12 +428,12 @@ public:
         if (grad_v_buf_ == 0) {
             return ses::Vec3d{};
         }
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, psi_buf_);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, st_.psi_buf_);
         gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kGradV, grad_v_buf_);
         gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPartials, force_partials_buf_);
         gl.glUseProgram(force_prog_);
         gl.glUniform1ui(gl.glGetUniformLocation(force_prog_, "n"),
-                        static_cast<GLuint>(cells_));
+                        static_cast<GLuint>(st_.cells_));
         gl.glDispatchCompute(kNormPeakGroups, 1, 1);
         gl.glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
 
@@ -435,7 +448,7 @@ public:
             gy += partials[4 * g + 1];
             gz += partials[4 * g + 2];
         }
-        const double dv = grid_.cell_volume();
+        const double dv = st_.grid_.cell_volume();
         return ses::Vec3d{gx * dv, gy * dv, gz * dv};
     }
 
@@ -448,16 +461,16 @@ public:
         gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPartials, dipole_partials_buf_);
         gl.glUseProgram(dipole_prog_);
         gl.glUniform1ui(gl.glGetUniformLocation(dipole_prog_, "n"),
-                        static_cast<GLuint>(cells_));
-        gl.glUniform1i(gl.glGetUniformLocation(dipole_prog_, "nx"), grid_.x.n);
-        gl.glUniform1i(gl.glGetUniformLocation(dipole_prog_, "ny"), grid_.y.n);
+                        static_cast<GLuint>(st_.cells_));
+        gl.glUniform1i(gl.glGetUniformLocation(dipole_prog_, "nx"), st_.grid_.x.n);
+        gl.glUniform1i(gl.glGetUniformLocation(dipole_prog_, "ny"), st_.grid_.y.n);
         gl.glUniform3f(gl.glGetUniformLocation(dipole_prog_, "box_min"),
-                       static_cast<float>(grid_.x.xmin), static_cast<float>(grid_.y.xmin),
-                       static_cast<float>(grid_.z.xmin));
+                       static_cast<float>(st_.grid_.x.xmin), static_cast<float>(st_.grid_.y.xmin),
+                       static_cast<float>(st_.grid_.z.xmin));
         gl.glUniform3f(gl.glGetUniformLocation(dipole_prog_, "cell_h"),
-                       static_cast<float>(grid_.x.spacing()),
-                       static_cast<float>(grid_.y.spacing()),
-                       static_cast<float>(grid_.z.spacing()));
+                       static_cast<float>(st_.grid_.x.spacing()),
+                       static_cast<float>(st_.grid_.y.spacing()),
+                       static_cast<float>(st_.grid_.z.spacing()));
         gl.glDispatchCompute(kNormPeakGroups, 1, 1);
         gl.glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
 
@@ -473,7 +486,7 @@ public:
             dzr += partials[6 * g + 4];
             dzi += partials[6 * g + 5];
         }
-        const double dv = grid_.cell_volume();
+        const double dv = st_.grid_.cell_volume();
         return ses::DipoleMatrixElement{
             ses::Complex<double>{dxr * dv, dxi * dv},
             ses::Complex<double>{dyr * dv, dyi * dv},
@@ -483,14 +496,14 @@ public:
     // psi <- psi - c * phi (complex c = (cre, cim)): projects phi out when
     // c is the overlap <phi|psi>.
     void subtract_projection(Gl& gl, GLuint phi_buf, double cre, double cim) {
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, psi_buf_);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, st_.psi_buf_);
         gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPhi, phi_buf);
         gl.glUseProgram(axpy_prog_);
         gl.glUniform1ui(gl.glGetUniformLocation(axpy_prog_, "n"),
-                        static_cast<GLuint>(cells_));
+                        static_cast<GLuint>(st_.cells_));
         gl.glUniform2f(gl.glGetUniformLocation(axpy_prog_, "c"), static_cast<float>(cre),
                        static_cast<float>(cim));
-        gl.glDispatchCompute(static_cast<GLuint>((cells_ + 255) / 256), 1, 1);
+        gl.glDispatchCompute(static_cast<GLuint>((st_.cells_ + 255) / 256), 1, 1);
         gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     }
 
@@ -518,7 +531,7 @@ public:
         gl.glGenBuffers(1, &buf);
         gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, buf);
         gl.glBufferData(GL_SHADER_STORAGE_BUFFER,
-                        static_cast<GLsizeiptr>(cells_ * sizeof(GLuint)), nullptr,
+                        static_cast<GLsizeiptr>(st_.cells_ * sizeof(GLuint)), nullptr,
                         GL_STATIC_COPY);
         return buf;
     }
@@ -529,8 +542,8 @@ public:
         gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kAux, dst_half);
         gl.glUseProgram(pack_prog_);
         gl.glUniform1ui(gl.glGetUniformLocation(pack_prog_, "n"),
-                        static_cast<GLuint>(cells_));
-        gl.glDispatchCompute(static_cast<GLuint>((cells_ + 255) / 256), 1, 1);
+                        static_cast<GLuint>(st_.cells_));
+        gl.glDispatchCompute(static_cast<GLuint>((st_.cells_ + 255) / 256), 1, 1);
         gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     }
 
@@ -540,18 +553,18 @@ public:
         gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, dst_fp32);
         gl.glUseProgram(unpack_prog_);
         gl.glUniform1ui(gl.glGetUniformLocation(unpack_prog_, "n"),
-                        static_cast<GLuint>(cells_));
-        gl.glDispatchCompute(static_cast<GLuint>((cells_ + 255) / 256), 1, 1);
+                        static_cast<GLuint>(st_.cells_));
+        gl.glDispatchCompute(static_cast<GLuint>((st_.cells_ + 255) / 256), 1, 1);
         gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     }
 
     // psi <- unpackHalf2x16(src_half): collapse onto an fp16-stored eigenstate.
     void unpack_into_psi(Gl& gl, GLuint src_half) {
         gl.glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
-        unpack_from_half(gl, src_half, psi_buf_);
+        unpack_from_half(gl, src_half, st_.psi_buf_);
     }
 
-    // Synthesize psi = (u/r) Y_lm (normalized) directly INTO psi_buf_ -- the
+    // Synthesize psi = (u/r) Y_lm (normalized) directly INTO st_.psi_buf_ -- the
     // quantum-jump / measurement collapse onto an eigenstate WITHOUT a resident
     // atlas (a single transient orbital, built + copied + freed on demand).
     void synthesize_into_psi(Gl& gl, const std::vector<double>& u, int l, int m,
@@ -619,24 +632,24 @@ public:
     // Deposit psi -> g_lm (read back to host as double). ONE grid pass over psi,
     // INDEPENDENT of the number of states; then call project_amplitude per state.
     void project_psi(Gl& gl) {
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, psi_buf_);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, st_.psi_buf_);
         gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kAux, sorted_buf_);
         gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kBinOff, binoff_buf_);
         gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kGlm, glm_buf_);
         gl.glUseProgram(proj_prog_);
-        gl.glUniform1i(gl.glGetUniformLocation(proj_prog_, "nx"), grid_.x.n);
-        gl.glUniform1i(gl.glGetUniformLocation(proj_prog_, "ny"), grid_.y.n);
+        gl.glUniform1i(gl.glGetUniformLocation(proj_prog_, "nx"), st_.grid_.x.n);
+        gl.glUniform1i(gl.glGetUniformLocation(proj_prog_, "ny"), st_.grid_.y.n);
         gl.glUniform3f(gl.glGetUniformLocation(proj_prog_, "box_min"),
-                       static_cast<float>(grid_.x.xmin), static_cast<float>(grid_.y.xmin),
-                       static_cast<float>(grid_.z.xmin));
+                       static_cast<float>(st_.grid_.x.xmin), static_cast<float>(st_.grid_.y.xmin),
+                       static_cast<float>(st_.grid_.z.xmin));
         gl.glUniform3f(gl.glGetUniformLocation(proj_prog_, "cell_h"),
-                       static_cast<float>(grid_.x.spacing()),
-                       static_cast<float>(grid_.y.spacing()),
-                       static_cast<float>(grid_.z.spacing()));
+                       static_cast<float>(st_.grid_.x.spacing()),
+                       static_cast<float>(st_.grid_.y.spacing()),
+                       static_cast<float>(st_.grid_.z.spacing()));
         gl.glUniform1f(gl.glGetUniformLocation(proj_prog_, "h_radial"),
                        static_cast<float>(proj_h_radial_));
         gl.glUniform1f(gl.glGetUniformLocation(proj_prog_, "dv"),
-                       static_cast<float>(grid_.cell_volume()));
+                       static_cast<float>(st_.grid_.cell_volume()));
         gl.glUniform1i(gl.glGetUniformLocation(proj_prog_, "nr"), proj_nr_);
         gl.glDispatchCompute(static_cast<GLuint>(proj_nr_), 1, 1);
         gl.glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
@@ -693,7 +706,7 @@ public:
 
     // Synthesize psi = (u/r) Y_lm INTO A NEW normalized state buffer on the GPU
     // -- the atlas builds each eigenstate straight on the GPU, no CPU field.
-    // Never touches psi_buf_, so it is safe to call mid-simulation. h_radial =
+    // Never touches st_.psi_buf_, so it is safe to call mid-simulation. h_radial =
     // rmax/(n_radial+1). *out_peak (if given) receives the normalized peak
     // |psi|^2. The buffer is GL_STATIC_COPY (a write-once eigenstate).
     GLuint synthesize_state(Gl& gl, const std::vector<double>& u, int l, int m,
@@ -704,23 +717,23 @@ public:
         gl.glGenBuffers(1, &buf);
         gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, buf);
         gl.glBufferData(GL_SHADER_STORAGE_BUFFER,
-                        static_cast<GLsizeiptr>(2 * cells_ * sizeof(float)), nullptr,
+                        static_cast<GLsizeiptr>(2 * st_.cells_ * sizeof(float)), nullptr,
                         GL_STATIC_COPY);
         // Synthesize into the new buffer (binding 0), reading the radial table.
         gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, buf);
         gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kRadial, radial_u_buf_);
         gl.glUseProgram(synth_prog_);
         gl.glUniform1ui(gl.glGetUniformLocation(synth_prog_, "n"),
-                        static_cast<GLuint>(cells_));
-        gl.glUniform1i(gl.glGetUniformLocation(synth_prog_, "nx"), grid_.x.n);
-        gl.glUniform1i(gl.glGetUniformLocation(synth_prog_, "ny"), grid_.y.n);
+                        static_cast<GLuint>(st_.cells_));
+        gl.glUniform1i(gl.glGetUniformLocation(synth_prog_, "nx"), st_.grid_.x.n);
+        gl.glUniform1i(gl.glGetUniformLocation(synth_prog_, "ny"), st_.grid_.y.n);
         gl.glUniform3f(gl.glGetUniformLocation(synth_prog_, "box_min"),
-                       static_cast<float>(grid_.x.xmin), static_cast<float>(grid_.y.xmin),
-                       static_cast<float>(grid_.z.xmin));
+                       static_cast<float>(st_.grid_.x.xmin), static_cast<float>(st_.grid_.y.xmin),
+                       static_cast<float>(st_.grid_.z.xmin));
         gl.glUniform3f(gl.glGetUniformLocation(synth_prog_, "cell_h"),
-                       static_cast<float>(grid_.x.spacing()),
-                       static_cast<float>(grid_.y.spacing()),
-                       static_cast<float>(grid_.z.spacing()));
+                       static_cast<float>(st_.grid_.x.spacing()),
+                       static_cast<float>(st_.grid_.y.spacing()),
+                       static_cast<float>(st_.grid_.z.spacing()));
         gl.glUniform1i(gl.glGetUniformLocation(synth_prog_, "l"), l);
         gl.glUniform1i(gl.glGetUniformLocation(synth_prog_, "m"), m);
         gl.glUniform1f(gl.glGetUniformLocation(synth_prog_, "h_radial"),
@@ -728,14 +741,14 @@ public:
         gl.glUniform1f(gl.glGetUniformLocation(synth_prog_, "rmax"),
                        static_cast<float>(rmax));
         gl.glUniform1i(gl.glGetUniformLocation(synth_prog_, "n_radial"), n_radial);
-        gl.glDispatchCompute(static_cast<GLuint>((cells_ + 255) / 256), 1, 1);
+        gl.glDispatchCompute(static_cast<GLuint>((st_.cells_ + 255) / 256), 1, 1);
         gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
         // Normalize in place: the norm reduction and scale act on binding 0
         // (still `buf`), exactly the core's normalize().
-        const NormPeak np = run_norm_peak(gl, norm_prog_, partials_buf_, cells_);
-        const double norm_sq = np.sum * grid_.cell_volume();  // ||raw (u/r)Ylm||^2_grid
+        const NormPeak np = run_norm_peak(gl, st_.norm_prog_, st_.partials_buf_, st_.cells_);
+        const double norm_sq = np.sum * st_.grid_.cell_volume();  // ||raw (u/r)Ylm||^2_grid
         const double inv = (norm_sq > 0.0) ? 1.0 / std::sqrt(norm_sq) : 0.0;
-        run_scale(gl, scale_prog_, cells_, static_cast<float>(inv));
+        run_scale(gl, st_.scale_prog_, st_.cells_, static_cast<float>(inv));
         if (out_peak != nullptr) {
             *out_peak = (norm_sq > 0.0) ? np.peak / norm_sq : 0.0;
         }
@@ -753,24 +766,24 @@ public:
     void copy_into_psi(Gl& gl, GLuint src_buf) {
         gl.glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
         gl.glBindBuffer(GL_COPY_READ_BUFFER, src_buf);
-        gl.glBindBuffer(GL_COPY_WRITE_BUFFER, psi_buf_);
+        gl.glBindBuffer(GL_COPY_WRITE_BUFFER, st_.psi_buf_);
         gl.glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0,
-                               static_cast<GLsizeiptr>(2 * cells_ * sizeof(float)));
+                               static_cast<GLsizeiptr>(2 * st_.cells_ * sizeof(float)));
     }
 
     // GPU-reduced norm (sum |psi|^2 * dV) and peak density -- a 2 KB readback
     // instead of the full field.
     NormPeak norm_and_peak(Gl& gl) {
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, psi_buf_);
-        NormPeak np = run_norm_peak(gl, norm_prog_, partials_buf_, cells_);
-        np.sum *= grid_.cell_volume();
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, st_.psi_buf_);
+        NormPeak np = run_norm_peak(gl, st_.norm_prog_, st_.partials_buf_, st_.cells_);
+        np.sum *= st_.grid_.cell_volume();
         return np;
     }
 
     // psi <- s * psi (fp32 drift renormalization).
     void scale(Gl& gl, float s) {
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, psi_buf_);
-        run_scale(gl, scale_prog_, cells_, s);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, st_.psi_buf_);
+        run_scale(gl, st_.scale_prog_, st_.cells_, s);
     }
 
     void upload_state(Gl& gl, const ses::Field3D& psi) {
@@ -779,7 +792,7 @@ public:
         // earlier frames (GL 4.3: SSBO shader writes are incoherent, and the
         // per-dispatch SHADER_STORAGE barrier only covers shader-to-shader).
         gl.glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
-        gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, psi_buf_);
+        gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, st_.psi_buf_);
         gl.glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
                            static_cast<GLsizeiptr>(staged.size() * sizeof(float)),
                            staged.data());
@@ -787,11 +800,11 @@ public:
 
     // Interleaved RG floats, 2 per cell.
     void readback(Gl& gl, std::vector<float>& out) const {
-        out.resize(2 * cells_);
+        out.resize(2 * st_.cells_);
         // Make incoherent compute writes visible to the buffer-update API
         // before glGetBufferSubData (spec-required; drivers often forgive).
         gl.glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
-        gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, psi_buf_);
+        gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, st_.psi_buf_);
         gl.glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
                               static_cast<GLsizeiptr>(out.size() * sizeof(float)),
                               out.data());
@@ -804,19 +817,19 @@ public:
     // the tested elementwise multiply applies a real per-cell damping. Binds
     // psi first, so it is safe to call standalone (the boundary absorber).
     void apply_mask(Gl& gl, GLuint mask_buf) {
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, psi_buf_);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, st_.psi_buf_);
         multiply(gl, mask_buf);
     }
 
     void step(Gl& gl, int nsteps) {
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, psi_buf_);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, st_.psi_buf_);
         for (int s = 0; s < nsteps; ++s) {
             multiply(gl, half_buf_);
-            run_fft3(gl, grid_, fft_progs_);
+            run_fft3(gl, st_.grid_, st_.fft_progs_);
             multiply(gl, kin_buf_);
-            run_conj_scale(gl, conj_prog_, cells_, 1.0f);
-            run_fft3(gl, grid_, fft_progs_);
-            run_conj_scale(gl, conj_prog_, cells_, 1.0f / static_cast<float>(cells_));
+            run_conj_scale(gl, st_.conj_prog_, st_.cells_, 1.0f);
+            run_fft3(gl, st_.grid_, st_.fft_progs_);
+            run_conj_scale(gl, st_.conj_prog_, st_.cells_, 1.0f / static_cast<float>(st_.cells_));
             multiply(gl, half_buf_);
         }
     }
@@ -825,7 +838,7 @@ public:
     // magnetic paramagnetic (B/2)L_axis term), GPU transcription of
     // core/rotation.hpp rotate_axis. In place.
     void rotate_axis_shear(Gl& gl, int axis, double theta) {
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, psi_buf_);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, st_.psi_buf_);
         const int b = (axis + 1) % 3;  // in-plane axes (b x c = axis)
         const int c = (axis + 2) % 3;
         const double t = std::tan(0.5 * theta);
@@ -853,25 +866,25 @@ public:
     // computed by the caller in double (core/drive.hpp's formula); the
     // kernel only does the pointwise complex rotation.
     void dipole_kick(Gl& gl, const ses::Vec3d& axis, double theta) {
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, psi_buf_);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, st_.psi_buf_);
         gl.glUseProgram(kick_prog_);
         gl.glUniform1ui(gl.glGetUniformLocation(kick_prog_, "n"),
-                        static_cast<GLuint>(cells_));
-        gl.glUniform1i(gl.glGetUniformLocation(kick_prog_, "nx"), grid_.x.n);
-        gl.glUniform1i(gl.glGetUniformLocation(kick_prog_, "ny"), grid_.y.n);
+                        static_cast<GLuint>(st_.cells_));
+        gl.glUniform1i(gl.glGetUniformLocation(kick_prog_, "nx"), st_.grid_.x.n);
+        gl.glUniform1i(gl.glGetUniformLocation(kick_prog_, "ny"), st_.grid_.y.n);
         gl.glUniform3f(gl.glGetUniformLocation(kick_prog_, "box_min"),
-                       static_cast<float>(grid_.x.xmin), static_cast<float>(grid_.y.xmin),
-                       static_cast<float>(grid_.z.xmin));
+                       static_cast<float>(st_.grid_.x.xmin), static_cast<float>(st_.grid_.y.xmin),
+                       static_cast<float>(st_.grid_.z.xmin));
         gl.glUniform3f(gl.glGetUniformLocation(kick_prog_, "cell_h"),
-                       static_cast<float>(grid_.x.spacing()),
-                       static_cast<float>(grid_.y.spacing()),
-                       static_cast<float>(grid_.z.spacing()));
+                       static_cast<float>(st_.grid_.x.spacing()),
+                       static_cast<float>(st_.grid_.y.spacing()),
+                       static_cast<float>(st_.grid_.z.spacing()));
         gl.glUniform3f(gl.glGetUniformLocation(kick_prog_, "axis"),
                        static_cast<float>(axis.x), static_cast<float>(axis.y),
                        static_cast<float>(axis.z));
         gl.glUniform1f(gl.glGetUniformLocation(kick_prog_, "theta"),
                        static_cast<float>(theta));
-        gl.glDispatchCompute(static_cast<GLuint>((cells_ + 255) / 256), 1, 1);
+        gl.glDispatchCompute(static_cast<GLuint>((st_.cells_ + 255) / 256), 1, 1);
         gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     }
 
@@ -880,16 +893,16 @@ public:
     // around the untouched static tables; t0 is the physical time at the
     // start of the first step, dt must match the tables' time step.
     void driven_step(Gl& gl, const ses::DipoleDrive& d, double t0, double dt, int nsteps) {
-        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, psi_buf_);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, st_.psi_buf_);
         for (int s = 0; s < nsteps; ++s) {
             const double t = t0 + s * dt;
             dipole_kick(gl, d.axis, d.amplitude * std::cos(d.omega * t) * 0.5 * dt);
             multiply(gl, half_buf_);
-            run_fft3(gl, grid_, fft_progs_);
+            run_fft3(gl, st_.grid_, st_.fft_progs_);
             multiply(gl, kin_buf_);
-            run_conj_scale(gl, conj_prog_, cells_, 1.0f);
-            run_fft3(gl, grid_, fft_progs_);
-            run_conj_scale(gl, conj_prog_, cells_, 1.0f / static_cast<float>(cells_));
+            run_conj_scale(gl, st_.conj_prog_, st_.cells_, 1.0f);
+            run_fft3(gl, st_.grid_, st_.fft_progs_);
+            run_conj_scale(gl, st_.conj_prog_, st_.cells_, 1.0f / static_cast<float>(st_.cells_));
             multiply(gl, half_buf_);
             dipole_kick(gl, d.axis,
                         d.amplitude * std::cos(d.omega * (t + dt)) * 0.5 * dt);
@@ -898,25 +911,25 @@ public:
 
     // Write psi into the volume renderer's RG32F 3D texture, GPU-to-GPU.
     void write_psi_texture(Gl& gl, GLuint texture) {
-        write_texture_from(gl, psi_buf_, texture);
+        write_texture_from(gl, st_.psi_buf_, texture);
     }
 
     // Bridge an SSBO (psi or a rotated copy) into the RG32F volume texture.
     void write_texture_from(Gl& gl, GLuint src_buf, GLuint texture) {
         gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPsi, src_buf);
         gl.glBindImageTexture(0, texture, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RG32F);
-        gl.glUseProgram(bridge_prog_);
-        gl.glUniform1i(gl.glGetUniformLocation(bridge_prog_, "nx"), grid_.x.n);
-        gl.glUniform1i(gl.glGetUniformLocation(bridge_prog_, "ny"), grid_.y.n);
-        gl.glUniform1i(gl.glGetUniformLocation(bridge_prog_, "nz"), grid_.z.n);
-        gl.glDispatchCompute(static_cast<GLuint>((cells_ + 255) / 256), 1, 1);
+        gl.glUseProgram(st_.bridge_prog_);
+        gl.glUniform1i(gl.glGetUniformLocation(st_.bridge_prog_, "nx"), st_.grid_.x.n);
+        gl.glUniform1i(gl.glGetUniformLocation(st_.bridge_prog_, "ny"), st_.grid_.y.n);
+        gl.glUniform1i(gl.glGetUniformLocation(st_.bridge_prog_, "nz"), st_.grid_.z.n);
+        gl.glDispatchCompute(static_cast<GLuint>((st_.cells_ + 255) / 256), 1, 1);
         gl.glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT);
     }
 
 
 private:
     const ses::Grid1D& axis_grid(int a) const {
-        return a == 0 ? grid_.x : (a == 1 ? grid_.y : grid_.z);
+        return a == 0 ? st_.grid_.x : (a == 1 ? st_.grid_.y : st_.grid_.z);
     }
 
     // One shear of the three-shear rotation: FFT along freq_axis (0=x,1=y,2=z),
@@ -924,16 +937,16 @@ private:
     // then inverse FFT along that axis (conj -> fft -> conj/N). In place on
     // whatever is bound at binding 0 (rotate_axis_shear binds psi).
     void apply_shear(Gl& gl, int freq_axis, int coord_axis, double coeff) {
-        run_fft_axis(gl, grid_, fft_progs_, freq_axis);
+        run_fft_axis(gl, st_.grid_, st_.fft_progs_, freq_axis);
         const ses::Grid1D& fa = axis_grid(freq_axis);
         const ses::Grid1D& ca = axis_grid(coord_axis);
         const double two_pi = 6.283185307179586;
         gl.glUseProgram(shear_prog_);
         gl.glUniform1ui(gl.glGetUniformLocation(shear_prog_, "n"),
-                        static_cast<GLuint>(cells_));
-        gl.glUniform1i(gl.glGetUniformLocation(shear_prog_, "nx"), grid_.x.n);
-        gl.glUniform1i(gl.glGetUniformLocation(shear_prog_, "ny"), grid_.y.n);
-        gl.glUniform1i(gl.glGetUniformLocation(shear_prog_, "nz"), grid_.z.n);
+                        static_cast<GLuint>(st_.cells_));
+        gl.glUniform1i(gl.glGetUniformLocation(shear_prog_, "nx"), st_.grid_.x.n);
+        gl.glUniform1i(gl.glGetUniformLocation(shear_prog_, "ny"), st_.grid_.y.n);
+        gl.glUniform1i(gl.glGetUniformLocation(shear_prog_, "nz"), st_.grid_.z.n);
         gl.glUniform1i(gl.glGetUniformLocation(shear_prog_, "freq_axis"), freq_axis);
         gl.glUniform1i(gl.glGetUniformLocation(shear_prog_, "coord_axis"), coord_axis);
         gl.glUniform1i(gl.glGetUniformLocation(shear_prog_, "nf"), fa.n);
@@ -945,32 +958,32 @@ private:
                        static_cast<float>(ca.spacing()));
         gl.glUniform1f(gl.glGetUniformLocation(shear_prog_, "coeff"),
                        static_cast<float>(coeff));
-        gl.glDispatchCompute(static_cast<GLuint>((cells_ + 255) / 256), 1, 1);
+        gl.glDispatchCompute(static_cast<GLuint>((st_.cells_ + 255) / 256), 1, 1);
         gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-        run_conj_scale(gl, conj_prog_, cells_, 1.0f);
-        run_fft_axis(gl, grid_, fft_progs_, freq_axis);
-        run_conj_scale(gl, conj_prog_, cells_, 1.0f / static_cast<float>(fa.n));
+        run_conj_scale(gl, st_.conj_prog_, st_.cells_, 1.0f);
+        run_fft_axis(gl, st_.grid_, st_.fft_progs_, freq_axis);
+        run_conj_scale(gl, st_.conj_prog_, st_.cells_, 1.0f / static_cast<float>(fa.n));
     }
 
     // One e^{-H dtau} Strang pass over psi (no normalization).
     void strang_imaginary(Gl& gl) {
         multiply(gl, relax_half_buf_);
-        run_fft3(gl, grid_, fft_progs_);
+        run_fft3(gl, st_.grid_, st_.fft_progs_);
         multiply(gl, relax_kin_buf_);
-        run_conj_scale(gl, conj_prog_, cells_, 1.0f);
-        run_fft3(gl, grid_, fft_progs_);
-        run_conj_scale(gl, conj_prog_, cells_, 1.0f / static_cast<float>(cells_));
+        run_conj_scale(gl, st_.conj_prog_, st_.cells_, 1.0f);
+        run_fft3(gl, st_.grid_, st_.fft_progs_);
+        run_conj_scale(gl, st_.conj_prog_, st_.cells_, 1.0f / static_cast<float>(st_.cells_));
         multiply(gl, relax_half_buf_);
     }
 
     RelaxStats renormalize_and_estimate(Gl& gl) {
-        const NormPeak np = run_norm_peak(gl, norm_prog_, partials_buf_, cells_);
-        const double norm_sq = np.sum * grid_.cell_volume();
+        const NormPeak np = run_norm_peak(gl, st_.norm_prog_, st_.partials_buf_, st_.cells_);
+        const double norm_sq = np.sum * st_.grid_.cell_volume();
         RelaxStats stats;
         stats.energy = -std::log(norm_sq) / (2.0 * relax_dtau_);
         stats.peak = np.peak / norm_sq;
-        run_scale(gl, scale_prog_, cells_, static_cast<float>(1.0 / std::sqrt(norm_sq)));
+        run_scale(gl, st_.scale_prog_, st_.cells_, static_cast<float>(1.0 / std::sqrt(norm_sq)));
         return stats;
     }
 
@@ -1015,7 +1028,7 @@ private:
             gl.glGenBuffers(1, &slot);
             gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, slot);
             gl.glBufferData(GL_SHADER_STORAGE_BUFFER,
-                            static_cast<GLsizeiptr>(2 * cells_ * sizeof(float)), nullptr,
+                            static_cast<GLsizeiptr>(2 * st_.cells_ * sizeof(float)), nullptr,
                             GL_DYNAMIC_COPY);
         }
         return slot;
@@ -1023,32 +1036,24 @@ private:
 
     void multiply(Gl& gl, GLuint phase_buf) {
         gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bind::kPhase, phase_buf);
-        gl.glUseProgram(mul_prog_);
-        gl.glUniform1ui(gl.glGetUniformLocation(mul_prog_, "n"),
-                        static_cast<GLuint>(cells_));
-        gl.glDispatchCompute(static_cast<GLuint>((cells_ + 255) / 256), 1, 1);
+        gl.glUseProgram(st_.mul_prog_);
+        gl.glUniform1ui(gl.glGetUniformLocation(st_.mul_prog_, "n"),
+                        static_cast<GLuint>(st_.cells_));
+        gl.glDispatchCompute(static_cast<GLuint>((st_.cells_ + 255) / 256), 1, 1);
         gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     }
 
-    ses::Grid3D grid_{};
-    std::size_t cells_ = 0;
-    GLuint psi_buf_ = 0;
+    GpuState st_;  // shared spine (grid, psi, core programs)
     GLuint half_buf_ = 0;
     GLuint kin_buf_ = 0;
     GLuint relax_half_buf_ = 0;
     GLuint relax_kin_buf_ = 0;
     double relax_dtau_ = 0.0;
-    GLuint partials_buf_ = 0;
     GLuint force_partials_buf_ = 0;    // vec4 partials for mean_force
     GLuint dipole_partials_buf_ = 0;   // 6-float partials for dipole_between
     GLuint grad_v_buf_ = 0;            // grad V field (vec4 per cell)
     GLuint radial_u_buf_ = 0;          // radial u_nl(r) table for synthesis
     std::size_t radial_u_count_ = 0;   // current radial table length
-    GLuint mul_prog_ = 0;
-    GLuint conj_prog_ = 0;
-    GLuint bridge_prog_ = 0;
-    GLuint norm_prog_ = 0;
-    GLuint scale_prog_ = 0;
     GLuint inner_prog_ = 0;
     GLuint axpy_prog_ = 0;
     GLuint kick_prog_ = 0;
@@ -1068,7 +1073,6 @@ private:
     int proj_ncomp_ = 0;        // (l_max+1)^2
     double proj_h_radial_ = 0.0;
     std::vector<std::vector<ses::Complex<double>>> glm_host_;  // last project_psi readback
-    FftPrograms fft_progs_;
 };
 
 }  // namespace ses_gpu
