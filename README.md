@@ -92,12 +92,14 @@ X/Wayland forwarding).
 3. Press **F5**: the `cmake-build` task builds the active preset, then gdb
    launches the app.
 
-Presets: `linux-native` (max app perf) · `linux` (portable AVX2 -- prefer it
-for the **test suite**: `-march=native` on an AVX-512 host can perturb a few
-bitwise oracles) · `linux-clang` · `linux-gcc`. Run tests with
-`ctest --preset linux`; verify GPU kernels with `sesolver_gpucheck` (needs a
-GL context). To pin an exact compiler instead of auto-detect, set
-`CMAKE_CXX_COMPILER` (e.g. `-DCMAKE_CXX_COMPILER=clang++-19`) or `$CXX`.
+Presets: `linux-native` (`-march=native`, host-tuned) · `linux` (portable
+AVX2) · `linux-clang` · `linux-gcc`. `linux-native` pins the vector width to
+256-bit, so it stays **bitwise-reproducible with the AVX2 oracles even on an
+AVX-512 host** (`-mprefer-vector-width=256`) -- fine for the app **and** the
+suite (`ctest --preset linux-native`). Verify GPU kernels with
+`sesolver_gpucheck` (needs a GL context). To pin an exact compiler instead of
+auto-detect, set `CMAKE_CXX_COMPILER` (e.g. `-DCMAKE_CXX_COMPILER=clang++-19`)
+or `$CXX`.
 
 ## Working agreement
 

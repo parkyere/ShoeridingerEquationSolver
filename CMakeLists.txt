@@ -95,18 +95,25 @@ if(NOT MSVC)
     target_compile_options(ses_arch INTERFACE -fcx-limited-range)
 endif()
 # SES_NATIVE (host-CPU tuning) takes precedence over the portable AVX2 flags.
-# It KEEPS -ffp-contract=off so no FMA fusion sneaks in; but on an AVX-512 host
-# the wider auto-vectorized reductions can perturb a few BITWISE test oracles
-# (pinned at AVX2 width). If the suite complains, configure it with SES_NATIVE=OFF
-# (the plain `linux` preset) while keeping SES_NATIVE=ON for the app.
+# It keeps -ffp-contract=off AND pins the vector width to 256 (see below), so
+# even on an AVX-512 host the auto-vectorized reductions match the AVX2 build
+# bitwise -- the exact-value test oracles stay valid, and SES_NATIVE is safe for
+# the app AND the suite. (If some toolchain still trips an oracle, build the
+# suite with SES_NATIVE=OFF, the plain `linux` preset.)
 if(MSVC)
     if(SES_ENABLE_AVX2 OR SES_NATIVE)
         target_compile_options(ses_arch INTERFACE /arch:AVX2)
         message(STATUS "AVX2 enabled (MSVC /arch:AVX2).")
     endif()
 elseif(SES_NATIVE)
-    target_compile_options(ses_arch INTERFACE -march=native -ffp-contract=off)
-    message(STATUS "Native CPU tuning (SES_NATIVE=ON, -march=native).")
+    # -march=native for host tuning, but PIN the vector width to 256 (4-wide
+    # double = the AVX2 build) so auto-vectorized reductions keep the same
+    # summation order/rounding on an AVX-512 host. On Zen4/znver4 this is also
+    # the arch default (its AVX-512 is 256-bit double-pumped). -ffp-contract=off
+    # keeps FMA fusion out, exactly as the AVX2 path does.
+    target_compile_options(ses_arch INTERFACE
+        -march=native -mprefer-vector-width=256 -ffp-contract=off)
+    message(STATUS "Native CPU tuning (-march=native, 256-bit vectors).")
 elseif(SES_ENABLE_AVX2)
     target_compile_options(ses_arch INTERFACE -mavx2 -mfma -ffp-contract=off)
     message(STATUS "AVX2 enabled (SES_ENABLE_AVX2=ON).")

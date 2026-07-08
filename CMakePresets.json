@@ -89,7 +89,7 @@
         {
             "name": "linux-native",
             "displayName": "Linux RelWithDebInfo (-march=native, newest clang/gcc)",
-            "description": "Max app perf on this host; auto-detects the newest clang++/g++. May perturb a few bitwise test oracles -- use 'linux' for the suite if so.",
+            "description": "Host-tuned (-march=native, pinned to 256-bit vectors) + newest clang++/g++. Stays bitwise-reproducible with the AVX2 oracles even on AVX-512, so it works for the app AND the test suite.",
             "inherits": "linux-base",
             "cacheVariables": {
                 "SES_NATIVE": "ON",
