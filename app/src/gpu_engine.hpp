@@ -521,6 +521,41 @@ void main() {
 }
 )";
 
+// Pack a complex-fp32 field (vec2 @ binding 0) into fp16 (half) storage
+// (uint @ binding 6): dst[i] = packHalf2x16(src[i]). Halves the resident
+// eigenstate-atlas footprint (256^3: 134 MB -> 67 MB per state) so it fits a
+// small-VRAM GPU. The fp32 consumers (inner product, dipole) are unchanged --
+// an fp16 state is unpacked back to a scratch fp32 buffer on demand.
+inline const char* kPackHalfSrc = R"(#version 430 core
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer SrcBuf { vec2 src[]; };
+layout(std430, binding = 6) writeonly buffer DstBuf { uint dst[]; };
+uniform uint n;
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= n) {
+        return;
+    }
+    dst[i] = packHalf2x16(src[i]);
+}
+)";
+
+// Unpack fp16 (half) storage (uint @ binding 6) back to a complex-fp32 field
+// (vec2 @ binding 0): dst[i] = unpackHalf2x16(src[i]).
+inline const char* kUnpackHalfSrc = R"(#version 430 core
+layout(local_size_x = 256) in;
+layout(std430, binding = 6) readonly buffer SrcBuf { uint src[]; };
+layout(std430, binding = 0) writeonly buffer DstBuf { vec2 dst[]; };
+uniform uint n;
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= n) {
+        return;
+    }
+    dst[i] = unpackHalf2x16(src[i]);
+}
+)";
+
 // ---- helpers ---------------------------------------------------------------
 
 inline std::string instantiate(std::string tmpl, const char* token, int value) {
@@ -725,10 +760,13 @@ public:
         force_prog_ = build_program(gl, kMeanForceSrc, "mean force");
         dipole_prog_ = build_program(gl, kDipoleSrc, "dipole");
         synth_prog_ = build_program(gl, kSynthSrc, "orbital synthesis");
+        pack_prog_ = build_program(gl, kPackHalfSrc, "pack half");
+        unpack_prog_ = build_program(gl, kUnpackHalfSrc, "unpack half");
         fft_progs_ = build_fft_programs(gl, grid);
         if (mul_prog_ == 0 || conj_prog_ == 0 || bridge_prog_ == 0 || norm_prog_ == 0 ||
             scale_prog_ == 0 || inner_prog_ == 0 || axpy_prog_ == 0 || kick_prog_ == 0 ||
             shear_prog_ == 0 || force_prog_ == 0 || dipole_prog_ == 0 || synth_prog_ == 0 ||
+            pack_prog_ == 0 || unpack_prog_ == 0 ||
             fft_progs_.axis[0] == 0 || fft_progs_.axis[1] == 0 ||
             fft_progs_.axis[2] == 0) {
             return false;
@@ -962,6 +1000,105 @@ public:
     // footprint (~12 GB VRAM -> ~24 GB committed). Static keeps them GPU-side.
     GLuint create_state_buffer(Gl& gl, const ses::Field3D& state) {
         return make_static_buffer(gl, to_rg32f(state.data()));
+    }
+
+    // ---- fp16 (half) atlas storage -------------------------------------
+    // A small-VRAM fallback: store an eigenstate as packed fp16 (uint per
+    // complex cell, HALF the fp32 footprint) so the whole n<=6 manifold fits an
+    // 8 GB card. The tested fp32 consumers (inner product / dipole) never
+    // change -- an fp16 state is unpacked to a scratch fp32 buffer on demand
+    // (decode-on-use). Accuracy: ~1e-3 relative, safe for populations/dipoles
+    // (the h-audited s-states stay fp32; see the shell).
+
+    // Allocate a write-once fp16 state buffer (cells uints = half the fp32 size).
+    GLuint make_half_state_buffer(Gl& gl) {
+        GLuint buf = 0;
+        gl.glGenBuffers(1, &buf);
+        gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, buf);
+        gl.glBufferData(GL_SHADER_STORAGE_BUFFER,
+                        static_cast<GLsizeiptr>(cells_ * sizeof(GLuint)), nullptr,
+                        GL_STATIC_COPY);
+        return buf;
+    }
+
+    // dst_half <- packHalf2x16(src_fp32).
+    void pack_to_half(Gl& gl, GLuint src_fp32, GLuint dst_half) {
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, src_fp32);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, dst_half);
+        gl.glUseProgram(pack_prog_);
+        gl.glUniform1ui(gl.glGetUniformLocation(pack_prog_, "n"),
+                        static_cast<GLuint>(cells_));
+        gl.glDispatchCompute(static_cast<GLuint>((cells_ + 255) / 256), 1, 1);
+        gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    }
+
+    // dst_fp32 <- unpackHalf2x16(src_half).
+    void unpack_from_half(Gl& gl, GLuint src_half, GLuint dst_fp32) {
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, src_half);
+        gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, dst_fp32);
+        gl.glUseProgram(unpack_prog_);
+        gl.glUniform1ui(gl.glGetUniformLocation(unpack_prog_, "n"),
+                        static_cast<GLuint>(cells_));
+        gl.glDispatchCompute(static_cast<GLuint>((cells_ + 255) / 256), 1, 1);
+        gl.glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    }
+
+    // psi <- unpackHalf2x16(src_half): collapse onto an fp16-stored eigenstate.
+    void unpack_into_psi(Gl& gl, GLuint src_half) {
+        gl.glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+        unpack_from_half(gl, src_half, psi_buf_);
+    }
+
+    // Synthesize psi = (u/r) Y_lm straight into a resident fp16 buffer: build +
+    // normalize in fp32 (the tested path), then pack to half and free the fp32
+    // temp. HALF the resident footprint. *out_peak (if given) is the fp32
+    // normalized peak (pre-pack), matching synthesize_state.
+    GLuint synthesize_state_half(Gl& gl, const std::vector<double>& u, int l, int m,
+                                 double h_radial, double rmax, int n_radial,
+                                 double* out_peak = nullptr) {
+        const GLuint fp32 = synthesize_state(gl, u, l, m, h_radial, rmax, n_radial, out_peak);
+        const GLuint half = make_half_state_buffer(gl);
+        pack_to_half(gl, fp32, half);
+        gl.glDeleteBuffers(1, &fp32);
+        return half;
+    }
+
+    // ---- precision-aware consumers (decode-on-use) ---------------------
+    // The shell holds each atlas state as fp32 or fp16 (make_half_state_buffer)
+    // and calls these; an fp16 operand is unpacked to a scratch fp32 buffer,
+    // then the SAME tested fp32 kernel runs. fp32 operands take the fast path.
+
+    NormPeak inner_with_psi_p(Gl& gl, GLuint buf, bool fp16) {
+        if (!fp16) {
+            return inner_with_psi(gl, buf);
+        }
+        unpack_from_half(gl, buf, ensure_scratch(gl, scratch_a_));
+        return inner_with_psi(gl, scratch_a_);
+    }
+
+    void copy_into_psi_p(Gl& gl, GLuint buf, bool fp16) {
+        if (fp16) {
+            unpack_into_psi(gl, buf);
+        } else {
+            copy_into_psi(gl, buf);
+        }
+    }
+
+    // <to|r|from> with either operand possibly fp16 (channel table pairs an
+    // fp16 p-state with an fp32 s-state, so mixed precision must work).
+    ses::DipoleMatrixElement dipole_between_p(Gl& gl, GLuint to, bool to_fp16,
+                                              GLuint from, bool from_fp16) {
+        GLuint tb = to;
+        GLuint fb = from;
+        if (to_fp16) {
+            unpack_from_half(gl, to, ensure_scratch(gl, scratch_a_));
+            tb = scratch_a_;
+        }
+        if (from_fp16) {
+            unpack_from_half(gl, from, ensure_scratch(gl, scratch_b_));
+            fb = scratch_b_;
+        }
+        return dipole_between(gl, tb, fb);
     }
 
     // Upload the radial u_nl(r) table (fp32) that kSynthSrc interpolates.
@@ -1283,6 +1420,19 @@ private:
         return buf;
     }
 
+    // Lazily allocate a reusable fp32 scratch buffer (for unpacking an fp16
+    // state before a tested fp32 consumer reads it). Never uploaded from host.
+    GLuint ensure_scratch(Gl& gl, GLuint& slot) {
+        if (slot == 0) {
+            gl.glGenBuffers(1, &slot);
+            gl.glBindBuffer(GL_SHADER_STORAGE_BUFFER, slot);
+            gl.glBufferData(GL_SHADER_STORAGE_BUFFER,
+                            static_cast<GLsizeiptr>(2 * cells_ * sizeof(float)), nullptr,
+                            GL_DYNAMIC_COPY);
+        }
+        return slot;
+    }
+
     void multiply(Gl& gl, GLuint phase_buf) {
         gl.glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, phase_buf);
         gl.glUseProgram(mul_prog_);
@@ -1318,6 +1468,10 @@ private:
     GLuint force_prog_ = 0;
     GLuint dipole_prog_ = 0;
     GLuint synth_prog_ = 0;
+    GLuint pack_prog_ = 0;
+    GLuint unpack_prog_ = 0;
+    GLuint scratch_a_ = 0;  // fp32 unpack scratch for fp16 consumers
+    GLuint scratch_b_ = 0;  // second scratch (dipole needs two operands)
     FftPrograms fft_progs_;
 };
 

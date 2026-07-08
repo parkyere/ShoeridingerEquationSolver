@@ -574,6 +574,120 @@ bool check_synth(Gl& gl) {
     return ok;
 }
 
+// fp16 (half) atlas storage: the small-VRAM fallback packs each eigenstate to
+// fp16 and unpacks it on demand. Two properties pin the pack/unpack kernels:
+//  (a) a round-trip matches the original to fp16 precision (~1e-3 for O(1)
+//      values) -- it really is storing at half precision, and
+//  (b) it is IDEMPOTENT: a SECOND round-trip is bit-exact, because the first
+//      unpack already lands on the fp16 value lattice -- proving pack/unpack
+//      are true inverses (a broken kernel fails this even if (a) passes).
+bool check_fp16(Gl& gl) {
+    const ses::Grid1D axis{-4.0, 4.0, 16};
+    const ses::Grid3D g{axis, axis, axis};
+    const std::vector<double> v = ses::soft_coulomb_potential(g, 1.0, 1.0, ses::Vec3d{});
+    const ses::SplitOperator3D prop{g, v, 0.02};
+    const ses::Field3D seed = deterministic_field(g);
+    ses_gpu::GpuEngine eng;
+    if (!eng.initialize(gl, g, prop.half_potential_phase(), prop.kinetic_phase(), seed)) {
+        std::printf("engine init: FAIL\n");
+        return false;
+    }
+    const ses::Field3D field = deterministic_field(g);
+
+    // Round-trip 1: field (fp32) -> half -> psi (fp32).
+    const GLuint src = eng.create_state_buffer(gl, field);
+    const GLuint half1 = eng.make_half_state_buffer(gl);
+    eng.pack_to_half(gl, src, half1);
+    eng.unpack_into_psi(gl, half1);
+    std::vector<float> rec1;
+    eng.readback(gl, rec1);
+
+    // Round-trip 2: rec1 -> half -> psi. Must reproduce rec1 bit-for-bit.
+    ses::Field3D rec1_field{g};
+    for (std::size_t i = 0; i < rec1_field.data().size(); ++i) {
+        rec1_field.data()[i] = ses::Complex<double>{rec1[2 * i], rec1[2 * i + 1]};
+    }
+    const GLuint src2 = eng.create_state_buffer(gl, rec1_field);
+    const GLuint half2 = eng.make_half_state_buffer(gl);
+    eng.pack_to_half(gl, src2, half2);
+    eng.unpack_into_psi(gl, half2);
+    std::vector<float> rec2;
+    eng.readback(gl, rec2);
+
+    double rt_err = 0.0;    // vs the original: bounded by fp16 precision
+    double idem_err = 0.0;  // second round-trip vs first: must be exactly 0
+    for (std::size_t i = 0; i < field.data().size(); ++i) {
+        rt_err = std::max({rt_err,
+                           std::abs(static_cast<double>(rec1[2 * i]) - field.data()[i].real()),
+                           std::abs(static_cast<double>(rec1[2 * i + 1]) - field.data()[i].imag())});
+        idem_err = std::max({idem_err, std::abs(static_cast<double>(rec2[2 * i] - rec1[2 * i])),
+                             std::abs(static_cast<double>(rec2[2 * i + 1] - rec1[2 * i + 1]))});
+    }
+    for (const GLuint b : {src, half1, src2, half2}) {
+        gl.glDeleteBuffers(1, &b);
+    }
+    const bool ok = rt_err < 1e-3 && idem_err == 0.0;
+    std::printf("fp16 half pack/unpack: round-trip = %.3e (fp16), idempotent = %.3e  [%s]\n",
+                rt_err, idem_err, ok ? "PASS" : "FAIL");
+    return ok;
+}
+
+// fp16 decode-on-use consumers: an fp16-stored eigenstate, unpacked to a
+// scratch fp32 buffer, must feed the tested inner-product and dipole reductions
+// to fp16 precision -- and mixed precision (an fp32 operand with an fp16 one,
+// as the channel table pairs an fp16 p-state with an fp32 s-state) must work.
+bool check_fp16_consumers(Gl& gl) {
+    const ses::Grid1D axis{-8.0, 8.0, 32};
+    const ses::Grid3D g{axis, axis, axis};
+    const std::vector<double> v = ses::soft_coulomb_potential(g, 1.0, 1.0, ses::Vec3d{});
+    const ses::SplitOperator3D prop{g, v, 0.02};
+    const ses::Field3D seed = ses::gaussian_wavepacket(
+        g, ses::Vec3d{}, ses::Vec3d{1.5, 1.5, 1.5}, ses::Vec3d{});
+    ses_gpu::GpuEngine eng;
+    if (!eng.initialize(gl, g, prop.half_potential_phase(), prop.kinetic_phase(), seed)) {
+        std::printf("engine init: FAIL\n");
+        return false;
+    }
+    const ses::RadialGrid rg{8.0, 1599};
+    std::vector<double> vr(static_cast<std::size_t>(rg.n));
+    for (int i = 0; i < rg.n; ++i) {
+        vr[static_cast<std::size_t>(i)] = 0.5 * rg.r(i) * rg.r(i);
+    }
+    const ses::RadialState st =
+        ses::radial_eigenstate(rg, ses::radial_hamiltonian(rg, vr, 1), 0);
+    const GLuint s32 = eng.synthesize_state(gl, st.u, 1, 0, rg.h(), rg.rmax, rg.n);
+    const GLuint s16 = eng.synthesize_state_half(gl, st.u, 1, 0, rg.h(), rg.rmax, rg.n);
+
+    const ses::Field3D testpsi = ses::gaussian_wavepacket(
+        g, ses::Vec3d{1.0, 0.5, -0.4}, ses::Vec3d{1.7, 1.7, 1.7}, ses::Vec3d{});
+    eng.upload_state(gl, testpsi);
+
+    const ses_gpu::NormPeak ip32 = eng.inner_with_psi(gl, s32);
+    const ses_gpu::NormPeak ip16 = eng.inner_with_psi_p(gl, s16, true);
+    const double inner_err =
+        std::max(std::abs(ip32.sum - ip16.sum), std::abs(ip32.peak - ip16.peak));
+
+    const ses::DipoleMatrixElement d32 = eng.dipole_between(gl, s32, s32);
+    const ses::DipoleMatrixElement d16 = eng.dipole_between_p(gl, s16, true, s16, true);
+    const ses::DipoleMatrixElement dmix = eng.dipole_between_p(gl, s32, false, s16, true);
+    auto dip_err = [](const ses::DipoleMatrixElement& a, const ses::DipoleMatrixElement& b) {
+        return std::max({std::abs(a.x.real() - b.x.real()), std::abs(a.y.real() - b.y.real()),
+                         std::abs(a.z.real() - b.z.real()), std::abs(a.x.imag() - b.x.imag()),
+                         std::abs(a.y.imag() - b.y.imag()), std::abs(a.z.imag() - b.z.imag())});
+    };
+    const double d16_err = dip_err(d32, d16);
+    const double dmix_err = dip_err(d32, dmix);
+
+    for (const GLuint b : {s32, s16}) {
+        gl.glDeleteBuffers(1, &b);
+    }
+    const double worst = std::max({inner_err, d16_err, dmix_err});
+    const bool ok = worst < 3e-3;
+    std::printf("fp16 consumers (inner/dipole/mixed vs fp32): max = %.3e  [%s]\n", worst,
+                ok ? "PASS" : "FAIL");
+    return ok;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -623,6 +737,8 @@ int main(int argc, char** argv) {
     ok = check_mean_force(gl) && ok;
     ok = check_dipole(gl) && ok;
     ok = check_synth(gl) && ok;
+    ok = check_fp16(gl) && ok;
+    ok = check_fp16_consumers(gl) && ok;
 
     return ok ? 0 : 1;
 }

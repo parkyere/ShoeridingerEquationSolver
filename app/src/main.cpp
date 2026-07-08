@@ -66,8 +66,11 @@
 #include <core/sphere.hpp>
 #include <core/vec.hpp>
 #include <core/volume.hpp>
+#include <core/vram_budget.hpp>
 
 #include "gpu_engine.hpp"
+
+#include <cstring>  // std::strcmp for the VRAM extension probe
 
 #include <QApplication>
 #include <QKeyEvent>
@@ -461,6 +464,26 @@ protected:
                                      sim_.propagator().half_potential_phase(),
                                      sim_.propagator().kinetic_phase(), sim_.psi());
         if (gpu_ok_) {
+            // Pick the atlas storage precision from free VRAM. The fp32 n<=6
+            // manifold (91 x 256^3 complex-fp32 ~= 12 GB) oversubscribes a small
+            // card, and WDDM then pages it into system RAM -- host RAM balloons
+            // and the frame rate collapses. fp16 halves it (~6 GB). Headroom
+            // covers the live working set + textures + the unpack scratch +
+            // driver; an unmeasurable budget keeps fp32 (the big-VRAM default).
+            constexpr std::int64_t kVramHeadroomBytes = 2LL * 1024 * 1024 * 1024;
+            const std::int64_t bytes_per_state =
+                static_cast<std::int64_t>(sim_.grid().size()) * 2 *
+                static_cast<std::int64_t>(sizeof(float));
+            bool atlas_fits = true;
+            state_precision_ = ses::choose_state_precision(
+                query_free_vram_bytes(), kNumStates, bytes_per_state,
+                kVramHeadroomBytes, &atlas_fits);
+            std::fprintf(stderr, "vram: atlas precision = %s%s\n",
+                         state_precision_ == ses::GpuPrecision::Fp16 ? "fp16 (half)"
+                                                                     : "fp32",
+                         atlas_fits ? ""
+                                    : "  [WARNING: even fp16 is tight -- consider a "
+                                      "smaller box or manifold]");
             // Imaginary-time weights from the tested CPU relaxer (G7).
             const ses::ImaginaryTimePropagator3D relaxer{sim_.grid(), sim_.potential(),
                                                          kRelaxDtau};
@@ -593,15 +616,17 @@ protected:
                 pending_energy_measure_ = false;
                 std::vector<double> pop(static_cast<std::size_t>(kNumStates));
                 for (int s = 0; s < kNumStates; ++s) {
-                    const ses_gpu::NormPeak ip = engine_.inner_with_psi(
-                        *this, state_buf_[static_cast<std::size_t>(s)]);
+                    const ses_gpu::NormPeak ip = engine_.inner_with_psi_p(
+                        *this, state_buf_[static_cast<std::size_t>(s)],
+                        state_is_fp16(s));
                     pop[static_cast<std::size_t>(s)] = ip.sum * ip.sum + ip.peak * ip.peak;
                 }
                 std::uniform_real_distribution<double> uniform(0.0, 1.0);
                 const int n = ses::sample_energy_eigenstate(pop, uniform(rng_));
                 last_measured_index_ = n;  // >=0 eigenstate, -1 outside manifold
                 if (n >= 0) {
-                    engine_.copy_into_psi(*this, state_buf_[static_cast<std::size_t>(n)]);
+                    engine_.copy_into_psi_p(*this, state_buf_[static_cast<std::size_t>(n)],
+                                            state_is_fp16(n));
                     write_display_texture();
                     last_measure_ =
                         QStringLiteral("%1 (E %2 eV)")
@@ -688,7 +713,8 @@ protected:
                             std::array<double, kNumStates> pop{};
                             for (int s = 1; s < kNumStates; ++s) {
                                 const ses_gpu::NormPeak ip =
-                                    engine_.inner_with_psi(*this, state_buf_[s]);
+                                    engine_.inner_with_psi_p(*this, state_buf_[s],
+                                                             state_is_fp16(s));
                                 pop[s] = ip.sum * ip.sum + ip.peak * ip.peak;
                             }
                             std::vector<double> rates(channels_.size());
@@ -703,7 +729,8 @@ protected:
                             if (pick.channel >= 0) {
                                 const ShellChannel& ch =
                                     channels_[static_cast<std::size_t>(pick.channel)];
-                                engine_.copy_into_psi(*this, state_buf_[ch.to]);
+                                engine_.copy_into_psi_p(*this, state_buf_[ch.to],
+                                                        state_is_fp16(ch.to));
                                 flash_ticks_ = 25;
                                 ++photon_count_;
                                 last_jump_ = QStringLiteral("%1->%2").arg(
@@ -720,10 +747,12 @@ protected:
                     if (laser_pol_ != LaserPol::Off && gpu_title_due_ &&
                         state_buf_[kP2Z] != 0) {
                         const ses_gpu::NormPeak pe =
-                            engine_.inner_with_psi(*this, state_buf_[kP2Z]);
+                            engine_.inner_with_psi_p(*this, state_buf_[kP2Z],
+                                                     state_is_fp16(kP2Z));
                         pop_excited_ = pe.sum * pe.sum + pe.peak * pe.peak;
                         const ses_gpu::NormPeak pg =
-                            engine_.inner_with_psi(*this, state_buf_[kS1]);
+                            engine_.inner_with_psi_p(*this, state_buf_[kS1],
+                                                     state_is_fp16(kS1));
                         pop_ground_ = pg.sum * pg.sum + pg.peak * pg.peak;
                         rabi_peak_ = std::max(rabi_peak_, pop_excited_);
                     }
@@ -1114,7 +1143,8 @@ public:
         static constexpr int kCycle[] = {k3DZ0, k4F0, k3S, k4S};
         const int idx = kCycle[excite_cycle_++ % 4];
         makeCurrent();
-        engine_.copy_into_psi(*this, state_buf_[static_cast<std::size_t>(idx)]);
+        engine_.copy_into_psi_p(*this, state_buf_[static_cast<std::size_t>(idx)],
+                                state_is_fp16(idx));
         doneCurrent();
         cpu_is_truth_ = false;  // the GPU state is ahead now
         stepping_ = Stepping::RealTime;
@@ -1248,7 +1278,8 @@ public:
             return;
         }
         makeCurrent();
-        engine_.copy_into_psi(*this, state_buf_[static_cast<std::size_t>(idx)]);
+        engine_.copy_into_psi_p(*this, state_buf_[static_cast<std::size_t>(idx)],
+                                state_is_fp16(idx));
         doneCurrent();
         cpu_is_truth_ = false;
         stepping_ = Stepping::RealTime;
@@ -1260,7 +1291,8 @@ public:
         }
         makeCurrent();
         const ses_gpu::NormPeak ip =
-            engine_.inner_with_psi(*this, state_buf_[static_cast<std::size_t>(idx)]);
+            engine_.inner_with_psi_p(*this, state_buf_[static_cast<std::size_t>(idx)],
+                                     state_is_fp16(idx));
         doneCurrent();
         return ip.sum * ip.sum + ip.peak * ip.peak;
     }
@@ -1380,10 +1412,78 @@ protected:
     // orbital + normalizes it on-device -- no CPU field, no host copy. Caches
     // the energy; *out_peak (if given) receives the normalized peak density.
     // Needs a current GL context.
+    // Free VRAM in bytes via a vendor GL extension (NVIDIA NVX / AMD ATI), or
+    // ses::kVramUnknown when neither is present (Mesa, remote GL). Core GL has
+    // no such query and these enums are absent from the Qt headers.
+    std::int64_t query_free_vram_bytes() {
+        constexpr GLenum kAvailNvx = 0x9049;    // CURRENT_AVAILABLE_VIDMEM_NVX (KiB)
+        constexpr GLenum kTexFreeAti = 0x87FC;  // TEXTURE_FREE_MEMORY_ATI (KB; [0]=free)
+        GLint n_ext = 0;
+        glGetIntegerv(GL_NUM_EXTENSIONS, &n_ext);
+        bool nvx = false;
+        bool ati = false;
+        for (GLint i = 0; i < n_ext; ++i) {
+            const char* e = reinterpret_cast<const char*>(
+                glGetStringi(GL_EXTENSIONS, static_cast<GLuint>(i)));
+            if (e == nullptr) {
+                continue;
+            }
+            if (std::strcmp(e, "GL_NVX_gpu_memory_info") == 0) {
+                nvx = true;
+            }
+            if (std::strcmp(e, "GL_ATI_meminfo") == 0) {
+                ati = true;
+            }
+        }
+        while (glGetError() != GL_NO_ERROR) {
+        }
+        if (nvx) {
+            GLint kib = 0;
+            glGetIntegerv(kAvailNvx, &kib);
+            if (glGetError() == GL_NO_ERROR && kib > 0) {
+                return static_cast<std::int64_t>(kib) * 1024;
+            }
+        }
+        if (ati) {
+            GLint info[4] = {0, 0, 0, 0};
+            glGetIntegerv(kTexFreeAti, info);
+            if (glGetError() == GL_NO_ERROR && info[0] > 0) {
+                return static_cast<std::int64_t>(info[0]) * 1024;
+            }
+        }
+        return ses::kVramUnknown;
+    }
+
+    // Whether atlas state `idx` is stored fp16. Fp32 is kept for the h-audit
+    // s-states (E_radial vs <H>_grid amplifies fp16 noise through the Laplacian)
+    // and the deflation set (relax_deflated_step reads them as fp32 phi buffers).
+    bool state_is_fp16(int idx) const {
+        if (state_precision_ != ses::GpuPrecision::Fp16) {
+            return false;
+        }
+        switch (idx) {
+            case kS1:
+            case kP2X:
+            case kP2Y:
+            case kP2Z:
+            case k4S:
+            case k5S:
+            case k6S:
+                return false;
+            default:
+                return true;
+        }
+    }
+
     GLuint gpu_synthesize(int idx, double* out_peak = nullptr) {
         const std::size_t s = static_cast<std::size_t>(idx);
         const StateSpec& sp = kStateSpec[s];
         state_energy_[s] = radial_energy_[static_cast<std::size_t>(sp.level)];
+        if (state_is_fp16(idx)) {
+            return engine_.synthesize_state_half(
+                *this, radial_u_[static_cast<std::size_t>(sp.level)], sp.l, sp.m,
+                radial_grid_.h(), radial_grid_.rmax, radial_grid_.n, out_peak);
+        }
         return engine_.synthesize_state(
             *this, radial_u_[static_cast<std::size_t>(sp.level)], sp.l, sp.m,
             radial_grid_.h(), radial_grid_.rmax, radial_grid_.n, out_peak);
@@ -1430,7 +1530,7 @@ protected:
                 return;
             }
             // Show it: copy the state into psi and bridge it to the texture.
-            engine_.copy_into_psi(*this, state_buf_[s]);
+            engine_.copy_into_psi_p(*this, state_buf_[s], state_is_fp16(idx));
             // The h-audit: cross-check the 1D radial energy against the full 3D
             // spectral <H> for the resolution-critical 1s and the box-critical
             // 4s/5s/6s -- the ONLY states read back to the CPU (4 of 91).
@@ -1504,8 +1604,9 @@ protected:
         const std::size_t from = static_cast<std::size_t>(p.first);
         const std::size_t to = static_cast<std::size_t>(p.second);
         const double gap = state_energy_[from] - state_energy_[to];
-        const ses::DipoleMatrixElement d = engine_.dipole_between(
-            *this, state_buf_[to], state_buf_[from]);
+        const ses::DipoleMatrixElement d = engine_.dipole_between_p(
+            *this, state_buf_[to], state_is_fp16(static_cast<int>(to)),
+            state_buf_[from], state_is_fp16(static_cast<int>(from)));
         channels_.push_back(ShellChannel{
             p.first, p.second, ses::einstein_a(gap, ses::dipole_strength_sq(d)), 0.0});
         if (p.first == kP2Z && p.second == kS1) {
@@ -1559,7 +1660,8 @@ protected:
         const bool ok = ensure_state(kS1) && ensure_state(kP2Z);
         if (ok && dipole_z_ == 0.0) {
             const ses::DipoleMatrixElement d =
-                engine_.dipole_between(*this, state_buf_[kP2Z], state_buf_[kS1]);
+                engine_.dipole_between_p(*this, state_buf_[kP2Z], state_is_fp16(kP2Z),
+                                         state_buf_[kS1], state_is_fp16(kS1));
             dipole_z_ = std::abs(d.z);
         }
         doneCurrent();
@@ -2101,6 +2203,9 @@ private:
     // Transitions arc T1/T4/T5: the cached eigenstate manifold, the decay
     // channel table (built on first decay toggle), and jump bookkeeping.
     std::array<GLuint, kNumStates> state_buf_{};
+    // Atlas storage precision, decided at startup from free VRAM: the fp32
+    // n<=6 manifold is ~12 GB and oversubscribes a small card. Fp16 halves it.
+    ses::GpuPrecision state_precision_ = ses::GpuPrecision::Fp32;
     std::array<double, kNumStates> state_energy_{};
     std::vector<ShellChannel> channels_;
     double accel_display_ = 0.0;  // common display acceleration factor
