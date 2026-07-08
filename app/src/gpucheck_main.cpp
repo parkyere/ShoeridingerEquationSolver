@@ -664,13 +664,15 @@ bool check_fp16_consumers(Gl& gl) {
     eng.upload_state(gl, testpsi);
 
     const ses_gpu::NormPeak ip32 = eng.inner_with_psi(gl, s32);
-    const ses_gpu::NormPeak ip16 = eng.inner_with_psi_p(gl, s16, true);
+    const ses_gpu::NormPeak ip16 = eng.inner_with_psi(gl, ses_gpu::StateHandle{s16, true});
     const double inner_err =
         std::max(std::abs(ip32.sum - ip16.sum), std::abs(ip32.peak - ip16.peak));
 
     const ses::DipoleMatrixElement d32 = eng.dipole_between(gl, s32, s32);
-    const ses::DipoleMatrixElement d16 = eng.dipole_between_p(gl, s16, true, s16, true);
-    const ses::DipoleMatrixElement dmix = eng.dipole_between_p(gl, s32, false, s16, true);
+    const ses::DipoleMatrixElement d16 =
+        eng.dipole_between(gl, ses_gpu::StateHandle{s16, true}, ses_gpu::StateHandle{s16, true});
+    const ses::DipoleMatrixElement dmix =
+        eng.dipole_between(gl, ses_gpu::StateHandle{s32, false}, ses_gpu::StateHandle{s16, true});
     auto dip_err = [](const ses::DipoleMatrixElement& a, const ses::DipoleMatrixElement& b) {
         return std::max({std::abs(a.x.real() - b.x.real()), std::abs(a.y.real() - b.y.real()),
                          std::abs(a.z.real() - b.z.real()), std::abs(a.x.imag() - b.x.imag()),

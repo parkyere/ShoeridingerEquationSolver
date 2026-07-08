@@ -183,6 +183,16 @@ struct NormPeak {
     double peak{};  // max of |psi_i|^2
 };
 
+// A resident atlas state buffer plus its storage precision. The consumers
+// (inner_with_psi / dipole_between) take this so one signature handles both
+// precisions: an fp16 operand is decoded to a scratch fp32 buffer, then the
+// SAME tested fp32 kernel runs; fp32 takes the fast path. Bundling the flag
+// with the buffer removes the parallel _p/_half method family.
+struct StateHandle {
+    GLuint buf = 0;
+    bool fp16 = false;
+};
+
 // Reduce |psi|^2 over the SSBO bound at binding 0 into the partials buffer
 // (binding 2), then finish the 256 partial pairs on the CPU in double.
 inline NormPeak run_norm_peak(Gl& gl, GLuint prog, GLuint partials_buf, std::size_t n) {
@@ -553,40 +563,27 @@ public:
     }
 
     // ---- precision-aware consumers (decode-on-use) ---------------------
-    // The shell holds each atlas state as fp32 or fp16 (make_half_state_buffer)
-    // and calls these; an fp16 operand is unpacked to a scratch fp32 buffer,
-    // then the SAME tested fp32 kernel runs. fp32 operands take the fast path.
+    // A StateHandle carries the buffer AND its precision, so these single
+    // overloads cover both: an fp16 operand is unpacked to a scratch fp32
+    // buffer (decode-on-use), then the SAME tested fp32 kernel runs.
 
-    NormPeak inner_with_psi_p(Gl& gl, GLuint buf, bool fp16) {
-        if (!fp16) {
-            return inner_with_psi(gl, buf);
+    GLuint decode(Gl& gl, StateHandle s, GLuint& scratch) {
+        if (!s.fp16) {
+            return s.buf;
         }
-        unpack_from_half(gl, buf, ensure_scratch(gl, scratch_a_));
-        return inner_with_psi(gl, scratch_a_);
+        unpack_from_half(gl, s.buf, ensure_scratch(gl, scratch));
+        return scratch;
     }
 
-    void copy_into_psi_p(Gl& gl, GLuint buf, bool fp16) {
-        if (fp16) {
-            unpack_into_psi(gl, buf);
-        } else {
-            copy_into_psi(gl, buf);
-        }
+    NormPeak inner_with_psi(Gl& gl, StateHandle s) {
+        return inner_with_psi(gl, decode(gl, s, scratch_a_));
     }
 
-    // <to|r|from> with either operand possibly fp16 (channel table pairs an
+    // <to|r|from> with either operand possibly fp16 (the channel table pairs an
     // fp16 p-state with an fp32 s-state, so mixed precision must work).
-    ses::DipoleMatrixElement dipole_between_p(Gl& gl, GLuint to, bool to_fp16,
-                                              GLuint from, bool from_fp16) {
-        GLuint tb = to;
-        GLuint fb = from;
-        if (to_fp16) {
-            unpack_from_half(gl, to, ensure_scratch(gl, scratch_a_));
-            tb = scratch_a_;
-        }
-        if (from_fp16) {
-            unpack_from_half(gl, from, ensure_scratch(gl, scratch_b_));
-            fb = scratch_b_;
-        }
+    ses::DipoleMatrixElement dipole_between(Gl& gl, StateHandle to, StateHandle from) {
+        const GLuint tb = decode(gl, to, scratch_a_);
+        const GLuint fb = decode(gl, from, scratch_b_);
         return dipole_between(gl, tb, fb);
     }
 

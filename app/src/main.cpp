@@ -1282,6 +1282,11 @@ protected:
         }
     }
 
+    // The GPU handle for atlas state `idx`: its buffer plus its stored precision.
+    ses_gpu::StateHandle handle(int idx) const {
+        return {state_buf_[static_cast<std::size_t>(idx)], state_is_fp16(idx)};
+    }
+
     GLuint gpu_synthesize(int idx, double* out_peak = nullptr) {
         const std::size_t s = static_cast<std::size_t>(idx);
         const StateSpec& sp = kStateSpec[s];
@@ -1540,8 +1545,7 @@ protected:
         const bool ok = ensure_state(kS1) && ensure_state(kP2Z);
         if (ok && dipole_z_ == 0.0) {
             const ses::DipoleMatrixElement d =
-                engine_.dipole_between_p(*this, state_buf_[kP2Z], state_is_fp16(kP2Z),
-                                         state_buf_[kS1], state_is_fp16(kS1));
+                engine_.dipole_between(*this, handle(kP2Z), handle(kS1));
             dipole_z_ = std::abs(d.z);
         }
         doneCurrent();
