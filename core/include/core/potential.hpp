@@ -71,6 +71,39 @@ inline std::vector<double> soft_coulomb_potential(const Grid3D& g, double Z, dou
     return v;
 }
 
+// Integral of 1/r over the UNIT cube centered at the origin (a pure geometric
+// constant, verified to 7 digits by cube quadrature). The average of -Z/r over
+// a cubic cell of side h centered on the nucleus is therefore -Z * this / h --
+// finite, and the correct discrete stand-in for the singular nucleus cell.
+inline constexpr double kCoulombCellAverage = 2.3800774;
+
+// V(r) = -Z / |r - c|, the BARE Coulomb potential, with the one grid cell that
+// coincides with the nucleus c (where -Z/r would be -infinity) replaced by the
+// analytic cell average -Z * kCoulombCellAverage / h. Unlike soft_coulomb (which
+// rounds off the WHOLE well and shifts every level up), this regularizes ONLY the
+// singular cell and keeps every other cell exact, so the spectrum converges to
+// textbook hydrogen as h -> 0. Assumes cubic cells (h = g.x.spacing()) and the
+// nucleus on a grid point (the app's convention); off-point nuclei hit no exact
+// singularity and simply get -Z/r throughout.
+inline std::vector<double> regularized_coulomb_potential(const Grid3D& g, double Z, Vec3d c) {
+    const double h = g.x.spacing();
+    const double center = -Z * kCoulombCellAverage / h;
+    std::vector<double> v(static_cast<std::size_t>(g.size()));
+    for (int k = 0; k < g.z.n; ++k) {
+        for (int j = 0; j < g.y.n; ++j) {
+            for (int i = 0; i < g.x.n; ++i) {
+                const double dx = g.x.coord(i) - c.x;
+                const double dy = g.y.coord(j) - c.y;
+                const double dz = g.z.coord(k) - c.z;
+                const double r = std::sqrt(dx * dx + dy * dy + dz * dz);
+                v[static_cast<std::size_t>(g.flat(i, j, k))] =
+                    (r < 1e-6 * h) ? center : -Z / r;
+            }
+        }
+    }
+    return v;
+}
+
 // Boundary absorbing mask for the FFT (periodic) box: 1.0 in the interior,
 // tapering smoothly to 0 within `width` of each wall (per-axis cos^2 ramps
 // multiplied -- a rounded-box absorber). Multiplying psi by this each real-time
