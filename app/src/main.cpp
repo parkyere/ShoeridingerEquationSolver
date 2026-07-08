@@ -107,17 +107,19 @@ namespace {
     std::exit(EXIT_FAILURE);
 }
 
-// Soft-Coulomb softening length a (Bohr) for -Z/sqrt(r^2 + a^2). Pinned to a = h
-// (the grid spacing) so the well is as sharp as the grid resolves: the bottom
-// deepens to -1/a and E(1s) moves toward the true -0.5 Ha, while the startup
-// h-audit (E_radial vs <H>_grid) still holds. Sharper (a < h) is not unstable
-// -- the split-operator stays unitary -- but under-resolves the well/cusp and
-// diverges the audit. The 3D grid and BOTH radial solves must use the same a
-// (kSoftening / kSoftening^2) or the synthesized orbitals stop being
-// eigenstates of the simulated Hamiltonian. Widening the box to hold n = 6
-// (below) at a fixed 256^3 raises h to 0.625, so a tracks it up to 0.625: the
-// low-n cusp gets a touch rounder, the trade for reaching the n = 6 shell.
-constexpr double kSoftening = 0.625;  // a in Bohr (= h; sharpest this grid holds)
+// The atom's potential is the BARE Coulomb -Z/r (true hydrogen), REGULARIZED on
+// the grid rather than softened. The 3D grid has a point on the nucleus where
+// -1/r would be -infinity, so that ONE cell takes the analytic cell average
+// (ses::regularized_coulomb_potential); every other cell is exact -1/r. The
+// radial solves feed bare -1/r directly -- their grid r_i = (i+1)h never hits 0.
+// Away from the nucleus cell the two are the SAME operator, so synthesized
+// orbitals stay eigenstates of the propagated Hamiltonian; only the coarse
+// nucleus cell differs, leaving a small s-state cusp gap in the startup h-audit
+// (E_radial reads textbook; <H>_grid is ~1.5 eV shallower for 1s at h = 0.625,
+// shrinking ~1/n^3 so 4s/5s/6s land within ~0.02 eV). This replaces the old
+// soft-Coulomb -Z/sqrt(r^2 + a^2), which rounded the whole well and pushed E(1s)
+// up to -9 eV; bare Coulomb restores the textbook -13.6 eV Rydberg spectrum and
+// its exact l-degeneracy (2s = 2p).
 
 ses::WavepacketSimulation make_simulation() {
     // 128^3: real-time stepping runs on the GPU engine (docs/GPU_PLAN.md G5);
@@ -139,7 +141,7 @@ ses::WavepacketSimulation make_simulation() {
     const ses::Grid3D grid{axis, axis, axis};
     return ses::WavepacketSimulation{ses::WavepacketSimulation::Config{
         grid,
-        ses::soft_coulomb_potential(grid, 1.0, kSoftening, ses::Vec3d{}),
+        ses::regularized_coulomb_potential(grid, 1.0, ses::Vec3d{}),
         ses::Vec3d{3.0, 0.0, 0.0},  // r0: beside the nucleus
         ses::Vec3d{1.5, 1.5, 1.5},  // sigma
         ses::Vec3d{0.0, 0.4, 0.0},  // k0: tangential kick
@@ -167,9 +169,11 @@ constexpr double kAbsorbWidth = 10.0;  // Bohr: boundary absorber layer thicknes
                                        // (interior +-70 Bohr stays untouched --
                                        // clears the n<=6 states; real-time only)
 // T3 laser: E0 is derived from a TARGET Rabi frequency over the computed
-// dipole matrix element (Omega = E0 |<2p|z|1s>|). Omega = 0.04 keeps the
-// drive well under the ~0.163 Ha gap (RWA-ish two-level flopping) while a
-// full flop (2 pi / Omega ~ 157 au) takes seconds at the laser tick rate.
+// dipole matrix element (Omega = E0 |<2p|z|1s>|). Omega = 0.04 keeps the drive
+// well under the ~0.35 Ha 1s->2p gap (bare Coulomb on the grid; RWA-ish
+// two-level flopping) while a full flop (2 pi / Omega ~ 157 au) takes seconds at
+// the laser tick rate. The carrier is tuned to the GRID resonance -- the cooled
+// 1s <H>, ~0.35 above 2p, not the textbook 0.375 label -- see toggle_laser.
 constexpr double kRabiTargetOmega = 0.04;
 constexpr int kLaserStepsPerTick = 6;  // the pump demo runs hotter than 1x
 
@@ -1180,7 +1184,18 @@ public:
             if (!manifold_ready()) {
                 return;
             }
-            laser_omega_ = state_energy_[kP2Z] - state_energy_[kS1];
+            // Drive the GRID resonance, not the textbook label: bare Coulomb on
+            // the coarse grid leaves the 1s a cusp gap, and a RELAXED 1s sits
+            // ~0.03 Ha below a synthesized one, so the resonance is the COOLED
+            // 1s <H> (~ -0.478 Ha), not the radial -0.5. Use the live relaxation
+            // energy once the atom has cooled to the deeply-bound 1s; fall back
+            // to the synthesized 1s grid energy (from the h-audit) otherwise. 2p
+            // has no cusp gap, so its radial energy is exact.
+            const double e_1s = (relax_energy_display_ < -0.35)
+                                    ? relax_energy_display_
+                                    : (grid_energy_1s_ != 0.0 ? grid_energy_1s_
+                                                              : state_energy_[kS1]);
+            laser_omega_ = state_energy_[kP2Z] - e_1s;
             laser_e0_ = dipole_z_ > 0.0 ? kRabiTargetOmega / dipole_z_ : 0.0;
             rabi_peak_ = 0.0;
             laser_pol_ = LaserPol::Z;
@@ -1384,8 +1399,7 @@ protected:
         radial_grid_ = ses::RadialGrid{r_box, 5119};
         std::vector<double> v(static_cast<std::size_t>(radial_grid_.n));
         for (int i = 0; i < radial_grid_.n; ++i) {
-            const double r = radial_grid_.r(i);
-            v[static_cast<std::size_t>(i)] = -1.0 / std::sqrt(r * r + kSoftening * kSoftening);
+            v[static_cast<std::size_t>(i)] = -1.0 / radial_grid_.r(i);  // r=(i+1)h>0
         }
         for (int lev = 0; lev < kNumLevels; ++lev) {
             const ses::RadialState st = ses::radial_eigenstate(
@@ -1401,13 +1415,12 @@ protected:
         const ses::RadialGrid free_grid{600.0, 14999};
         std::vector<double> vf(static_cast<std::size_t>(free_grid.n));
         for (int i = 0; i < free_grid.n; ++i) {
-            const double r = free_grid.r(i);
-            vf[static_cast<std::size_t>(i)] = -1.0 / std::sqrt(r * r + kSoftening * kSoftening);
+            vf[static_cast<std::size_t>(i)] = -1.0 / free_grid.r(i);
         }
         const std::vector<ses::LevelInfo> table =
             ses::bound_level_table(free_grid, vf, 10);
         std::fprintf(stderr,
-                     "spectrum: free soft-Coulomb atom, ALL %d bound levels to "
+                     "spectrum: free hydrogen atom (true -1/r), ALL %d bound levels to "
                      "n = 10 (E1 lifetimes from our radial engine)\n",
                      static_cast<int>(table.size()));
         const char* kSpdf = "spdfghijkl";
@@ -1609,10 +1622,13 @@ protected:
                     f.data()[i] = ses::Complex<double>{readback_buf_[2 * i],
                                                        readback_buf_[2 * i + 1]};
                 }
+                const double e_grid = ses::mean_energy(f, sim_.potential());
+                if (idx == kS1) {
+                    grid_energy_1s_ = e_grid;  // the laser's true (grid) resonance
+                }
                 std::fprintf(stderr,
                              "atlas: %-8s E_radial = %.6f Ha   <H>_grid = %.6f Ha\n",
-                             kStateSpec[s].name, state_energy_[s],
-                             ses::mean_energy(f, sim_.potential()));
+                             kStateSpec[s].name, state_energy_[s], e_grid);
             } else {
                 std::fprintf(stderr, "atlas: %-8s E_radial = %.6f Ha\n",
                              kStateSpec[s].name, state_energy_[s]);
@@ -2336,6 +2352,10 @@ private:
     double bfield_b_ = 0.0;      // magnetic field strength (au); 0 = off
     int bfield_axis_ = 2;        // field direction: 2=z, 0=x, 1=y
     double dipole_z_ = 0.0;   // |<2p_z| z |1s>| from the cached states
+    double grid_energy_1s_ = 0.0;  // <H>_grid of the 1s (from the h-audit); the
+                                   // laser drives THIS (grid) resonance, not the
+                                   // radial label, since bare Coulomb leaves the
+                                   // 1s a cusp gap on the coarse grid
     double pop_ground_ = 0.0;
     double pop_excited_ = 0.0;
     double rabi_peak_ = 0.0;  // max P(2pz) since the laser came on
