@@ -74,6 +74,31 @@ and press F5. `windeployqt` stages the Qt runtime next to the exe after
 every build, so it also launches from Explorer. Tests run via the Test
 Explorer or `ctest --preset msvc`.
 
+### VSCode on Linux (remote or local)
+
+The repo ships `.vscode/` (CMake Tools driven) + Linux presets, so **F5**
+builds and runs `sesolver_app` on Linux (needs a GL 4.3 context -- any recent
+NVIDIA/Mesa driver; the app opens a window, so use a real display or
+X/Wayland forwarding).
+
+1. Accept the recommended extensions (VSCode prompts): **CMake Tools** +
+   **C/C++**. Have a C++20 toolchain (`clang` or `g++`), CMake >= 3.21, Ninja,
+   and Qt 6 (`apt install qt6-base-dev libqt6opengl6-dev`, or a Qt install on
+   `CMAKE_PREFIX_PATH`).
+2. In the CMake Tools status bar pick the **`linux-native`** configure preset
+   -- it turns on `SES_NATIVE` (`-march=native`, host-CPU tuned) and
+   auto-detects the newest installed `clang++`/`g++`. Then pick **`sesolver_app`**
+   as the launch target.
+3. Press **F5**: the `cmake-build` task builds the active preset, then gdb
+   launches the app.
+
+Presets: `linux-native` (max app perf) · `linux` (portable AVX2 -- prefer it
+for the **test suite**: `-march=native` on an AVX-512 host can perturb a few
+bitwise oracles) · `linux-clang` · `linux-gcc`. Run tests with
+`ctest --preset linux`; verify GPU kernels with `sesolver_gpucheck` (needs a
+GL context). To pin an exact compiler instead of auto-detect, set
+`CMAKE_CXX_COMPILER` (e.g. `-DCMAKE_CXX_COMPILER=clang++-19`) or `$CXX`.
+
 ## Working agreement
 
 This project follows **strict TDD**. No production code is written without a

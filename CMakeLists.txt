@@ -1,5 +1,32 @@
 cmake_minimum_required(VERSION 3.21)
 
+# ---------------------------------------------------------------------------
+# Optional: pick the newest installed clang++ / g++ BEFORE the compiler is
+# locked, so a Linux "just press F5" run gets a recent LLVM/GCC without picking
+# a kit by hand. Opt-in with -DSES_AUTODETECT_COMPILER=ON (the `linux-native`
+# preset sets it); skipped if you already pinned CMAKE_CXX_COMPILER or set $CXX;
+# falls through safely to CMake's default if nothing on the list is found.
+# ---------------------------------------------------------------------------
+if(UNIX AND SES_AUTODETECT_COMPILER
+   AND NOT DEFINED CMAKE_CXX_COMPILER AND "$ENV{CXX}" STREQUAL "")
+    foreach(_cxx IN ITEMS
+            clang++-21 clang++-20 clang++-19 clang++-18 clang++-17 clang++-16
+            g++-15 g++-14 g++-13 g++-12 clang++ g++)
+        find_program(_ses_cxx_path NAMES ${_cxx})
+        if(_ses_cxx_path)
+            set(CMAKE_CXX_COMPILER "${_ses_cxx_path}" CACHE FILEPATH "C++ compiler" FORCE)
+            string(REPLACE "clang++" "clang" _cc "${_cxx}")
+            string(REPLACE "g++" "gcc" _cc "${_cc}")
+            find_program(_ses_cc_path NAMES ${_cc})
+            if(_ses_cc_path)
+                set(CMAKE_C_COMPILER "${_ses_cc_path}" CACHE FILEPATH "C compiler" FORCE)
+            endif()
+            message(STATUS "SES_AUTODETECT_COMPILER: using ${CMAKE_CXX_COMPILER}")
+            break()
+        endif()
+    endforeach()
+endif()
+
 project(ShoeridingerEquationSolver
     VERSION 0.0.1
     DESCRIPTION "From-scratch FDM/TDSE single-electron Schrodinger solver with hand-written OpenGL visualization"
@@ -27,6 +54,8 @@ option(SES_BUILD_TESTS        "Build unit tests"                          ON)
 option(SES_BUILD_APP          "Build the Qt/OpenGL app (requires Qt6)"    ON)
 option(SES_BUILD_BENCH        "Build the manual micro-benchmark"          ON)
 option(SES_ENABLE_AVX2        "Compile with AVX2 (x86-64 CPUs from ~2013)" ON)
+option(SES_NATIVE             "Tune for the build host CPU (-march=native)" OFF)
+option(SES_AUTODETECT_COMPILER "Pre-project: use the newest clang++/g++ on PATH" OFF)
 option(SES_WARNINGS_AS_ERRORS "Treat compiler warnings as errors"         OFF)
 
 # ---------------------------------------------------------------------------
@@ -65,12 +94,21 @@ if(NOT MSVC)
     # test oracles were pinned against. (MSVC never emits Annex G fixups.)
     target_compile_options(ses_arch INTERFACE -fcx-limited-range)
 endif()
-if(SES_ENABLE_AVX2)
-    if(MSVC)
+# SES_NATIVE (host-CPU tuning) takes precedence over the portable AVX2 flags.
+# It KEEPS -ffp-contract=off so no FMA fusion sneaks in; but on an AVX-512 host
+# the wider auto-vectorized reductions can perturb a few BITWISE test oracles
+# (pinned at AVX2 width). If the suite complains, configure it with SES_NATIVE=OFF
+# (the plain `linux` preset) while keeping SES_NATIVE=ON for the app.
+if(MSVC)
+    if(SES_ENABLE_AVX2 OR SES_NATIVE)
         target_compile_options(ses_arch INTERFACE /arch:AVX2)
-    else()
-        target_compile_options(ses_arch INTERFACE -mavx2 -mfma -ffp-contract=off)
+        message(STATUS "AVX2 enabled (MSVC /arch:AVX2).")
     endif()
+elseif(SES_NATIVE)
+    target_compile_options(ses_arch INTERFACE -march=native -ffp-contract=off)
+    message(STATUS "Native CPU tuning (SES_NATIVE=ON, -march=native).")
+elseif(SES_ENABLE_AVX2)
+    target_compile_options(ses_arch INTERFACE -mavx2 -mfma -ffp-contract=off)
     message(STATUS "AVX2 enabled (SES_ENABLE_AVX2=ON).")
 endif()
 

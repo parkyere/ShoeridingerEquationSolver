@@ -36,8 +36,14 @@ ui_*.h
 
 # IDE / editor
 /.vs/
-/.vscode/
 /.idea/
+# Ignore per-user VSCode state, but SHARE the workspace config (F5 build/run,
+# CMake Tools presets, recommended extensions) so it reaches other machines.
+/.vscode/*
+!/.vscode/settings.json
+!/.vscode/launch.json
+!/.vscode/tasks.json
+!/.vscode/extensions.json
 *.user
 *.user.*
 

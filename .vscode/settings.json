@@ -1,0 +1,9 @@
+{
+    // Drive the build from CMakePresets.json (pick a preset in the CMake Tools
+    // status bar; on Linux the `linux-*` presets are the valid ones).
+    "cmake.useCMakePresets": "always",
+    "cmake.configureOnOpen": true,
+    // IntelliSense from CMake Tools (no compile_commands juggling). clangd users
+    // can instead point at out/build/<preset>/compile_commands.json.
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools"
+}
