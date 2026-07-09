@@ -288,6 +288,99 @@ bool check_norm_peak(QRhi* rhi) {
     return pass;
 }
 
+// <phi|psi> = sum conj(phi)*psi, exactly kInnerProductSrc -- a complex-valued
+// two-input reduction. psi(0)/phi(3) readonly, partials(2) read-write, n(1).
+bool check_inner_product(QRhi* rhi) {
+    const std::size_t n = 20000;
+    std::vector<ses::Complex<double>> psi_d(n);
+    std::vector<ses::Complex<double>> phi_d(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const double x = static_cast<double>(i);
+        psi_d[i] = ses::Complex<double>{std::sin(0.019 * x) + 0.1, std::cos(0.023 * x)};
+        phi_d[i] = ses::Complex<double>{std::cos(0.011 * x), std::sin(0.029 * x) - 0.2};
+    }
+    double cpu_re = 0.0;
+    double cpu_im = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double ar = phi_d[i].real();
+        const double ai = phi_d[i].imag();
+        const double br = psi_d[i].real();
+        const double bi = psi_d[i].imag();
+        cpu_re += ar * br + ai * bi;   // conj(phi)*psi, real
+        cpu_im += ar * bi - ai * br;   // conj(phi)*psi, imag
+    }
+    const std::vector<float> psi_f = to_rg32f(psi_d);
+    const std::vector<float> phi_f = to_rg32f(phi_d);
+    const quint32 bytes = static_cast<quint32>(psi_f.size() * sizeof(float));
+    const int groups = 256;
+    const quint32 part_bytes = static_cast<quint32>(2 * groups * sizeof(float));
+
+    QShader cs = load_qsb(QStringLiteral(":/shaders/inner_product.comp.qsb"));
+    if (!cs.isValid()) { std::fprintf(stderr, "inner_product.comp.qsb missing\n"); return false; }
+
+    QScopedPointer<QRhiBuffer> psi(
+        rhi->newBuffer(QRhiBuffer::Static, QRhiBuffer::StorageBuffer, bytes));
+    QScopedPointer<QRhiBuffer> phi(
+        rhi->newBuffer(QRhiBuffer::Static, QRhiBuffer::StorageBuffer, bytes));
+    QScopedPointer<QRhiBuffer> partials(
+        rhi->newBuffer(QRhiBuffer::Static, QRhiBuffer::StorageBuffer, part_bytes));
+    struct alignas(16) Params { quint32 n; quint32 pad0, pad1, pad2; };
+    Params params{ static_cast<quint32>(n), 0, 0, 0 };
+    QScopedPointer<QRhiBuffer> ubo(
+        rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, sizeof(Params)));
+    if (!psi->create() || !phi->create() || !partials->create() || !ubo->create()) { return false; }
+
+    QScopedPointer<QRhiShaderResourceBindings> srb(rhi->newShaderResourceBindings());
+    srb->setBindings({
+        QRhiShaderResourceBinding::bufferLoad(0, QRhiShaderResourceBinding::ComputeStage,
+                                              psi.data()),
+        QRhiShaderResourceBinding::uniformBuffer(1, QRhiShaderResourceBinding::ComputeStage,
+                                                 ubo.data()),
+        QRhiShaderResourceBinding::bufferLoadStore(2, QRhiShaderResourceBinding::ComputeStage,
+                                                   partials.data()),
+        QRhiShaderResourceBinding::bufferLoad(3, QRhiShaderResourceBinding::ComputeStage,
+                                              phi.data()),
+    });
+    if (!srb->create()) { return false; }
+
+    QScopedPointer<QRhiComputePipeline> pipe(rhi->newComputePipeline());
+    pipe->setShaderStage(QRhiShaderStage(QRhiShaderStage::Compute, cs));
+    pipe->setShaderResourceBindings(srb.data());
+    if (!pipe->create()) { return false; }
+
+    QRhiCommandBuffer* cb = nullptr;
+    if (rhi->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) { return false; }
+    QRhiResourceUpdateBatch* up = rhi->nextResourceUpdateBatch();
+    up->uploadStaticBuffer(psi.data(), psi_f.data());
+    up->uploadStaticBuffer(phi.data(), phi_f.data());
+    up->updateDynamicBuffer(ubo.data(), 0, sizeof(Params), &params);
+    cb->beginComputePass(up);
+    cb->setComputePipeline(pipe.data());
+    cb->setShaderResources(srb.data());
+    cb->dispatch(groups, 1, 1);
+    QRhiReadbackResult rb;
+    QRhiResourceUpdateBatch* down = rhi->nextResourceUpdateBatch();
+    down->readBackBuffer(partials.data(), 0, part_bytes, &rb);
+    cb->endComputePass(down);
+    rhi->endOffscreenFrame();
+
+    const float* p = reinterpret_cast<const float*>(rb.data.constData());
+    double gpu_re = 0.0;
+    double gpu_im = 0.0;
+    for (int g = 0; g < groups; ++g) {
+        gpu_re += p[2 * g];
+        gpu_im += p[2 * g + 1];
+    }
+    const double mag = std::sqrt(cpu_re * cpu_re + cpu_im * cpu_im);
+    const double err = std::sqrt((gpu_re - cpu_re) * (gpu_re - cpu_re) +
+                                 (gpu_im - cpu_im) * (gpu_im - cpu_im));
+    const double rel = (mag > 0.0) ? err / mag : err;
+    const bool pass = rel < 1e-5;
+    std::printf("inner-product kernel (QRhi/Vulkan): rel err = %.3e  [%s]\n",
+                rel, pass ? "PASS" : "FAIL");
+    return pass;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -318,6 +411,7 @@ int main(int argc, char** argv) {
     ok = check_phase_multiply(rhi.data()) && ok;
     ok = check_scale(rhi.data()) && ok;
     ok = check_norm_peak(rhi.data()) && ok;
+    ok = check_inner_product(rhi.data()) && ok;
     std::printf("%s\n", ok ? "QRhi kernel checks PASS" : "QRhi kernel checks FAILED");
     return ok ? 0 : 1;
 }
