@@ -16,12 +16,6 @@
         {
             "name": "qtbase",
             "default-features": false,
-            "features": [ "windeployqt" ],
-            "platform": "windows"
-        },
-        {
-            "name": "qtbase",
-            "default-features": false,
             "features": [ "xcb", "fontconfig" ],
             "platform": "linux"
         }
