@@ -114,8 +114,14 @@ if(TARGET Qt6::GuiPrivate AND TARGET Qt6::ShaderTools AND TARGET Vulkan::Headers
     qt6_add_shaders(sesolver_qrhicheck "qrhicheck_shaders"
         PREFIX "/shaders"
         NOGLSL NOHLSL NOMSL
-        FILES src/qrhi_shaders/phase_multiply.comp
-        OUTPUTS phase_multiply.comp.qsb)
+        FILES
+            src/qrhi_shaders/phase_multiply.comp
+            src/qrhi_shaders/scale.comp
+            src/qrhi_shaders/norm_peak.comp
+        OUTPUTS
+            phase_multiply.comp.qsb
+            scale.comp.qsb
+            norm_peak.comp.qsb)
     if(_ses_qt_platform_plugins)
         qt6_import_plugins(sesolver_qrhicheck INCLUDE ${_ses_qt_platform_plugins})
     endif()

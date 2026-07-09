@@ -139,6 +139,155 @@ bool check_phase_multiply(QRhi* rhi) {
     return pass;
 }
 
+// data <- s * data, exactly kScaleSrc (fp32 drift renormalization).
+bool check_scale(QRhi* rhi) {
+    const std::size_t n = 4096;
+    const float s = 0.5f;
+    std::vector<ses::Complex<double>> d0(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const double x = static_cast<double>(i);
+        d0[i] = ses::Complex<double>{std::sin(0.7 * x) - 0.3, std::cos(0.21 * x) + 0.4};
+    }
+    const std::vector<float> in = to_rg32f(d0);
+    const quint32 bytes = static_cast<quint32>(in.size() * sizeof(float));
+
+    QShader cs = load_qsb(QStringLiteral(":/shaders/scale.comp.qsb"));
+    if (!cs.isValid()) { std::fprintf(stderr, "scale.comp.qsb missing\n"); return false; }
+
+    QScopedPointer<QRhiBuffer> data(
+        rhi->newBuffer(QRhiBuffer::Static, QRhiBuffer::StorageBuffer, bytes));
+    struct alignas(16) Params { quint32 n; float scale; float pad0, pad1; };
+    Params params{ static_cast<quint32>(n), s, 0.0f, 0.0f };
+    QScopedPointer<QRhiBuffer> ubo(
+        rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, sizeof(Params)));
+    if (!data->create() || !ubo->create()) { return false; }
+
+    QScopedPointer<QRhiShaderResourceBindings> srb(rhi->newShaderResourceBindings());
+    srb->setBindings({
+        QRhiShaderResourceBinding::bufferLoadStore(0, QRhiShaderResourceBinding::ComputeStage,
+                                                   data.data()),
+        QRhiShaderResourceBinding::uniformBuffer(1, QRhiShaderResourceBinding::ComputeStage,
+                                                 ubo.data()),
+    });
+    if (!srb->create()) { return false; }
+
+    QScopedPointer<QRhiComputePipeline> pipe(rhi->newComputePipeline());
+    pipe->setShaderStage(QRhiShaderStage(QRhiShaderStage::Compute, cs));
+    pipe->setShaderResourceBindings(srb.data());
+    if (!pipe->create()) { return false; }
+
+    QRhiCommandBuffer* cb = nullptr;
+    if (rhi->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) { return false; }
+    QRhiResourceUpdateBatch* up = rhi->nextResourceUpdateBatch();
+    up->uploadStaticBuffer(data.data(), in.data());
+    up->updateDynamicBuffer(ubo.data(), 0, sizeof(Params), &params);
+    cb->beginComputePass(up);
+    cb->setComputePipeline(pipe.data());
+    cb->setShaderResources(srb.data());
+    cb->dispatch(static_cast<int>((n + 255) / 256), 1, 1);
+    QRhiReadbackResult rb;
+    QRhiResourceUpdateBatch* down = rhi->nextResourceUpdateBatch();
+    down->readBackBuffer(data.data(), 0, bytes, &rb);
+    cb->endComputePass(down);
+    rhi->endOffscreenFrame();
+
+    const float* out = reinterpret_cast<const float*>(rb.data.constData());
+    double max_err = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+        max_err = std::max(max_err, std::abs(out[2 * i] - static_cast<double>(s) * d0[i].real()));
+        max_err = std::max(max_err,
+                           std::abs(out[2 * i + 1] - static_cast<double>(s) * d0[i].imag()));
+    }
+    const bool pass = max_err < 1e-5;
+    std::printf("scale kernel (QRhi/Vulkan): max |gpu - cpu| = %.3e  [%s]\n",
+                max_err, pass ? "PASS" : "FAIL");
+    return pass;
+}
+
+// Fixed-order tree reduction of |psi|^2 into per-workgroup (sum, max) partials,
+// finished on the host -- exactly kNormPeakSrc + run_norm_peak. The first
+// REDUCTION kernel verified on the Vulkan backend. n is deliberately not a
+// multiple of 256, exercising the strided grid-stride loop.
+bool check_norm_peak(QRhi* rhi) {
+    const std::size_t n = 20000;
+    std::vector<ses::Complex<double>> psi_d(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const double x = static_cast<double>(i);
+        psi_d[i] = ses::Complex<double>{0.5 * std::sin(0.013 * x),
+                                        0.3 * std::cos(0.017 * x) + 0.1};
+    }
+    double cpu_sum = 0.0;
+    double cpu_peak = 0.0;
+    for (const ses::Complex<double>& z : psi_d) {
+        const double d = z.real() * z.real() + z.imag() * z.imag();
+        cpu_sum += d;
+        cpu_peak = std::max(cpu_peak, d);
+    }
+    const std::vector<float> in = to_rg32f(psi_d);
+    const quint32 psi_bytes = static_cast<quint32>(in.size() * sizeof(float));
+
+    const int groups = 256;  // matches ses_gpu::kNormPeakGroups
+    const quint32 part_bytes = static_cast<quint32>(2 * groups * sizeof(float));
+
+    QShader cs = load_qsb(QStringLiteral(":/shaders/norm_peak.comp.qsb"));
+    if (!cs.isValid()) { std::fprintf(stderr, "norm_peak.comp.qsb missing\n"); return false; }
+
+    QScopedPointer<QRhiBuffer> psi(
+        rhi->newBuffer(QRhiBuffer::Static, QRhiBuffer::StorageBuffer, psi_bytes));
+    QScopedPointer<QRhiBuffer> partials(
+        rhi->newBuffer(QRhiBuffer::Static, QRhiBuffer::StorageBuffer, part_bytes));
+    struct alignas(16) Params { quint32 n; quint32 pad0, pad1, pad2; };
+    Params params{ static_cast<quint32>(n), 0, 0, 0 };
+    QScopedPointer<QRhiBuffer> ubo(
+        rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, sizeof(Params)));
+    if (!psi->create() || !partials->create() || !ubo->create()) { return false; }
+
+    QScopedPointer<QRhiShaderResourceBindings> srb(rhi->newShaderResourceBindings());
+    srb->setBindings({
+        QRhiShaderResourceBinding::bufferLoad(0, QRhiShaderResourceBinding::ComputeStage,
+                                              psi.data()),
+        QRhiShaderResourceBinding::uniformBuffer(1, QRhiShaderResourceBinding::ComputeStage,
+                                                 ubo.data()),
+        QRhiShaderResourceBinding::bufferLoadStore(2, QRhiShaderResourceBinding::ComputeStage,
+                                                   partials.data()),
+    });
+    if (!srb->create()) { return false; }
+
+    QScopedPointer<QRhiComputePipeline> pipe(rhi->newComputePipeline());
+    pipe->setShaderStage(QRhiShaderStage(QRhiShaderStage::Compute, cs));
+    pipe->setShaderResourceBindings(srb.data());
+    if (!pipe->create()) { return false; }
+
+    QRhiCommandBuffer* cb = nullptr;
+    if (rhi->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) { return false; }
+    QRhiResourceUpdateBatch* up = rhi->nextResourceUpdateBatch();
+    up->uploadStaticBuffer(psi.data(), in.data());
+    up->updateDynamicBuffer(ubo.data(), 0, sizeof(Params), &params);
+    cb->beginComputePass(up);
+    cb->setComputePipeline(pipe.data());
+    cb->setShaderResources(srb.data());
+    cb->dispatch(groups, 1, 1);
+    QRhiReadbackResult rb;
+    QRhiResourceUpdateBatch* down = rhi->nextResourceUpdateBatch();
+    down->readBackBuffer(partials.data(), 0, part_bytes, &rb);
+    cb->endComputePass(down);
+    rhi->endOffscreenFrame();
+
+    const float* p = reinterpret_cast<const float*>(rb.data.constData());
+    double gpu_sum = 0.0;
+    double gpu_peak = 0.0;
+    for (int g = 0; g < groups; ++g) {
+        gpu_sum += p[2 * g];
+        gpu_peak = std::max(gpu_peak, static_cast<double>(p[2 * g + 1]));
+    }
+    const double sum_rel = std::abs(gpu_sum - cpu_sum) / cpu_sum;
+    const double peak_rel = std::abs(gpu_peak - cpu_peak) / cpu_peak;
+    const bool pass = sum_rel < 1e-5 && peak_rel < 1e-6;
+    std::printf("norm/peak reduce (QRhi/Vulkan): rel err sum %.3e, peak %.3e  [%s]\n",
+                sum_rel, peak_rel, pass ? "PASS" : "FAIL");
+    return pass;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -165,7 +314,10 @@ int main(int argc, char** argv) {
     }
     std::printf("QRhi Vulkan: device='%s'\n", rhi->driverInfo().deviceName.constData());
 
-    const bool ok = check_phase_multiply(rhi.data());
+    bool ok = true;
+    ok = check_phase_multiply(rhi.data()) && ok;
+    ok = check_scale(rhi.data()) && ok;
+    ok = check_norm_peak(rhi.data()) && ok;
     std::printf("%s\n", ok ? "QRhi kernel checks PASS" : "QRhi kernel checks FAILED");
     return ok ? 0 : 1;
 }
