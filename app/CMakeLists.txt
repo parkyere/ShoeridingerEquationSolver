@@ -93,10 +93,12 @@ set_tests_properties(GpuCheck PROPERTIES
 # present; otherwise skipped with a status message so the normal build is
 # unaffected. Registered with ctest (label "gpu", exit 77 = SKIP when no device).
 # ---------------------------------------------------------------------------
-# GuiPrivate ships with the Gui component (found at the top level); only
-# ShaderTools must be requested here. Requesting "GuiPrivate" as a component
-# name makes the whole find_package fail on some Qt kits.
+# ShaderTools and GuiPrivate are each requested explicitly (separate calls so a
+# missing one does not silently void the other). NOTE: with the vcpkg Qt,
+# find_package(Qt6 COMPONENTS Gui) alone does NOT create the Qt6::GuiPrivate
+# target -- it must be requested by name, or sesolver_qrhicheck silently skips.
 find_package(Qt6 QUIET COMPONENTS ShaderTools)
+find_package(Qt6 QUIET COMPONENTS GuiPrivate)
 find_package(VulkanHeaders CONFIG QUIET)  # vcpkg port: provides Vulkan::Headers
 if(TARGET Qt6::GuiPrivate AND TARGET Qt6::ShaderTools AND TARGET Vulkan::Headers)
     add_executable(sesolver_qrhicheck src/qrhicheck_main.cpp)
