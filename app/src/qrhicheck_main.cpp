@@ -17,6 +17,8 @@
 #include <core/field.hpp>
 #include <core/grid.hpp>
 #include <core/imaginary_time.hpp>
+#include <core/magnetic.hpp>
+#include <core/rotation.hpp>
 #include <core/potential.hpp>
 #include <core/propagator.hpp>
 #include <core/vec.hpp>
@@ -1206,6 +1208,78 @@ bool check_deflation(QRhi* rhi) {
     return pass;
 }
 
+// Magnetic minimal coupling (proper solve): the exact three-shear rotate_z on
+// the QRhi psi buffer vs core ses::rotate_z, and the full magnetic Strang step
+// (paramagnetic rotation + diamagnetic potential) vs MagneticPropagator3D for a
+// field along z and along x. 8^3 grid (baked fft_line8); the shear needs single-
+// axis FFTs and a per-axis inverse-FFT scale (1/n), exercised here.
+bool check_magnetic(QRhi* rhi) {
+    const ses::Grid1D axis{-4.0, 4.0, 8};
+    const ses::Grid3D g{axis, axis, axis};
+    const std::vector<double> v = ses::soft_coulomb_potential(g, 1.0, 1.0, ses::Vec3d{});
+    const double dt = 0.02;
+    const double b = 0.5;
+    ses::Field3D psi0 = ses::gaussian_wavepacket(
+        g, ses::Vec3d{1.0, 0.0, 0.5}, ses::Vec3d{1.4, 1.4, 1.4}, ses::Vec3d{0.0, 0.4, 0.0});
+
+    const ses::SplitOperator3D base{g, v, dt};
+    ses_qrhi::QrhiEngine engine;
+    if (!engine.initialize(rhi, g, base.half_potential_phase(), base.kinetic_phase(),
+                           psi0.data())) {
+        std::printf("magnetic (QRhi/Vulkan): engine init FAIL\n");
+        return false;
+    }
+
+    // Exact three-shear rotation vs core rotate_z.
+    engine.rotate_z_shear(0.6);
+    std::vector<float> gpu_out;
+    engine.readback(gpu_out);
+    ses::Field3D cpu = psi0;
+    ses::rotate_z(cpu, 0.6);
+    double rot_err = 0.0;
+    double rot_mag = 0.0;
+    for (std::size_t i = 0; i < cpu.data().size(); ++i) {
+        rot_err = std::max(rot_err, std::abs(gpu_out[2 * i] - cpu.data()[i].real()));
+        rot_err = std::max(rot_err, std::abs(gpu_out[2 * i + 1] - cpu.data()[i].imag()));
+        rot_mag = std::max(rot_mag, std::abs(cpu.data()[i].real()));
+        rot_mag = std::max(rot_mag, std::abs(cpu.data()[i].imag()));
+    }
+    const double rot_tol = 1e-3 + 1e-4 * rot_mag;
+    const bool rot_ok = rot_err < rot_tol;
+    std::printf("  rotate_z (three-shear, QRhi/Vulkan): max |gpu - cpu| = %.3e (tol %.3e)  [%s]\n",
+                rot_err, rot_tol, rot_ok ? "PASS" : "FAIL");
+
+    // Full magnetic step vs MagneticPropagator3D, field along z then along x.
+    bool step_ok = true;
+    for (int fa = 2; fa >= 0; fa -= 2) {  // axis z then x
+        const ses::MagneticPropagator3D mprop{g, v, dt, b, fa};
+        const ses::SplitOperator3D core_diamag{g, mprop.effective_potential(), dt};
+        engine.set_half_potential(core_diamag.half_potential_phase());
+        engine.upload_state(psi0.data());
+        engine.magnetic_step(fa, 0.5 * b * (0.5 * dt), 20);
+        engine.readback(gpu_out);
+        ses::Field3D cpu2 = psi0;
+        mprop.step(cpu2, 20);
+        double err = 0.0;
+        double mag = 0.0;
+        for (std::size_t i = 0; i < cpu2.data().size(); ++i) {
+            err = std::max(err, std::abs(gpu_out[2 * i] - cpu2.data()[i].real()));
+            err = std::max(err, std::abs(gpu_out[2 * i + 1] - cpu2.data()[i].imag()));
+            mag = std::max(mag, std::abs(cpu2.data()[i].real()));
+            mag = std::max(mag, std::abs(cpu2.data()[i].imag()));
+        }
+        const double tol = 2e-3 + 1e-4 * mag;
+        const bool ok = err < tol;
+        std::printf("  magnetic step %c (QRhi/Vulkan): max |gpu - cpu| = %.3e (tol %.3e)  [%s]\n",
+                    fa == 2 ? 'z' : 'x', err, tol, ok ? "PASS" : "FAIL");
+        step_ok = ok && step_ok;
+    }
+
+    const bool pass = rot_ok && step_ok;
+    std::printf("magnetic (QRhi/Vulkan): [%s]\n", pass ? "PASS" : "FAIL");
+    return pass;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1250,6 +1324,7 @@ int main(int argc, char** argv) {
     ok = check_relax(rhi.data()) && ok;
     ok = check_driven(rhi.data()) && ok;
     ok = check_deflation(rhi.data()) && ok;
+    ok = check_magnetic(rhi.data()) && ok;
     std::printf("%s\n", ok ? "QRhi kernel checks PASS" : "QRhi kernel checks FAILED");
     return ok ? 0 : 1;
 }

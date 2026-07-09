@@ -299,6 +299,17 @@ public:
         return stats;
     }
 
+    // Re-upload psi from a host field (reset the state between runs).
+    void upload_state(const std::vector<ses::Complex<double>>& psi) {
+        const std::vector<float> pf = to_rg32f(psi);
+        QRhiCommandBuffer* cb = nullptr;
+        if (rhi_->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) { return; }
+        QRhiResourceUpdateBatch* u = rhi_->nextResourceUpdateBatch();
+        u->uploadStaticBuffer(psi_.data(), pf.data());
+        cb->resourceUpdate(u);
+        rhi_->endOffscreenFrame();
+    }
+
     // Interleaved RG floats, 2 per cell.
     void readback(std::vector<float>& out) {
         const quint32 bytes = static_cast<quint32>(2 * cells_ * sizeof(float));
@@ -440,6 +451,46 @@ public:
         rhi_->endOffscreenFrame();
     }
 
+    // ---- magnetic minimal coupling (real-time B field) -----------------
+    // Replace the resident half-potential table (half_) with a new one -- the
+    // caller swaps in the diamagnetic-augmented V + (B^2/8) rho_perp^2 before a
+    // magnetic run (GpuEngine::set_half_potential). Static-buffer re-upload.
+    void set_half_potential(const std::vector<ses::Complex<double>>& half_v) {
+        const std::vector<float> hf = to_rg32f(half_v);
+        QRhiCommandBuffer* cb = nullptr;
+        if (rhi_->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) { return; }
+        QRhiResourceUpdateBatch* u = rhi_->nextResourceUpdateBatch();
+        u->uploadStaticBuffer(half_.data(), hf.data());
+        cb->resourceUpdate(u);
+        rhi_->endOffscreenFrame();
+    }
+
+    // Exact three-shear rotation of psi about coordinate `axis` by theta -- the
+    // GPU transcription of core/rotation.hpp rotate_axis. In place.
+    void rotate_axis_shear(int axis, double theta) {
+        if (!ensure_magnetic()) { return; }
+        const int b = (axis + 1) % 3;  // in-plane axes (b x c = axis)
+        const int c = (axis + 2) % 3;
+        const double t = std::tan(0.5 * theta);
+        const double s = std::sin(theta);
+        apply_shear(b, c, -t);
+        apply_shear(c, b, s);
+        apply_shear(b, c, -t);
+    }
+    void rotate_z_shear(double theta) { rotate_axis_shear(2, theta); }
+
+    // Magnetic Strang step: R(a) . real-step . R(a), a = (B/2)(dt/2), rotating
+    // about the field `axis`. half_ must hold the diamagnetic-augmented table
+    // (set_half_potential). Mirrors GpuEngine::magnetic_step.
+    void magnetic_step(int axis, double half_angle, int nsteps) {
+        if (!ensure_magnetic()) { return; }
+        for (int s = 0; s < nsteps; ++s) {
+            rotate_axis_shear(axis, half_angle);
+            step(1);
+            rotate_axis_shear(axis, half_angle);
+        }
+    }
+
 private:
     static constexpr int kGroups = 256;  // norm/peak workgroups (ses_gpu::kNormPeakGroups)
 
@@ -456,6 +507,13 @@ private:
     };
     // std140 {uint n; vec2 c}: c aligns to offset 8 (uint + 4 bytes pad).
     struct alignas(16) AxpyParams { quint32 n, pad; float cx, cy; };
+    // std140 all-scalar block (tight 4-byte packing), matches shear.comp order.
+    struct alignas(16) ShearParams {
+        quint32 n;
+        qint32 nx, ny, nz;
+        qint32 freq_axis, coord_axis, nf;
+        float kscale, cmin, ch, coeff;
+    };
 
     // An auxiliary (lower) eigenstate resident on the GPU plus its bindings for
     // the deflation kernels. Heap-owned (unique_ptr) so the QScopedPointer members
@@ -481,6 +539,12 @@ private:
             cb->setShaderResources(fft_srb_[a].data());
             cb->dispatch(n_ * n_, 1, 1);
         }
+    }
+    // Forward 1D FFT along a single axis (n^2 lines), the shear's freq transform.
+    void fft_axis(QRhiCommandBuffer* cb, int a) {
+        cb->setComputePipeline(fft_pipe_.data());
+        cb->setShaderResources(fft_srb_[a].data());
+        cb->dispatch(n_ * n_, 1, 1);
     }
 
     void update_step_ubos(QRhiResourceUpdateBatch* u) {
@@ -615,6 +679,80 @@ private:
         return inner_pipe_->create() && axpy_pipe_->create() && copy_pipe_->create();
     }
 
+    // Lazily build the shear pipeline + its UBO/SRB and the per-axis inverse-FFT
+    // conj-scale (scale 1/n, not 1/cells) on the first magnetic call.
+    bool ensure_magnetic() {
+        if (!shear_pipe_.isNull()) { return true; }
+        const QShader shearcs = load_qsb(QStringLiteral(":/shaders/shear.comp.qsb"));
+        if (!shearcs.isValid()) { return false; }
+        using B = QRhiShaderResourceBinding;
+        const auto cs = B::ComputeStage;
+        shear_ubo_.reset(rhi_->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer,
+                                         sizeof(ShearParams)));
+        conjA_ubo_.reset(rhi_->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer,
+                                         sizeof(ConjParams)));
+        if (!shear_ubo_->create() || !conjA_ubo_->create()) { return false; }
+        shear_srb_.reset(rhi_->newShaderResourceBindings());
+        shear_srb_->setBindings({ B::bufferLoadStore(0, cs, psi_.data()),
+                                  B::uniformBuffer(1, cs, shear_ubo_.data()) });
+        conjA_srb_.reset(rhi_->newShaderResourceBindings());
+        conjA_srb_->setBindings({ B::bufferLoadStore(0, cs, psi_.data()),
+                                  B::uniformBuffer(1, cs, conjA_ubo_.data()) });
+        if (!shear_srb_->create() || !conjA_srb_->create()) { return false; }
+        shear_pipe_.reset(rhi_->newComputePipeline());
+        shear_pipe_->setShaderStage(QRhiShaderStage(QRhiShaderStage::Compute, shearcs));
+        shear_pipe_->setShaderResourceBindings(shear_srb_.data());
+        // Per-axis inverse FFT scales by 1/n (the single transformed axis).
+        conjA_ = ConjParams{ static_cast<quint32>(cells_), 1.0f / static_cast<float>(n_),
+                             0.0f, 0.0f };
+        return shear_pipe_->create();
+    }
+
+    // One shear (own frame): FFT along freq_axis, phase-shift by coeff*coord,
+    // then inverse FFT along that axis (conj -> FFT -> conj/n). The freq/conj
+    // UBOs are constant per axis; only shear_ubo_ carries this shear's geometry.
+    void apply_shear(int freq_axis, int coord_axis, double coeff) {
+        const int mul_groups = static_cast<int>((cells_ + 255) / 256);
+        const ses::Grid1D& fa = axis_grid(freq_axis);
+        const ses::Grid1D& ca = axis_grid(coord_axis);
+        const double two_pi = 6.283185307179586;
+        ShearParams sp{};
+        sp.n = static_cast<quint32>(cells_);
+        sp.nx = grid_.x.n;
+        sp.ny = grid_.y.n;
+        sp.nz = grid_.z.n;
+        sp.freq_axis = freq_axis;
+        sp.coord_axis = coord_axis;
+        sp.nf = fa.n;
+        sp.kscale = static_cast<float>(two_pi / (fa.xmax - fa.xmin));
+        sp.cmin = static_cast<float>(ca.xmin);
+        sp.ch = static_cast<float>(ca.spacing());
+        sp.coeff = static_cast<float>(coeff);
+
+        QRhiCommandBuffer* cb = nullptr;
+        if (rhi_->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) { return; }
+        QRhiResourceUpdateBatch* u = rhi_->nextResourceUpdateBatch();
+        u->updateDynamicBuffer(shear_ubo_.data(), 0, sizeof(ShearParams), &sp);
+        u->updateDynamicBuffer(conj1_ubo_.data(), 0, sizeof(ConjParams), &conj1_);
+        u->updateDynamicBuffer(conjA_ubo_.data(), 0, sizeof(ConjParams), &conjA_);
+        u->updateDynamicBuffer(fft_ubo_[freq_axis].data(), 0, sizeof(FftParams),
+                               &fftp_[freq_axis]);
+        cb->beginComputePass(u);
+        fft_axis(cb, freq_axis);
+        cb->setComputePipeline(shear_pipe_.data());
+        cb->setShaderResources(shear_srb_.data());
+        cb->dispatch(mul_groups, 1, 1);
+        conjscale(cb, conj1_srb_.data(), mul_groups);  // conj (scale 1)
+        fft_axis(cb, freq_axis);
+        conjscale(cb, conjA_srb_.data(), mul_groups);  // conj + scale 1/n
+        cb->endComputePass();
+        rhi_->endOffscreenFrame();
+    }
+
+    const ses::Grid1D& axis_grid(int a) const {
+        return a == 0 ? grid_.x : (a == 1 ? grid_.y : grid_.z);
+    }
+
     QRhi* rhi_ = nullptr;
     ses::Grid3D grid_{};
     int n_ = 0;
@@ -649,6 +787,13 @@ private:
     std::vector<std::unique_ptr<AuxState>> aux_;
     QScopedPointer<QRhiBuffer> axpy_ubo_;
     QScopedPointer<QRhiComputePipeline> inner_pipe_, axpy_pipe_, copy_pipe_;
+
+    // Magnetic (ensure_magnetic / rotate_axis_shear / magnetic_step): the shear
+    // kernel plus a per-axis inverse-FFT conj-scale (scale 1/n, not 1/cells).
+    ConjParams conjA_{};
+    QScopedPointer<QRhiBuffer> shear_ubo_, conjA_ubo_;
+    QScopedPointer<QRhiShaderResourceBindings> shear_srb_, conjA_srb_;
+    QScopedPointer<QRhiComputePipeline> shear_pipe_;
 };
 
 }  // namespace ses_qrhi
