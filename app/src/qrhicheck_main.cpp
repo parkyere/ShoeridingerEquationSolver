@@ -11,6 +11,8 @@
 
 #include <core/complex.hpp>
 #include <core/fft.hpp>
+#include <core/field.hpp>
+#include <core/grid.hpp>
 
 #include <rhi/qrhi.h>
 
@@ -876,6 +878,102 @@ bool check_fp16_roundtrip(QRhi* rhi) {
     return pass;
 }
 
+// 3-D forward FFT of an 8x8x8 cube = the line FFT run once per axis (x, y, z),
+// three dispatches in ONE compute pass with QRhi ordering the read-after-write
+// on the shared data buffer between axes. This is the multi-axis orchestration
+// at the heart of the engine's Strang step. Per-axis line-enumeration uniforms
+// come from ses_gpu::axis_passes; compared against ses::fft(Field3D).
+bool check_fft3(QRhi* rhi) {
+    const int nx = 8;
+    const int ny = 8;
+    const int nz = 8;
+    const ses::Grid1D ax{-4.0, 4.0, 8};
+    const ses::Grid3D g{ax, ax, ax};
+    ses::Field3D original{g};
+    for (int i = 0; i < original.size(); ++i) {
+        const double x = static_cast<double>(i);
+        original.data()[static_cast<std::size_t>(i)] =
+            ses::Complex<double>{std::sin(0.61 * x) + 0.15, std::cos(1.27 * x) - 0.2};
+    }
+    ses::Field3D cpu = original;
+    ses::fft(cpu);  // 3-D forward, x/y/z line FFTs (same convention as the kernel)
+
+    const std::vector<float> in = to_rg32f(original.data());
+    const quint32 bytes = static_cast<quint32>(in.size() * sizeof(float));
+
+    QShader cs = load_qsb(QStringLiteral(":/shaders/fft_line8.comp.qsb"));
+    if (!cs.isValid()) { std::fprintf(stderr, "fft_line8.comp.qsb missing\n"); return false; }
+
+    QScopedPointer<QRhiBuffer> data(
+        rhi->newBuffer(QRhiBuffer::Static, QRhiBuffer::StorageBuffer, bytes));
+    if (!data->create()) { return false; }
+
+    struct alignas(16) AxisParams {
+        qint32 mod_a, mul_b, mul_c, stride, n_lines, p0, p1, p2;
+    };
+    // {mod_a, mul_b, mul_c, stride, n_lines} per axis (ses_gpu::axis_passes).
+    const AxisParams axp[3] = {
+        { ny * nz, nx, 0, 1, ny * nz, 0, 0, 0 },       // x-lines (contiguous)
+        { nx, 1, nx * ny, nx, nx * nz, 0, 0, 0 },      // y-lines
+        { nx * ny, 1, 0, nx * ny, nx * ny, 0, 0, 0 },  // z-lines
+    };
+
+    QScopedPointer<QRhiBuffer> ubo[3];
+    QScopedPointer<QRhiShaderResourceBindings> srb[3];
+    for (int a = 0; a < 3; ++a) {
+        ubo[a].reset(
+            rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, sizeof(AxisParams)));
+        if (!ubo[a]->create()) { return false; }
+        srb[a].reset(rhi->newShaderResourceBindings());
+        srb[a]->setBindings({
+            QRhiShaderResourceBinding::bufferLoadStore(0, QRhiShaderResourceBinding::ComputeStage,
+                                                       data.data()),
+            QRhiShaderResourceBinding::uniformBuffer(1, QRhiShaderResourceBinding::ComputeStage,
+                                                     ubo[a].data()),
+        });
+        if (!srb[a]->create()) { return false; }
+    }
+
+    QScopedPointer<QRhiComputePipeline> pipe(rhi->newComputePipeline());
+    pipe->setShaderStage(QRhiShaderStage(QRhiShaderStage::Compute, cs));
+    pipe->setShaderResourceBindings(srb[0].data());  // layout template (all 3 share it)
+    if (!pipe->create()) { return false; }
+
+    QRhiCommandBuffer* cb = nullptr;
+    if (rhi->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) { return false; }
+    QRhiResourceUpdateBatch* up = rhi->nextResourceUpdateBatch();
+    up->uploadStaticBuffer(data.data(), in.data());
+    for (int a = 0; a < 3; ++a) {
+        up->updateDynamicBuffer(ubo[a].data(), 0, sizeof(AxisParams), &axp[a]);
+    }
+    cb->beginComputePass(up);
+    cb->setComputePipeline(pipe.data());
+    for (int a = 0; a < 3; ++a) {
+        cb->setShaderResources(srb[a].data());
+        cb->dispatch(axp[a].n_lines, 1, 1);
+    }
+    QRhiReadbackResult rb;
+    QRhiResourceUpdateBatch* down = rhi->nextResourceUpdateBatch();
+    down->readBackBuffer(data.data(), 0, bytes, &rb);
+    cb->endComputePass(down);
+    rhi->endOffscreenFrame();
+
+    const float* out = reinterpret_cast<const float*>(rb.data.constData());
+    double max_err = 0.0;
+    double max_mag = 0.0;
+    for (std::size_t i = 0; i < cpu.data().size(); ++i) {
+        max_err = std::max(max_err, std::abs(out[2 * i] - cpu.data()[i].real()));
+        max_err = std::max(max_err, std::abs(out[2 * i + 1] - cpu.data()[i].imag()));
+        max_mag = std::max(max_mag, std::abs(cpu.data()[i].real()));
+        max_mag = std::max(max_mag, std::abs(cpu.data()[i].imag()));
+    }
+    const double tol = 1e-3 + 1e-5 * max_mag;
+    const bool pass = max_err < tol;
+    std::printf("fft3 8x8x8 (QRhi/Vulkan): max |gpu - cpu| = %.3e (tol %.3e)  [%s]\n",
+                max_err, tol, pass ? "PASS" : "FAIL");
+    return pass;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -912,6 +1010,7 @@ int main(int argc, char** argv) {
     ok = check_dipole(rhi.data()) && ok;
     ok = check_fft(rhi.data()) && ok;
     ok = check_fp16_roundtrip(rhi.data()) && ok;
+    ok = check_fft3(rhi.data()) && ok;
     std::printf("%s\n", ok ? "QRhi kernel checks PASS" : "QRhi kernel checks FAILED");
     return ok ? 0 : 1;
 }
