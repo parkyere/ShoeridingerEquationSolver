@@ -381,6 +381,109 @@ bool check_inner_product(QRhi* rhi) {
     return pass;
 }
 
+// One dipole half-kick psi <- exp(-i theta axis.r) psi per grid cell, exactly
+// kDipoleKickSrc. Exercises grid-coordinate math + a std140 UBO with vec4-padded
+// vec3 geometry, against a CPU reference applying the same per-cell rotation.
+bool check_dipole_kick(QRhi* rhi) {
+    const int nx = 8;
+    const int ny = 8;
+    const int nz = 8;
+    const std::size_t n = static_cast<std::size_t>(nx * ny * nz);
+    const double box_min[3] = {-4.0, -4.0, -4.0};
+    const double cell_h[3] = {1.0, 1.1, 0.9};
+    const double axis[3] = {0.3, 0.6, -0.2};
+    const double theta = 0.15;
+
+    std::vector<ses::Complex<double>> psi_d(n);
+    std::vector<ses::Complex<double>> cpu(n);
+    for (std::size_t idx = 0; idx < n; ++idx) {
+        const double x = static_cast<double>(idx);
+        psi_d[idx] = ses::Complex<double>{std::sin(0.13 * x) + 0.2, std::cos(0.09 * x) - 0.1};
+        const int i = static_cast<int>(idx) % nx;
+        const int j = (static_cast<int>(idx) / nx) % ny;
+        const int k = static_cast<int>(idx) / (nx * ny);
+        const double rx = box_min[0] + i * cell_h[0];
+        const double ry = box_min[1] + j * cell_h[1];
+        const double rz = box_min[2] + k * cell_h[2];
+        const double ang = -theta * (axis[0] * rx + axis[1] * ry + axis[2] * rz);
+        const double wr = std::cos(ang);
+        const double wi = std::sin(ang);
+        const double ar = psi_d[idx].real();
+        const double ai = psi_d[idx].imag();
+        cpu[idx] = ses::Complex<double>{ar * wr - ai * wi, ar * wi + ai * wr};
+    }
+    const std::vector<float> in = to_rg32f(psi_d);
+    const quint32 bytes = static_cast<quint32>(in.size() * sizeof(float));
+
+    QShader cs = load_qsb(QStringLiteral(":/shaders/dipole_kick.comp.qsb"));
+    if (!cs.isValid()) { std::fprintf(stderr, "dipole_kick.comp.qsb missing\n"); return false; }
+
+    QScopedPointer<QRhiBuffer> psi(
+        rhi->newBuffer(QRhiBuffer::Static, QRhiBuffer::StorageBuffer, bytes));
+    struct alignas(16) Params {
+        quint32 n;
+        qint32 nx;
+        qint32 ny;
+        float theta;
+        float box_min[4];
+        float cell_h[4];
+        float axis[4];
+    };
+    Params params{};
+    params.n = static_cast<quint32>(n);
+    params.nx = nx;
+    params.ny = ny;
+    params.theta = static_cast<float>(theta);
+    for (int c = 0; c < 3; ++c) {
+        params.box_min[c] = static_cast<float>(box_min[c]);
+        params.cell_h[c] = static_cast<float>(cell_h[c]);
+        params.axis[c] = static_cast<float>(axis[c]);
+    }
+    QScopedPointer<QRhiBuffer> ubo(
+        rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, sizeof(Params)));
+    if (!psi->create() || !ubo->create()) { return false; }
+
+    QScopedPointer<QRhiShaderResourceBindings> srb(rhi->newShaderResourceBindings());
+    srb->setBindings({
+        QRhiShaderResourceBinding::bufferLoadStore(0, QRhiShaderResourceBinding::ComputeStage,
+                                                   psi.data()),
+        QRhiShaderResourceBinding::uniformBuffer(1, QRhiShaderResourceBinding::ComputeStage,
+                                                 ubo.data()),
+    });
+    if (!srb->create()) { return false; }
+
+    QScopedPointer<QRhiComputePipeline> pipe(rhi->newComputePipeline());
+    pipe->setShaderStage(QRhiShaderStage(QRhiShaderStage::Compute, cs));
+    pipe->setShaderResourceBindings(srb.data());
+    if (!pipe->create()) { return false; }
+
+    QRhiCommandBuffer* cb = nullptr;
+    if (rhi->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) { return false; }
+    QRhiResourceUpdateBatch* up = rhi->nextResourceUpdateBatch();
+    up->uploadStaticBuffer(psi.data(), in.data());
+    up->updateDynamicBuffer(ubo.data(), 0, sizeof(Params), &params);
+    cb->beginComputePass(up);
+    cb->setComputePipeline(pipe.data());
+    cb->setShaderResources(srb.data());
+    cb->dispatch(static_cast<int>((n + 255) / 256), 1, 1);
+    QRhiReadbackResult rb;
+    QRhiResourceUpdateBatch* down = rhi->nextResourceUpdateBatch();
+    down->readBackBuffer(psi.data(), 0, bytes, &rb);
+    cb->endComputePass(down);
+    rhi->endOffscreenFrame();
+
+    const float* out = reinterpret_cast<const float*>(rb.data.constData());
+    double max_err = 0.0;
+    for (std::size_t idx = 0; idx < n; ++idx) {
+        max_err = std::max(max_err, std::abs(out[2 * idx] - cpu[idx].real()));
+        max_err = std::max(max_err, std::abs(out[2 * idx + 1] - cpu[idx].imag()));
+    }
+    const bool pass = max_err < 1e-4;
+    std::printf("dipole-kick kernel (QRhi/Vulkan): max |gpu - cpu| = %.3e  [%s]\n",
+                max_err, pass ? "PASS" : "FAIL");
+    return pass;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -412,6 +515,7 @@ int main(int argc, char** argv) {
     ok = check_scale(rhi.data()) && ok;
     ok = check_norm_peak(rhi.data()) && ok;
     ok = check_inner_product(rhi.data()) && ok;
+    ok = check_dipole_kick(rhi.data()) && ok;
     std::printf("%s\n", ok ? "QRhi kernel checks PASS" : "QRhi kernel checks FAILED");
     return ok ? 0 : 1;
 }
