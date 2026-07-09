@@ -15,6 +15,7 @@
 #include <core/fft.hpp>
 #include <core/field.hpp>
 #include <core/grid.hpp>
+#include <core/imaginary_time.hpp>
 #include <core/potential.hpp>
 #include <core/propagator.hpp>
 #include <core/vec.hpp>
@@ -1022,6 +1023,54 @@ bool check_engine_step(QRhi* rhi) {
     return pass;
 }
 
+// Imaginary-time relaxation through the QrhiEngine, 50 steps on an 8x8x8
+// harmonic grid vs ImaginaryTimePropagator3D::relax (the QRhi analog of
+// gpucheck's G7 numeric match). Exercises the per-step renormalize path (norm/
+// peak reduction -> host sum -> scale). The free energy estimator needs a finer
+// grid to converge to 3w/2, so it is reported for info, not asserted here.
+bool check_relax(QRhi* rhi) {
+    const ses::Grid1D axis{-4.0, 4.0, 8};
+    const ses::Grid3D g{axis, axis, axis};
+    const std::vector<double> v = ses::harmonic_potential(g, 1.0, ses::Vec3d{});
+    const double dtau = 0.05;
+    const ses::SplitOperator3D real_prop{g, v, 0.02};  // phase tables for init
+    const ses::ImaginaryTimePropagator3D cpu_relaxer{g, v, dtau};
+    ses::Field3D psi0 = ses::gaussian_wavepacket(g, ses::Vec3d{1.0, 0.0, 0.0},
+                                                 ses::Vec3d{1.5, 1.5, 1.5}, ses::Vec3d{});
+
+    ses_qrhi::QrhiEngine engine;
+    if (!engine.initialize(rhi, g, real_prop.half_potential_phase(), real_prop.kinetic_phase(),
+                           psi0.data())) {
+        std::printf("relax 50 steps (QRhi/Vulkan): engine init FAIL\n");
+        return false;
+    }
+    if (!engine.set_relax_tables(cpu_relaxer.half_potential_weight(),
+                                 cpu_relaxer.kinetic_weight(), dtau, g.cell_volume())) {
+        std::printf("relax 50 steps (QRhi/Vulkan): set_relax_tables FAIL\n");
+        return false;
+    }
+    const ses_qrhi::QrhiEngine::RelaxStats stats = engine.relax_step(50);
+    std::vector<float> gpu_out;
+    engine.readback(gpu_out);
+
+    ses::Field3D cpu = psi0;
+    cpu_relaxer.relax(cpu, 50);
+
+    double max_err = 0.0;
+    double max_mag = 0.0;
+    for (std::size_t i = 0; i < cpu.data().size(); ++i) {
+        max_err = std::max(max_err, std::abs(gpu_out[2 * i] - cpu.data()[i].real()));
+        max_err = std::max(max_err, std::abs(gpu_out[2 * i + 1] - cpu.data()[i].imag()));
+        max_mag = std::max(max_mag, std::abs(cpu.data()[i].real()));
+        max_mag = std::max(max_mag, std::abs(cpu.data()[i].imag()));
+    }
+    const double tol = 1e-4 + 1e-5 * max_mag;
+    const bool pass = max_err < tol;
+    std::printf("relax 50 steps (QRhi/Vulkan): max |gpu - cpu| = %.3e (tol %.3e), E~%.3f  [%s]\n",
+                max_err, tol, stats.energy, pass ? "PASS" : "FAIL");
+    return pass;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1060,6 +1109,7 @@ int main(int argc, char** argv) {
     ok = check_fp16_roundtrip(rhi.data()) && ok;
     ok = check_fft3(rhi.data()) && ok;
     ok = check_engine_step(rhi.data()) && ok;
+    ok = check_relax(rhi.data()) && ok;
     std::printf("%s\n", ok ? "QRhi kernel checks PASS" : "QRhi kernel checks FAILED");
     return ok ? 0 : 1;
 }

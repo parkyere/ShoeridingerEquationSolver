@@ -19,6 +19,7 @@
 #include <QFile>
 #include <QString>
 
+#include <cmath>
 #include <cstdio>
 #include <vector>
 
@@ -182,6 +183,132 @@ public:
         rhi_->endOffscreenFrame();
     }
 
+    struct RelaxStats { double energy = 0.0; };
+
+    // Upload the imaginary-time weight tables (ImaginaryTimePropagator3D's, packed
+    // vec2(w,0) for the complex-multiply kernel) and build the norm + scale
+    // renormalization pipelines. Call after initialize(). cell_volume = grid dV.
+    bool set_relax_tables(const std::vector<double>& half_w,
+                          const std::vector<double>& kin_w, double dtau, double cell_volume) {
+        dtau_ = dtau;
+        cell_volume_ = cell_volume;
+        const quint32 bytes = static_cast<quint32>(2 * cells_ * sizeof(float));
+        std::vector<float> hf(2 * cells_, 0.0f);
+        std::vector<float> kf(2 * cells_, 0.0f);
+        for (std::size_t i = 0; i < cells_; ++i) {
+            hf[2 * i] = static_cast<float>(half_w[i]);
+            kf[2 * i] = static_cast<float>(kin_w[i]);
+        }
+        const QShader normcs = load_qsb(QStringLiteral(":/shaders/norm_peak.comp.qsb"));
+        const QShader scalecs = load_qsb(QStringLiteral(":/shaders/scale.comp.qsb"));
+        if (!normcs.isValid() || !scalecs.isValid()) { return false; }
+
+        relax_half_.reset(rhi_->newBuffer(QRhiBuffer::Static, QRhiBuffer::StorageBuffer, bytes));
+        relax_kin_.reset(rhi_->newBuffer(QRhiBuffer::Static, QRhiBuffer::StorageBuffer, bytes));
+        partials_.reset(rhi_->newBuffer(QRhiBuffer::Static, QRhiBuffer::StorageBuffer,
+                                        static_cast<quint32>(2 * kGroups * sizeof(float))));
+        scale_ubo_.reset(rhi_->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer,
+                                         sizeof(ConjParams)));
+        if (!relax_half_->create() || !relax_kin_->create() || !partials_->create() ||
+            !scale_ubo_->create()) { return false; }
+
+        using B = QRhiShaderResourceBinding;
+        const auto cs = B::ComputeStage;
+        relax_half_srb_.reset(rhi_->newShaderResourceBindings());
+        relax_half_srb_->setBindings({ B::bufferLoadStore(0, cs, psi_.data()),
+                                       B::bufferLoad(1, cs, relax_half_.data()),
+                                       B::uniformBuffer(2, cs, muln_ubo_.data()) });
+        relax_kin_srb_.reset(rhi_->newShaderResourceBindings());
+        relax_kin_srb_->setBindings({ B::bufferLoadStore(0, cs, psi_.data()),
+                                      B::bufferLoad(1, cs, relax_kin_.data()),
+                                      B::uniformBuffer(2, cs, muln_ubo_.data()) });
+        norm_srb_.reset(rhi_->newShaderResourceBindings());
+        norm_srb_->setBindings({ B::bufferLoad(0, cs, psi_.data()),
+                                 B::uniformBuffer(1, cs, muln_ubo_.data()),
+                                 B::bufferLoadStore(2, cs, partials_.data()) });
+        scale_srb_.reset(rhi_->newShaderResourceBindings());
+        scale_srb_->setBindings({ B::bufferLoadStore(0, cs, psi_.data()),
+                                  B::uniformBuffer(1, cs, scale_ubo_.data()) });
+        if (!relax_half_srb_->create() || !relax_kin_srb_->create() || !norm_srb_->create() ||
+            !scale_srb_->create()) { return false; }
+
+        norm_pipe_.reset(rhi_->newComputePipeline());
+        norm_pipe_->setShaderStage(QRhiShaderStage(QRhiShaderStage::Compute, normcs));
+        norm_pipe_->setShaderResourceBindings(norm_srb_.data());
+        scale_pipe_.reset(rhi_->newComputePipeline());
+        scale_pipe_->setShaderStage(QRhiShaderStage(QRhiShaderStage::Compute, scalecs));
+        scale_pipe_->setShaderResourceBindings(scale_srb_.data());
+        if (!norm_pipe_->create() || !scale_pipe_->create()) { return false; }
+
+        QRhiCommandBuffer* cb = nullptr;
+        if (rhi_->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) { return false; }
+        QRhiResourceUpdateBatch* u = rhi_->nextResourceUpdateBatch();
+        u->uploadStaticBuffer(relax_half_.data(), hf.data());
+        u->uploadStaticBuffer(relax_kin_.data(), kf.data());
+        cb->resourceUpdate(u);
+        rhi_->endOffscreenFrame();
+        return true;
+    }
+
+    // e^{-H dtau} Strang steps with per-step renormalization (imaginary time).
+    // Each step: one frame for the imaginary Strang chain + the norm reduction
+    // (read the partials back), then a frame that scales by 1/sqrt(norm). The
+    // pre-renorm norm decays as e^{-2 E dtau}, so the last step yields the free
+    // energy estimate. Mirrors ses_gpu::GpuEngine::relax_step.
+    RelaxStats relax_step(int nsteps) {
+        const int mul_groups = static_cast<int>((cells_ + 255) / 256);
+        RelaxStats stats;
+        for (int s = 0; s < nsteps; ++s) {
+            QRhiCommandBuffer* cb = nullptr;
+            if (rhi_->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) { return stats; }
+            QRhiResourceUpdateBatch* u = rhi_->nextResourceUpdateBatch();
+            u->updateDynamicBuffer(muln_ubo_.data(), 0, sizeof(MulParams), &muln_);
+            u->updateDynamicBuffer(conj1_ubo_.data(), 0, sizeof(ConjParams), &conj1_);
+            u->updateDynamicBuffer(conjN_ubo_.data(), 0, sizeof(ConjParams), &conjN_);
+            for (int a = 0; a < 3; ++a) {
+                u->updateDynamicBuffer(fft_ubo_[a].data(), 0, sizeof(FftParams), &fftp_[a]);
+            }
+            cb->beginComputePass(u);
+            multiply(cb, relax_half_srb_.data(), mul_groups);
+            fft3(cb);
+            multiply(cb, relax_kin_srb_.data(), mul_groups);
+            conjscale(cb, conj1_srb_.data(), mul_groups);
+            fft3(cb);
+            conjscale(cb, conjN_srb_.data(), mul_groups);
+            multiply(cb, relax_half_srb_.data(), mul_groups);
+            cb->setComputePipeline(norm_pipe_.data());
+            cb->setShaderResources(norm_srb_.data());
+            cb->dispatch(kGroups, 1, 1);
+            QRhiReadbackResult rb;
+            QRhiResourceUpdateBatch* d = rhi_->nextResourceUpdateBatch();
+            d->readBackBuffer(partials_.data(), 0,
+                              static_cast<quint32>(2 * kGroups * sizeof(float)), &rb);
+            cb->endComputePass(d);
+            rhi_->endOffscreenFrame();
+
+            const float* p = reinterpret_cast<const float*>(rb.data.constData());
+            double sum = 0.0;
+            for (int gi = 0; gi < kGroups; ++gi) { sum += p[2 * gi]; }
+            const double norm_sq = sum * cell_volume_;
+            const double inv = (norm_sq > 0.0) ? 1.0 / std::sqrt(norm_sq) : 0.0;
+            stats.energy = (norm_sq > 0.0) ? -std::log(norm_sq) / (2.0 * dtau_) : 0.0;
+
+            const ConjParams sp{ static_cast<quint32>(cells_), static_cast<float>(inv),
+                                 0.0f, 0.0f };
+            QRhiCommandBuffer* cb2 = nullptr;
+            if (rhi_->beginOffscreenFrame(&cb2) != QRhi::FrameOpSuccess) { return stats; }
+            QRhiResourceUpdateBatch* u2 = rhi_->nextResourceUpdateBatch();
+            u2->updateDynamicBuffer(scale_ubo_.data(), 0, sizeof(ConjParams), &sp);
+            cb2->beginComputePass(u2);
+            cb2->setComputePipeline(scale_pipe_.data());
+            cb2->setShaderResources(scale_srb_.data());
+            cb2->dispatch(mul_groups, 1, 1);
+            cb2->endComputePass();
+            rhi_->endOffscreenFrame();
+        }
+        return stats;
+    }
+
     // Interleaved RG floats, 2 per cell.
     void readback(std::vector<float>& out) {
         const quint32 bytes = static_cast<quint32>(2 * cells_ * sizeof(float));
@@ -197,6 +324,8 @@ public:
     }
 
 private:
+    static constexpr int kGroups = 256;  // norm/peak workgroups (ses_gpu::kNormPeakGroups)
+
     struct alignas(16) MulParams { quint32 n, p0, p1, p2; };
     struct alignas(16) ConjParams { quint32 n; float scale; float p0, p1; };
     struct alignas(16) FftParams { qint32 mod_a, mul_b, mul_c, stride, n_lines, p0, p1, p2; };
@@ -222,6 +351,8 @@ private:
     QRhi* rhi_ = nullptr;
     int n_ = 0;
     std::size_t cells_ = 0;
+    double dtau_ = 0.0;
+    double cell_volume_ = 0.0;
     MulParams muln_{};
     ConjParams conj1_{};
     ConjParams conjN_{};
@@ -232,6 +363,12 @@ private:
     QScopedPointer<QRhiShaderResourceBindings> mul_half_srb_, mul_kin_srb_, conj1_srb_,
         conjN_srb_, fft_srb_[3];
     QScopedPointer<QRhiComputePipeline> mul_pipe_, conj_pipe_, fft_pipe_;
+
+    // Imaginary-time relaxation (set_relax_tables / relax_step).
+    QScopedPointer<QRhiBuffer> relax_half_, relax_kin_, partials_, scale_ubo_;
+    QScopedPointer<QRhiShaderResourceBindings> relax_half_srb_, relax_kin_srb_, norm_srb_,
+        scale_srb_;
+    QScopedPointer<QRhiComputePipeline> norm_pipe_, scale_pipe_;
 };
 
 }  // namespace ses_qrhi
