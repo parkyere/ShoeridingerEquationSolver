@@ -12,6 +12,7 @@
 // is also what a later VkFFT drop-in needs (one durable handle).
 
 #include <core/complex.hpp>
+#include <core/decay.hpp>
 #include <core/drive.hpp>
 #include <core/grid.hpp>
 #include <core/vec.hpp>
@@ -452,55 +453,130 @@ public:
 
     // ---- orbital synthesis ---------------------------------------------
     // psi <- normalized (u(|r|)/|r|) Y_lm, synthesized on the GPU from the radial
-    // table u_nl(r) (kSynthSrc). Writes psi in place then normalizes (the atlas
-    // version that keeps a resident buffer is deferred to M3). h_radial =
-    // rmax/(n_radial+1). Returns false if a resource fails to build.
+    // table u_nl(r) (kSynthSrc). h_radial = rmax/(n_radial+1).
     bool synthesize_into_psi(const std::vector<double>& u, int l, int m, double h_radial,
                              double rmax, int n_radial) {
-        std::vector<float> uf(u.size());
-        for (std::size_t i = 0; i < u.size(); ++i) { uf[i] = static_cast<float>(u[i]); }
-        const quint32 rbytes = static_cast<quint32>(uf.size() * sizeof(float));
-        bool rebuilt = false;
-        if (radial_buf_.isNull() || radial_bytes_ != rbytes) {
-            radial_buf_.reset(rhi_->newBuffer(QRhiBuffer::Static, QRhiBuffer::StorageBuffer,
-                                              rbytes));
-            if (!radial_buf_->create()) { return false; }
-            radial_bytes_ = rbytes;
-            rebuilt = true;
+        return synthesize_into_buffer(psi_.data(), u, l, m, h_radial, rmax, n_radial);
+    }
+
+    // Synthesize a normalized fp32 eigenstate into its OWN resident buffer (the
+    // atlas builds each state on the GPU, no CPU field) and return a handle.
+    int synthesize_state(const std::vector<double>& u, int l, int m, double h_radial,
+                         double rmax, int n_radial) {
+        auto a = std::make_unique<AtlasState>();
+        a->buf.reset(rhi_->newBuffer(QRhiBuffer::Static, QRhiBuffer::StorageBuffer,
+                                     static_cast<quint32>(2 * cells_ * sizeof(float))));
+        if (!a->buf->create()) { return -1; }
+        if (!synthesize_into_buffer(a->buf.data(), u, l, m, h_radial, rmax, n_radial)) {
+            return -1;
         }
-        if (!ensure_synth(rebuilt)) { return false; }
+        atlas_.push_back(std::move(a));
+        return static_cast<int>(atlas_.size()) - 1;
+    }
 
-        SynthParams sp{};
-        sp.n = static_cast<quint32>(cells_);
-        sp.nx = grid_.x.n;
-        sp.ny = grid_.y.n;
-        sp.l = l;
-        sp.m = m;
-        sp.n_radial = n_radial;
-        sp.h_radial = static_cast<float>(h_radial);
-        sp.rmax = static_cast<float>(rmax);
-        sp.box_min[0] = static_cast<float>(grid_.x.xmin);
-        sp.box_min[1] = static_cast<float>(grid_.y.xmin);
-        sp.box_min[2] = static_cast<float>(grid_.z.xmin);
-        sp.cell_h[0] = static_cast<float>(grid_.x.spacing());
-        sp.cell_h[1] = static_cast<float>(grid_.y.spacing());
-        sp.cell_h[2] = static_cast<float>(grid_.z.spacing());
+    // Synthesize + normalize in fp32 (the tested path), then pack to fp16 storage
+    // (cells uints, half the footprint) and return an fp16 handle. The fp32 temp
+    // is freed. Consumers unpack fp16 to scratch on demand.
+    int synthesize_state_half(const std::vector<double>& u, int l, int m, double h_radial,
+                              double rmax, int n_radial) {
+        if (!ensure_fp16()) { return -1; }
+        QScopedPointer<QRhiBuffer> tmp(rhi_->newBuffer(
+            QRhiBuffer::Static, QRhiBuffer::StorageBuffer,
+            static_cast<quint32>(2 * cells_ * sizeof(float))));
+        if (!tmp->create()) { return -1; }
+        if (!synthesize_into_buffer(tmp.data(), u, l, m, h_radial, rmax, n_radial)) {
+            return -1;
+        }
+        auto a = std::make_unique<AtlasState>();
+        a->is_half = true;
+        a->buf.reset(rhi_->newBuffer(QRhiBuffer::Static, QRhiBuffer::StorageBuffer,
+                                     static_cast<quint32>(cells_ * sizeof(quint32))));
+        if (!a->buf->create()) { return -1; }
+        // pack tmp(fp32, binding 0) -> a->buf(fp16, binding 6).
+        using B = QRhiShaderResourceBinding;
+        const auto cs = B::ComputeStage;
+        QScopedPointer<QRhiShaderResourceBindings> psrb(rhi_->newShaderResourceBindings());
+        psrb->setBindings({ B::bufferLoad(0, cs, tmp.data()),
+                            B::uniformBuffer(1, cs, muln_ubo_.data()),
+                            B::bufferLoadStore(6, cs, a->buf.data()) });
+        if (!psrb->create()) { return -1; }
+        run_single(pack_pipe_.data(), psrb.data());
+        atlas_.push_back(std::move(a));
+        return static_cast<int>(atlas_.size()) - 1;
+    }
 
-        const int groups = static_cast<int>((cells_ + 255) / 256);
+    // <state|psi> = sum conj(state)*psi * dV, the atlas overlap. If the state is
+    // fp16 it is unpacked to scratch first (decode-on-use).
+    ses::Complex<double> inner_state_with_psi(int handle) {
+        if (!ensure_inner()) { return {}; }
+        QRhiBuffer* sbuf = decode(handle, 0);
+        if (sbuf == nullptr) { return {}; }
+        using B = QRhiShaderResourceBinding;
+        const auto cs = B::ComputeStage;
+        QScopedPointer<QRhiShaderResourceBindings> isrb(rhi_->newShaderResourceBindings());
+        isrb->setBindings({ B::bufferLoad(0, cs, psi_.data()),
+                            B::uniformBuffer(1, cs, muln_ubo_.data()),
+                            B::bufferLoadStore(2, cs, partials_.data()),
+                            B::bufferLoad(3, cs, sbuf) });
+        if (!isrb->create()) { return {}; }
+        QRhiReadbackResult rb;
+        run_reduce(inner_pipe_.data(), isrb.data(), partials_.data(),
+                   static_cast<quint32>(2 * kGroups * sizeof(float)), &rb);
+        const float* p = reinterpret_cast<const float*>(rb.data.constData());
+        double re = 0.0;
+        double im = 0.0;
+        for (int gi = 0; gi < kGroups; ++gi) { re += p[2 * gi]; im += p[2 * gi + 1]; }
+        return ses::Complex<double>{ re * cell_volume_, im * cell_volume_ };
+    }
+
+    // <to| r |from> = sum conj(to)*(x,y,z)*from * dV, from two resident atlas
+    // states (each fp32 or fp16-decoded). Component-wise complex.
+    ses::DipoleMatrixElement dipole_between(int to_h, int from_h) {
+        if (!ensure_dipole()) { return {}; }
+        QRhiBuffer* to_buf = decode(to_h, 0);
+        QRhiBuffer* from_buf = decode(from_h, 1);
+        if (to_buf == nullptr || from_buf == nullptr) { return {}; }
+        DipoleParams dp{};
+        dp.n = static_cast<quint32>(cells_);
+        dp.nx = grid_.x.n;
+        dp.ny = grid_.y.n;
+        dp.box_min[0] = static_cast<float>(grid_.x.xmin);
+        dp.box_min[1] = static_cast<float>(grid_.y.xmin);
+        dp.box_min[2] = static_cast<float>(grid_.z.xmin);
+        dp.cell_h[0] = static_cast<float>(grid_.x.spacing());
+        dp.cell_h[1] = static_cast<float>(grid_.y.spacing());
+        dp.cell_h[2] = static_cast<float>(grid_.z.spacing());
+        using B = QRhiShaderResourceBinding;
+        const auto cs = B::ComputeStage;
+        QScopedPointer<QRhiShaderResourceBindings> dsrb(rhi_->newShaderResourceBindings());
+        dsrb->setBindings({ B::bufferLoad(0, cs, to_buf),
+                            B::uniformBuffer(1, cs, dipole_ubo_.data()),
+                            B::bufferLoadStore(2, cs, dipole_partials_.data()),
+                            B::bufferLoad(3, cs, from_buf) });
+        if (!dsrb->create()) { return {}; }
         QRhiCommandBuffer* cb = nullptr;
-        if (rhi_->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) { return false; }
-        QRhiResourceUpdateBatch* uu = rhi_->nextResourceUpdateBatch();
-        uu->uploadStaticBuffer(radial_buf_.data(), uf.data());
-        uu->updateDynamicBuffer(synth_ubo_.data(), 0, sizeof(SynthParams), &sp);
-        cb->beginComputePass(uu);
-        cb->setComputePipeline(synth_pipe_.data());
-        cb->setShaderResources(synth_srb_.data());
-        cb->dispatch(groups, 1, 1);
-        cb->endComputePass();
+        if (rhi_->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) { return {}; }
+        QRhiResourceUpdateBatch* u = rhi_->nextResourceUpdateBatch();
+        u->updateDynamicBuffer(dipole_ubo_.data(), 0, sizeof(DipoleParams), &dp);
+        cb->beginComputePass(u);
+        cb->setComputePipeline(dipole_pipe_.data());
+        cb->setShaderResources(dsrb.data());
+        cb->dispatch(kGroups, 1, 1);
+        QRhiReadbackResult rb;
+        QRhiResourceUpdateBatch* d = rhi_->nextResourceUpdateBatch();
+        d->readBackBuffer(dipole_partials_.data(), 0,
+                          static_cast<quint32>(6 * kGroups * sizeof(float)), &rb);
+        cb->endComputePass(d);
         rhi_->endOffscreenFrame();
-
-        renormalize_and_estimate(groups);  // norm + scale on psi_ (energy unused)
-        return true;
+        const float* p = reinterpret_cast<const float*>(rb.data.constData());
+        double d6[6] = {0, 0, 0, 0, 0, 0};
+        for (int gi = 0; gi < kGroups; ++gi) {
+            for (int c = 0; c < 6; ++c) { d6[c] += p[6 * gi + c]; }
+        }
+        return ses::DipoleMatrixElement{
+            ses::Complex<double>{ d6[0] * cell_volume_, d6[1] * cell_volume_ },
+            ses::Complex<double>{ d6[2] * cell_volume_, d6[3] * cell_volume_ },
+            ses::Complex<double>{ d6[4] * cell_volume_, d6[5] * cell_volume_ } };
     }
 
     // ---- magnetic minimal coupling (real-time B field) -----------------
@@ -624,6 +700,21 @@ private:
         float h_radial, rmax;
     };
     struct alignas(16) BridgeParams { qint32 nx, ny, nz, pad; };
+    // std140: n@0, nx@4, ny@8, pad@12, box_min@16, cell_h@32, matches dipole.comp.
+    struct alignas(16) DipoleParams {
+        quint32 n;
+        qint32 nx, ny, pad0;
+        float box_min[4];
+        float cell_h[4];
+    };
+
+    // A resident atlas eigenstate: fp32 (2*cells floats) or fp16-packed (cells
+    // uints, half the footprint). The tested fp32 consumers read fp16 states by
+    // unpacking to a scratch buffer on demand (decode-on-use).
+    struct AtlasState {
+        bool is_half = false;
+        QScopedPointer<QRhiBuffer> buf;
+    };
 
     // An auxiliary (lower) eigenstate resident on the GPU plus its bindings for
     // the deflation kernels. Heap-owned (unique_ptr) so the QScopedPointer members
@@ -883,6 +974,227 @@ private:
         return store_pipe_->create() && load_pipe_->create();
     }
 
+    // ---- atlas helpers (synthesize_state / fp16 / inner / dipole) ------
+    // Synthesize a normalized fp32 eigenstate into `out` (binding-0 storage
+    // buffer), dispatching synth_pipe_ with a per-buffer SRB then normalizing.
+    bool synthesize_into_buffer(QRhiBuffer* out, const std::vector<double>& u, int l, int m,
+                                double h_radial, double rmax, int n_radial) {
+        std::vector<float> uf(u.size());
+        for (std::size_t i = 0; i < u.size(); ++i) { uf[i] = static_cast<float>(u[i]); }
+        const quint32 rbytes = static_cast<quint32>(uf.size() * sizeof(float));
+        bool rebuilt = false;
+        if (radial_buf_.isNull() || radial_bytes_ != rbytes) {
+            radial_buf_.reset(rhi_->newBuffer(QRhiBuffer::Static, QRhiBuffer::StorageBuffer,
+                                              rbytes));
+            if (!radial_buf_->create()) { return false; }
+            radial_bytes_ = rbytes;
+            rebuilt = true;
+        }
+        if (!ensure_synth(rebuilt)) { return false; }
+
+        SynthParams sp{};
+        sp.n = static_cast<quint32>(cells_);
+        sp.nx = grid_.x.n;
+        sp.ny = grid_.y.n;
+        sp.l = l;
+        sp.m = m;
+        sp.n_radial = n_radial;
+        sp.h_radial = static_cast<float>(h_radial);
+        sp.rmax = static_cast<float>(rmax);
+        sp.box_min[0] = static_cast<float>(grid_.x.xmin);
+        sp.box_min[1] = static_cast<float>(grid_.y.xmin);
+        sp.box_min[2] = static_cast<float>(grid_.z.xmin);
+        sp.cell_h[0] = static_cast<float>(grid_.x.spacing());
+        sp.cell_h[1] = static_cast<float>(grid_.y.spacing());
+        sp.cell_h[2] = static_cast<float>(grid_.z.spacing());
+
+        using B = QRhiShaderResourceBinding;
+        const auto cs = B::ComputeStage;
+        QScopedPointer<QRhiShaderResourceBindings> osrb(rhi_->newShaderResourceBindings());
+        osrb->setBindings({ B::bufferLoadStore(0, cs, out),
+                            B::uniformBuffer(1, cs, synth_ubo_.data()),
+                            B::bufferLoad(5, cs, radial_buf_.data()) });
+        if (!osrb->create()) { return false; }
+
+        const int groups = static_cast<int>((cells_ + 255) / 256);
+        QRhiCommandBuffer* cb = nullptr;
+        if (rhi_->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) { return false; }
+        QRhiResourceUpdateBatch* uu = rhi_->nextResourceUpdateBatch();
+        uu->uploadStaticBuffer(radial_buf_.data(), uf.data());
+        uu->updateDynamicBuffer(synth_ubo_.data(), 0, sizeof(SynthParams), &sp);
+        cb->beginComputePass(uu);
+        cb->setComputePipeline(synth_pipe_.data());
+        cb->setShaderResources(osrb.data());
+        cb->dispatch(groups, 1, 1);
+        cb->endComputePass();
+        rhi_->endOffscreenFrame();
+
+        normalize_buffer(out);
+        return true;
+    }
+
+    // psi'-agnostic grid normalization of `buf` (norm reduction * dV -> scale by
+    // 1/sqrt(norm)), via per-buffer SRBs layout-compatible with norm/scale_pipe_.
+    void normalize_buffer(QRhiBuffer* buf) {
+        const int groups = static_cast<int>((cells_ + 255) / 256);
+        using B = QRhiShaderResourceBinding;
+        const auto cs = B::ComputeStage;
+        QScopedPointer<QRhiShaderResourceBindings> nsrb(rhi_->newShaderResourceBindings());
+        nsrb->setBindings({ B::bufferLoad(0, cs, buf),
+                            B::uniformBuffer(1, cs, muln_ubo_.data()),
+                            B::bufferLoadStore(2, cs, partials_.data()) });
+        if (!nsrb->create()) { return; }
+        QRhiReadbackResult rb;
+        run_reduce(norm_pipe_.data(), nsrb.data(), partials_.data(),
+                   static_cast<quint32>(2 * kGroups * sizeof(float)), &rb);
+        const float* p = reinterpret_cast<const float*>(rb.data.constData());
+        double sum = 0.0;
+        for (int gi = 0; gi < kGroups; ++gi) { sum += p[2 * gi]; }
+        const double norm_sq = sum * cell_volume_;
+        const double inv = (norm_sq > 0.0) ? 1.0 / std::sqrt(norm_sq) : 0.0;
+        const ConjParams sp{ static_cast<quint32>(cells_), static_cast<float>(inv), 0.0f, 0.0f };
+        QScopedPointer<QRhiShaderResourceBindings> ssrb(rhi_->newShaderResourceBindings());
+        ssrb->setBindings({ B::bufferLoadStore(0, cs, buf),
+                            B::uniformBuffer(1, cs, scale_ubo_.data()) });
+        if (!ssrb->create()) { return; }
+        QRhiCommandBuffer* cb = nullptr;
+        if (rhi_->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) { return; }
+        QRhiResourceUpdateBatch* u = rhi_->nextResourceUpdateBatch();
+        u->updateDynamicBuffer(scale_ubo_.data(), 0, sizeof(ConjParams), &sp);
+        cb->beginComputePass(u);
+        cb->setComputePipeline(scale_pipe_.data());
+        cb->setShaderResources(ssrb.data());
+        cb->dispatch(groups, 1, 1);
+        cb->endComputePass();
+        rhi_->endOffscreenFrame();
+    }
+
+    // Return a readable fp32 buffer for atlas state `handle`: the buffer itself if
+    // fp32, else the fp16 state unpacked into decode_scratch_[slot] (0 or 1).
+    QRhiBuffer* decode(int handle, int slot) {
+        AtlasState* a = atlas_.at(static_cast<std::size_t>(handle)).get();
+        if (!a->is_half) { return a->buf.data(); }
+        if (!ensure_fp16()) { return nullptr; }
+        using B = QRhiShaderResourceBinding;
+        const auto cs = B::ComputeStage;
+        QScopedPointer<QRhiShaderResourceBindings> usrb(rhi_->newShaderResourceBindings());
+        usrb->setBindings({ B::bufferLoadStore(0, cs, decode_scratch_[slot].data()),
+                            B::uniformBuffer(1, cs, muln_ubo_.data()),
+                            B::bufferLoad(6, cs, a->buf.data()) });
+        if (!usrb->create()) { return nullptr; }
+        run_single(unpack_pipe_.data(), usrb.data());
+        return decode_scratch_[slot].data();
+    }
+
+    // One dispatch (cells/256 groups) in its own frame; updates muln_ubo_ (n).
+    void run_single(QRhiComputePipeline* pipe, QRhiShaderResourceBindings* srb) {
+        const int groups = static_cast<int>((cells_ + 255) / 256);
+        QRhiCommandBuffer* cb = nullptr;
+        if (rhi_->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) { return; }
+        QRhiResourceUpdateBatch* u = rhi_->nextResourceUpdateBatch();
+        u->updateDynamicBuffer(muln_ubo_.data(), 0, sizeof(MulParams), &muln_);
+        cb->beginComputePass(u);
+        cb->setComputePipeline(pipe);
+        cb->setShaderResources(srb);
+        cb->dispatch(groups, 1, 1);
+        cb->endComputePass();
+        rhi_->endOffscreenFrame();
+    }
+
+    // A kGroups-wide reduction + readback of `buf` (bytes) into rb; updates muln_.
+    void run_reduce(QRhiComputePipeline* pipe, QRhiShaderResourceBindings* srb,
+                    QRhiBuffer* buf, quint32 bytes, QRhiReadbackResult* rb) {
+        QRhiCommandBuffer* cb = nullptr;
+        if (rhi_->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) { return; }
+        QRhiResourceUpdateBatch* u = rhi_->nextResourceUpdateBatch();
+        u->updateDynamicBuffer(muln_ubo_.data(), 0, sizeof(MulParams), &muln_);
+        cb->beginComputePass(u);
+        cb->setComputePipeline(pipe);
+        cb->setShaderResources(srb);
+        cb->dispatch(kGroups, 1, 1);
+        QRhiResourceUpdateBatch* d = rhi_->nextResourceUpdateBatch();
+        d->readBackBuffer(buf, 0, bytes, rb);
+        cb->endComputePass(d);
+        rhi_->endOffscreenFrame();
+    }
+
+    // Lazily build the inner-product pipeline (if not already built by deflation).
+    bool ensure_inner() {
+        if (!inner_pipe_.isNull()) { return true; }
+        const QShader innercs = load_qsb(QStringLiteral(":/shaders/inner_product.comp.qsb"));
+        if (!innercs.isValid()) { return false; }
+        using B = QRhiShaderResourceBinding;
+        const auto cs = B::ComputeStage;
+        inner_layout_srb_.reset(rhi_->newShaderResourceBindings());
+        inner_layout_srb_->setBindings({ B::bufferLoad(0, cs, psi_.data()),
+                                         B::uniformBuffer(1, cs, muln_ubo_.data()),
+                                         B::bufferLoadStore(2, cs, partials_.data()),
+                                         B::bufferLoad(3, cs, psi_.data()) });
+        if (!inner_layout_srb_->create()) { return false; }
+        inner_pipe_.reset(rhi_->newComputePipeline());
+        inner_pipe_->setShaderStage(QRhiShaderStage(QRhiShaderStage::Compute, innercs));
+        inner_pipe_->setShaderResourceBindings(inner_layout_srb_.data());
+        return inner_pipe_->create();
+    }
+
+    // Lazily build the dipole pipeline + its UBO and 6-float partials buffer.
+    bool ensure_dipole() {
+        if (!dipole_pipe_.isNull()) { return true; }
+        const QShader dipcs = load_qsb(QStringLiteral(":/shaders/dipole.comp.qsb"));
+        if (!dipcs.isValid()) { return false; }
+        dipole_ubo_.reset(rhi_->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer,
+                                          sizeof(DipoleParams)));
+        dipole_partials_.reset(rhi_->newBuffer(QRhiBuffer::Static, QRhiBuffer::StorageBuffer,
+                                               static_cast<quint32>(6 * kGroups * sizeof(float))));
+        if (!dipole_ubo_->create() || !dipole_partials_->create()) { return false; }
+        using B = QRhiShaderResourceBinding;
+        const auto cs = B::ComputeStage;
+        dipole_layout_srb_.reset(rhi_->newShaderResourceBindings());
+        dipole_layout_srb_->setBindings({ B::bufferLoad(0, cs, psi_.data()),
+                                          B::uniformBuffer(1, cs, dipole_ubo_.data()),
+                                          B::bufferLoadStore(2, cs, dipole_partials_.data()),
+                                          B::bufferLoad(3, cs, psi_.data()) });
+        if (!dipole_layout_srb_->create()) { return false; }
+        dipole_pipe_.reset(rhi_->newComputePipeline());
+        dipole_pipe_->setShaderStage(QRhiShaderStage(QRhiShaderStage::Compute, dipcs));
+        dipole_pipe_->setShaderResourceBindings(dipole_layout_srb_.data());
+        return dipole_pipe_->create();
+    }
+
+    // Lazily build the fp16 pack/unpack pipelines + the two decode scratch
+    // buffers. Layout SRBs use the fp32 scratch as binding-6 placeholders (layout
+    // compatibility ignores buffer size).
+    bool ensure_fp16() {
+        if (!unpack_pipe_.isNull()) { return true; }
+        const QShader packcs = load_qsb(QStringLiteral(":/shaders/pack_half.comp.qsb"));
+        const QShader unpackcs = load_qsb(QStringLiteral(":/shaders/unpack_half.comp.qsb"));
+        if (!packcs.isValid() || !unpackcs.isValid()) { return false; }
+        for (int s = 0; s < 2; ++s) {
+            decode_scratch_[s].reset(rhi_->newBuffer(
+                QRhiBuffer::Static, QRhiBuffer::StorageBuffer,
+                static_cast<quint32>(2 * cells_ * sizeof(float))));
+            if (!decode_scratch_[s]->create()) { return false; }
+        }
+        using B = QRhiShaderResourceBinding;
+        const auto cs = B::ComputeStage;
+        pack_layout_srb_.reset(rhi_->newShaderResourceBindings());
+        pack_layout_srb_->setBindings({ B::bufferLoad(0, cs, decode_scratch_[0].data()),
+                                        B::uniformBuffer(1, cs, muln_ubo_.data()),
+                                        B::bufferLoadStore(6, cs, decode_scratch_[1].data()) });
+        unpack_layout_srb_.reset(rhi_->newShaderResourceBindings());
+        unpack_layout_srb_->setBindings({ B::bufferLoadStore(0, cs, decode_scratch_[0].data()),
+                                          B::uniformBuffer(1, cs, muln_ubo_.data()),
+                                          B::bufferLoad(6, cs, decode_scratch_[1].data()) });
+        if (!pack_layout_srb_->create() || !unpack_layout_srb_->create()) { return false; }
+        pack_pipe_.reset(rhi_->newComputePipeline());
+        pack_pipe_->setShaderStage(QRhiShaderStage(QRhiShaderStage::Compute, packcs));
+        pack_pipe_->setShaderResourceBindings(pack_layout_srb_.data());
+        unpack_pipe_.reset(rhi_->newComputePipeline());
+        unpack_pipe_->setShaderStage(QRhiShaderStage(QRhiShaderStage::Compute, unpackcs));
+        unpack_pipe_->setShaderResourceBindings(unpack_layout_srb_.data());
+        return pack_pipe_->create() && unpack_pipe_->create();
+    }
+
     // One shear (own frame): FFT along freq_axis, phase-shift by coeff*coord,
     // then inverse FFT along that axis (conj -> FFT -> conj/n). The freq/conj
     // UBOs are constant per axis; only shear_ubo_ carries this shear's geometry.
@@ -984,6 +1296,17 @@ private:
     QScopedPointer<QRhiBuffer> scratch_bridge_buf_, bridge_ubo_;
     QScopedPointer<QRhiShaderResourceBindings> store_srb_, load_srb_;
     QScopedPointer<QRhiComputePipeline> store_pipe_, load_pipe_;
+
+    // Atlas: resident fp32/fp16 eigenstates + the fp16 codec and the fp32
+    // consumers (inner product, dipole) that read them (fp16 via decode-on-use).
+    std::vector<std::unique_ptr<AtlasState>> atlas_;
+    QScopedPointer<QRhiBuffer> decode_scratch_[2];
+    QScopedPointer<QRhiShaderResourceBindings> pack_layout_srb_, unpack_layout_srb_;
+    QScopedPointer<QRhiComputePipeline> pack_pipe_, unpack_pipe_;
+    QScopedPointer<QRhiShaderResourceBindings> inner_layout_srb_;
+    QScopedPointer<QRhiBuffer> dipole_ubo_, dipole_partials_;
+    QScopedPointer<QRhiShaderResourceBindings> dipole_layout_srb_;
+    QScopedPointer<QRhiComputePipeline> dipole_pipe_;
 };
 
 }  // namespace ses_qrhi

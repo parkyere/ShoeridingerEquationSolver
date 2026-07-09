@@ -1370,6 +1370,64 @@ bool check_bridge(QRhi* rhi) {
     return ok;
 }
 
+// fp16 atlas consumers: an eigenstate stored fp32 and fp16 must give the SAME
+// inner product and dipole matrix elements (to fp16 precision ~1e-3), proving
+// the fp32 consumers read an fp16 state (unpacked on demand) correctly -- the
+// small-VRAM storage fallback. Also checks a mixed fp32/fp16 dipole.
+bool check_fp16_consumers(QRhi* rhi) {
+    const ses::Grid1D axis{-4.0, 4.0, 8};
+    const ses::Grid3D g{axis, axis, axis};
+    const std::vector<double> v = ses::soft_coulomb_potential(g, 1.0, 1.0, ses::Vec3d{});
+    const ses::SplitOperator3D prop{g, v, 0.02};
+    ses::Field3D seed = ses::gaussian_wavepacket(g, ses::Vec3d{}, ses::Vec3d{1.5, 1.5, 1.5},
+                                                 ses::Vec3d{});
+    ses_qrhi::QrhiEngine engine;
+    if (!engine.initialize(rhi, g, prop.half_potential_phase(), prop.kinetic_phase(),
+                           seed.data())) {
+        std::printf("fp16 consumers (QRhi/Vulkan): engine init FAIL\n");
+        return false;
+    }
+    const ses::RadialGrid rg{8.0, 1599};
+    std::vector<double> vr(static_cast<std::size_t>(rg.n));
+    for (int i = 0; i < rg.n; ++i) {
+        vr[static_cast<std::size_t>(i)] = 0.5 * rg.r(i) * rg.r(i);
+    }
+    const ses::RadialState st =
+        ses::radial_eigenstate(rg, ses::radial_hamiltonian(rg, vr, 1), 0);
+    const int s32 = engine.synthesize_state(st.u, 1, 0, rg.h(), rg.rmax, rg.n);
+    const int s16 = engine.synthesize_state_half(st.u, 1, 0, rg.h(), rg.rmax, rg.n);
+    if (s32 < 0 || s16 < 0) {
+        std::printf("fp16 consumers (QRhi/Vulkan): synthesize FAIL\n");
+        return false;
+    }
+
+    ses::Field3D testpsi = ses::gaussian_wavepacket(g, ses::Vec3d{1.0, 0.5, -0.4},
+                                                    ses::Vec3d{1.7, 1.7, 1.7}, ses::Vec3d{});
+    engine.upload_state(testpsi.data());
+
+    const ses::Complex<double> ip32 = engine.inner_state_with_psi(s32);
+    const ses::Complex<double> ip16 = engine.inner_state_with_psi(s16);
+    const double inner_err = std::max(std::abs(ip32.real() - ip16.real()),
+                                      std::abs(ip32.imag() - ip16.imag()));
+
+    const ses::DipoleMatrixElement d32 = engine.dipole_between(s32, s32);
+    const ses::DipoleMatrixElement d16 = engine.dipole_between(s16, s16);
+    const ses::DipoleMatrixElement dmix = engine.dipole_between(s32, s16);
+    auto dip_err = [](const ses::DipoleMatrixElement& a, const ses::DipoleMatrixElement& b) {
+        return std::max({std::abs(a.x.real() - b.x.real()), std::abs(a.y.real() - b.y.real()),
+                         std::abs(a.z.real() - b.z.real()), std::abs(a.x.imag() - b.x.imag()),
+                         std::abs(a.y.imag() - b.y.imag()), std::abs(a.z.imag() - b.z.imag())});
+    };
+    const double d16_err = dip_err(d32, d16);
+    const double dmix_err = dip_err(d32, dmix);
+
+    const double worst = std::max({inner_err, d16_err, dmix_err});
+    const bool ok = worst < 3e-3;
+    std::printf("fp16 consumers (inner/dipole/mixed vs fp32, QRhi/Vulkan): max = %.3e  [%s]\n",
+                worst, ok ? "PASS" : "FAIL");
+    return ok;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1417,6 +1475,7 @@ int main(int argc, char** argv) {
     ok = check_magnetic(rhi.data()) && ok;
     ok = check_synth(rhi.data()) && ok;
     ok = check_bridge(rhi.data()) && ok;
+    ok = check_fp16_consumers(rhi.data()) && ok;
     std::printf("%s\n", ok ? "QRhi kernel checks PASS" : "QRhi kernel checks FAILED");
     return ok ? 0 : 1;
 }
