@@ -12,7 +12,9 @@
 // is also what a later VkFFT drop-in needs (one durable handle).
 
 #include <core/complex.hpp>
+#include <core/drive.hpp>
 #include <core/grid.hpp>
+#include <core/vec.hpp>
 
 #include <rhi/qrhi.h>
 
@@ -52,6 +54,7 @@ public:
                     const std::vector<ses::Complex<double>>& kinetic,
                     const std::vector<ses::Complex<double>>& psi0) {
         rhi_ = rhi;
+        grid_ = grid;
         n_ = grid.x.n;
         cells_ = static_cast<std::size_t>(grid.size());
         if (grid.y.n != n_ || grid.z.n != n_) {
@@ -63,7 +66,10 @@ public:
         const QShader conjcs = load_qsb(QStringLiteral(":/shaders/conj_scale.comp.qsb"));
         const QShader fftcs =
             load_qsb(QStringLiteral(":/shaders/fft_line%1.comp.qsb").arg(n_));
-        if (!mulcs.isValid() || !conjcs.isValid() || !fftcs.isValid()) { return false; }
+        const QShader kickcs = load_qsb(QStringLiteral(":/shaders/dipole_kick.comp.qsb"));
+        if (!mulcs.isValid() || !conjcs.isValid() || !fftcs.isValid() || !kickcs.isValid()) {
+            return false;
+        }
 
         const std::vector<float> psi_f = to_rg32f(psi0);
         const std::vector<float> half_f = to_rg32f(half_v);
@@ -100,6 +106,9 @@ public:
                                               sizeof(FftParams)));
             if (!fft_ubo_[a]->create()) { return false; }
         }
+        kick_ubo_.reset(rhi_->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer,
+                                        sizeof(KickParams)));
+        if (!kick_ubo_->create()) { return false; }
 
         // SRBs. phase_multiply: psi(0) rw, phase(1) ro, n(2) ubo. conj_scale:
         // psi(0) rw, params(1) ubo. fft_line: psi(0) rw, axis(1) ubo.
@@ -124,9 +133,12 @@ public:
             fft_srb_[a]->setBindings({ B::bufferLoadStore(0, cs, psi_.data()),
                                        B::uniformBuffer(1, cs, fft_ubo_[a].data()) });
         }
+        kick_srb_.reset(rhi_->newShaderResourceBindings());
+        kick_srb_->setBindings({ B::bufferLoadStore(0, cs, psi_.data()),
+                                 B::uniformBuffer(1, cs, kick_ubo_.data()) });
         if (!mul_half_srb_->create() || !mul_kin_srb_->create() || !conj1_srb_->create() ||
             !conjN_srb_->create() || !fft_srb_[0]->create() || !fft_srb_[1]->create() ||
-            !fft_srb_[2]->create()) {
+            !fft_srb_[2]->create() || !kick_srb_->create()) {
             return false;
         }
 
@@ -139,7 +151,11 @@ public:
         fft_pipe_.reset(rhi_->newComputePipeline());
         fft_pipe_->setShaderStage(QRhiShaderStage(QRhiShaderStage::Compute, fftcs));
         fft_pipe_->setShaderResourceBindings(fft_srb_[0].data());
-        if (!mul_pipe_->create() || !conj_pipe_->create() || !fft_pipe_->create()) {
+        kick_pipe_.reset(rhi_->newComputePipeline());
+        kick_pipe_->setShaderStage(QRhiShaderStage(QRhiShaderStage::Compute, kickcs));
+        kick_pipe_->setShaderResourceBindings(kick_srb_.data());
+        if (!mul_pipe_->create() || !conj_pipe_->create() || !fft_pipe_->create() ||
+            !kick_pipe_->create()) {
             return false;
         }
 
@@ -163,24 +179,34 @@ public:
         QRhiCommandBuffer* cb = nullptr;
         if (rhi_->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) { return; }
         QRhiResourceUpdateBatch* u = rhi_->nextResourceUpdateBatch();
-        u->updateDynamicBuffer(muln_ubo_.data(), 0, sizeof(MulParams), &muln_);
-        u->updateDynamicBuffer(conj1_ubo_.data(), 0, sizeof(ConjParams), &conj1_);
-        u->updateDynamicBuffer(conjN_ubo_.data(), 0, sizeof(ConjParams), &conjN_);
-        for (int a = 0; a < 3; ++a) {
-            u->updateDynamicBuffer(fft_ubo_[a].data(), 0, sizeof(FftParams), &fftp_[a]);
-        }
+        update_step_ubos(u);
         cb->beginComputePass(u);
         for (int s = 0; s < nsteps; ++s) {
-            multiply(cb, mul_half_srb_.data(), mul_groups);
-            fft3(cb);
-            multiply(cb, mul_kin_srb_.data(), mul_groups);
-            conjscale(cb, conj1_srb_.data(), mul_groups);
-            fft3(cb);
-            conjscale(cb, conjN_srb_.data(), mul_groups);
-            multiply(cb, mul_half_srb_.data(), mul_groups);
+            run_step_body(cb, mul_groups, mul_half_srb_.data(), mul_kin_srb_.data());
         }
         cb->endComputePass();
         rhi_->endOffscreenFrame();
+    }
+
+    // Driven Strang steps (T3): kick(t) . step . kick(t+dt), the tested
+    // core/drive.hpp composition. theta = amplitude cos(omega t) dt/2. Each
+    // half-kick and each step body run in their own frame (a kick's theta
+    // differs each time, and a Dynamic UBO cannot change mid-pass).
+    void driven_step(const ses::DipoleDrive& d, double t0, double dt, int nsteps) {
+        const int mul_groups = static_cast<int>((cells_ + 255) / 256);
+        for (int s = 0; s < nsteps; ++s) {
+            const double t = t0 + s * dt;
+            kick(d.axis, d.amplitude * std::cos(d.omega * t) * 0.5 * dt);
+            QRhiCommandBuffer* cb = nullptr;
+            if (rhi_->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) { return; }
+            QRhiResourceUpdateBatch* u = rhi_->nextResourceUpdateBatch();
+            update_step_ubos(u);
+            cb->beginComputePass(u);
+            run_step_body(cb, mul_groups, mul_half_srb_.data(), mul_kin_srb_.data());
+            cb->endComputePass();
+            rhi_->endOffscreenFrame();
+            kick(d.axis, d.amplitude * std::cos(d.omega * (t + dt)) * 0.5 * dt);
+        }
     }
 
     struct RelaxStats { double energy = 0.0; };
@@ -269,13 +295,7 @@ public:
                 u->updateDynamicBuffer(fft_ubo_[a].data(), 0, sizeof(FftParams), &fftp_[a]);
             }
             cb->beginComputePass(u);
-            multiply(cb, relax_half_srb_.data(), mul_groups);
-            fft3(cb);
-            multiply(cb, relax_kin_srb_.data(), mul_groups);
-            conjscale(cb, conj1_srb_.data(), mul_groups);
-            fft3(cb);
-            conjscale(cb, conjN_srb_.data(), mul_groups);
-            multiply(cb, relax_half_srb_.data(), mul_groups);
+            run_step_body(cb, mul_groups, relax_half_srb_.data(), relax_kin_srb_.data());
             cb->setComputePipeline(norm_pipe_.data());
             cb->setShaderResources(norm_srb_.data());
             cb->dispatch(kGroups, 1, 1);
@@ -329,6 +349,14 @@ private:
     struct alignas(16) MulParams { quint32 n, p0, p1, p2; };
     struct alignas(16) ConjParams { quint32 n; float scale; float p0, p1; };
     struct alignas(16) FftParams { qint32 mod_a, mul_b, mul_c, stride, n_lines, p0, p1, p2; };
+    struct alignas(16) KickParams {
+        quint32 n;
+        qint32 nx, ny;
+        float theta;
+        float box_min[4];
+        float cell_h[4];
+        float axis[4];
+    };
 
     void multiply(QRhiCommandBuffer* cb, QRhiShaderResourceBindings* srb, int groups) {
         cb->setComputePipeline(mul_pipe_.data());
@@ -348,7 +376,60 @@ private:
         }
     }
 
+    void update_step_ubos(QRhiResourceUpdateBatch* u) {
+        u->updateDynamicBuffer(muln_ubo_.data(), 0, sizeof(MulParams), &muln_);
+        u->updateDynamicBuffer(conj1_ubo_.data(), 0, sizeof(ConjParams), &conj1_);
+        u->updateDynamicBuffer(conjN_ubo_.data(), 0, sizeof(ConjParams), &conjN_);
+        for (int a = 0; a < 3; ++a) {
+            u->updateDynamicBuffer(fft_ubo_[a].data(), 0, sizeof(FftParams), &fftp_[a]);
+        }
+    }
+
+    // One split-operator step in the current pass: halfV . IFFT . kin . FFT .
+    // halfV, using the given half/kin multiply bindings (real vs relax tables).
+    void run_step_body(QRhiCommandBuffer* cb, int mul_groups,
+                       QRhiShaderResourceBindings* half_srb,
+                       QRhiShaderResourceBindings* kin_srb) {
+        multiply(cb, half_srb, mul_groups);
+        fft3(cb);
+        multiply(cb, kin_srb, mul_groups);
+        conjscale(cb, conj1_srb_.data(), mul_groups);
+        fft3(cb);
+        conjscale(cb, conjN_srb_.data(), mul_groups);
+        multiply(cb, half_srb, mul_groups);
+    }
+
+    // psi <- exp(-i theta axis.r) psi, one dipole half-kick (own frame).
+    void kick(const ses::Vec3d& axis, double theta) {
+        const int groups = static_cast<int>((cells_ + 255) / 256);
+        KickParams kp{};
+        kp.n = static_cast<quint32>(cells_);
+        kp.nx = grid_.x.n;
+        kp.ny = grid_.y.n;
+        kp.theta = static_cast<float>(theta);
+        kp.box_min[0] = static_cast<float>(grid_.x.xmin);
+        kp.box_min[1] = static_cast<float>(grid_.y.xmin);
+        kp.box_min[2] = static_cast<float>(grid_.z.xmin);
+        kp.cell_h[0] = static_cast<float>(grid_.x.spacing());
+        kp.cell_h[1] = static_cast<float>(grid_.y.spacing());
+        kp.cell_h[2] = static_cast<float>(grid_.z.spacing());
+        kp.axis[0] = static_cast<float>(axis.x);
+        kp.axis[1] = static_cast<float>(axis.y);
+        kp.axis[2] = static_cast<float>(axis.z);
+        QRhiCommandBuffer* cb = nullptr;
+        if (rhi_->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) { return; }
+        QRhiResourceUpdateBatch* u = rhi_->nextResourceUpdateBatch();
+        u->updateDynamicBuffer(kick_ubo_.data(), 0, sizeof(KickParams), &kp);
+        cb->beginComputePass(u);
+        cb->setComputePipeline(kick_pipe_.data());
+        cb->setShaderResources(kick_srb_.data());
+        cb->dispatch(groups, 1, 1);
+        cb->endComputePass();
+        rhi_->endOffscreenFrame();
+    }
+
     QRhi* rhi_ = nullptr;
+    ses::Grid3D grid_{};
     int n_ = 0;
     std::size_t cells_ = 0;
     double dtau_ = 0.0;
@@ -363,6 +444,11 @@ private:
     QScopedPointer<QRhiShaderResourceBindings> mul_half_srb_, mul_kin_srb_, conj1_srb_,
         conjN_srb_, fft_srb_[3];
     QScopedPointer<QRhiComputePipeline> mul_pipe_, conj_pipe_, fft_pipe_;
+
+    // Dipole kick (driven_step): exp(-i theta axis.r) applied in place.
+    QScopedPointer<QRhiBuffer> kick_ubo_;
+    QScopedPointer<QRhiShaderResourceBindings> kick_srb_;
+    QScopedPointer<QRhiComputePipeline> kick_pipe_;
 
     // Imaginary-time relaxation (set_relax_tables / relax_step).
     QScopedPointer<QRhiBuffer> relax_half_, relax_kin_, partials_, scale_ubo_;

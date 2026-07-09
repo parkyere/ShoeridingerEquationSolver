@@ -12,6 +12,7 @@
 #include "qrhi_engine.hpp"
 
 #include <core/complex.hpp>
+#include <core/drive.hpp>
 #include <core/fft.hpp>
 #include <core/field.hpp>
 #include <core/grid.hpp>
@@ -1071,6 +1072,50 @@ bool check_relax(QRhi* rhi) {
     return pass;
 }
 
+// T3 (QRhi): the driven Strang step (dipole half-kicks around the static tables)
+// vs core/drive.hpp driven_step. The drive is the adversarial gpucheck one --
+// skew (non-unit) polarization axis, nonzero omega, nonzero start time -- so the
+// kick uniforms (axis/box_min/cell_h/theta) all get exercised. An 8x8x8 grid is
+// used to match the baked fft_line8 (32^3 would need an unbaked fft_line32).
+bool check_driven(QRhi* rhi) {
+    const ses::Grid1D axis{-4.0, 4.0, 8};
+    const ses::Grid3D g{axis, axis, axis};
+    const std::vector<double> v = ses::soft_coulomb_potential(g, 1.0, 1.0, ses::Vec3d{});
+    const double dt = 0.02;
+    const ses::SplitOperator3D cpu_prop{g, v, dt};
+    const ses::DipoleDrive drive{ses::Vec3d{0.3, -0.2, 1.0}, 0.5, 0.6};
+    ses::Field3D psi0 = ses::gaussian_wavepacket(g, ses::Vec3d{1.0, 0.0, 0.0},
+                                                 ses::Vec3d{1.2, 1.2, 1.2},
+                                                 ses::Vec3d{0.0, 0.5, 0.0});
+
+    ses_qrhi::QrhiEngine engine;
+    if (!engine.initialize(rhi, g, cpu_prop.half_potential_phase(), cpu_prop.kinetic_phase(),
+                           psi0.data())) {
+        std::printf("driven 20 steps (QRhi/Vulkan): engine init FAIL\n");
+        return false;
+    }
+    engine.driven_step(drive, 1.3, dt, 20);
+    std::vector<float> gpu_out;
+    engine.readback(gpu_out);
+
+    ses::Field3D cpu = psi0;
+    ses::driven_step(cpu, cpu_prop, drive, 1.3, 20);
+
+    double max_err = 0.0;
+    double max_mag = 0.0;
+    for (std::size_t i = 0; i < cpu.data().size(); ++i) {
+        max_err = std::max(max_err, std::abs(gpu_out[2 * i] - cpu.data()[i].real()));
+        max_err = std::max(max_err, std::abs(gpu_out[2 * i + 1] - cpu.data()[i].imag()));
+        max_mag = std::max(max_mag, std::abs(cpu.data()[i].real()));
+        max_mag = std::max(max_mag, std::abs(cpu.data()[i].imag()));
+    }
+    const double tol = 1e-4 + 1e-5 * max_mag;
+    const bool pass = max_err < tol;
+    std::printf("driven 20 steps (QRhi/Vulkan): max |gpu - cpu| = %.3e (tol %.3e)  [%s]\n",
+                max_err, tol, pass ? "PASS" : "FAIL");
+    return pass;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1110,6 +1155,7 @@ int main(int argc, char** argv) {
     ok = check_fft3(rhi.data()) && ok;
     ok = check_engine_step(rhi.data()) && ok;
     ok = check_relax(rhi.data()) && ok;
+    ok = check_driven(rhi.data()) && ok;
     std::printf("%s\n", ok ? "QRhi kernel checks PASS" : "QRhi kernel checks FAILED");
     return ok ? 0 : 1;
 }
