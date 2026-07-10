@@ -70,6 +70,7 @@
 #include <core/vram_budget.hpp>
 
 #include "qrhi_engine.hpp"
+#include "scene_renderer.hpp"
 #include "manifold_spec.hpp"
 
 #include <cstring>  // std::strcmp for the VRAM extension probe
@@ -168,7 +169,6 @@ constexpr int kRelaxStepsPerTick = 1;
 constexpr double kRelaxDtau = 0.05;
 constexpr int kTickMs = 16;
 constexpr double kIsoFraction = 0.25;
-constexpr int kPhaseLutSize = 256;
 constexpr double kMeasureSigma = 0.625;  // position measurement resolution (Bohr):
                                          // the sharpest a h = 0.625 grid resolves
                                          // without aliasing (smaller needs finer h)
@@ -176,7 +176,6 @@ constexpr double kMeasureSigma = 0.625;  // position measurement resolution (Boh
 // this gives tau_display ~ 8 a.u. (~3 s of wall time). The title reports the
 // true lifetime and the acceleration factor honestly.
 constexpr double kDecayGammaDisplay = 0.125;
-constexpr double kProtonMarkerRadius = 0.35;  // symbolic (a real proton is ~1e-5 Bohr)
 constexpr double kHaToEv = 27.211386;  // 1 Hartree in eV (physicist-facing display)
 constexpr double kAbsorbWidth = 10.0;  // Bohr: boundary absorber layer thickness
                                        // (interior +-70 Bohr stays untouched --
@@ -254,37 +253,16 @@ protected:
         }
         rhi_ = rhi();
 
+        // The whole render layer (pipelines, samplers, UBOs, static vertex
+        // buffers, phase LUT) lives in SceneRenderer; uploads land on this
+        // frame's batch.
         QRhiResourceUpdateBatch* u = rhi_->nextResourceUpdateBatch();
-
-        // -- shared samplers + per-pass uniform buffers --
-        sampler_3d_.reset(rhi_->newSampler(QRhiSampler::Linear, QRhiSampler::Linear,
-                                           QRhiSampler::None, QRhiSampler::ClampToEdge,
-                                           QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge));
-        sampler_1d_.reset(rhi_->newSampler(QRhiSampler::Linear, QRhiSampler::Linear,
-                                           QRhiSampler::None, QRhiSampler::Repeat,
-                                           QRhiSampler::Repeat, QRhiSampler::Repeat));
-        scene_ubuf_.reset(rhi_->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer,
-                                          sizeof(MeshUbo)));
-        gizmo_ubuf_.reset(rhi_->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer,
-                                          sizeof(MeshUbo)));
-        volume_ubuf_.reset(rhi_->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer,
-                                           sizeof(VolumeUbo)));
-        if (!sampler_3d_->create() || !sampler_1d_->create() || !scene_ubuf_->create() ||
-            !gizmo_ubuf_->create() || !volume_ubuf_->create()) {
-            fatal_rhi_error("render resources", QStringLiteral("sampler/UBO create failed"));
+        if (!renderer_.initialize(rhi_, renderTarget()->renderPassDescriptor(),
+                                  sim_.grid(), u)) {
+            fatal_rhi_error("render resources",
+                            QStringLiteral("SceneRenderer initialization failed "
+                                           "(see stderr)"));
         }
-
-        // -- mesh pipeline (isosurface + proton + gizmo + z label) --
-        create_mesh_resources(u);
-
-        upload_proton_marker(u);
-        upload_axes_gizmo(u);
-
-        // -- volume pipeline + proxy cube + phase LUT --
-        upload_box_cube(u);
-        create_textures(u);
-        create_volume_pipeline();
-
         cb->resourceUpdate(u);
 
         mesh_dirty_ = true;
@@ -620,260 +598,44 @@ protected:
         }
     }
 
-    // The DRAW half of a frame: records resource updates + one render pass on
-    // the widget's command buffer (the frame is owned by QRhiWidget).
+    // The DRAW half of a frame: the shell computes the per-frame inputs
+    // (camera, view mode, brightness, staged uploads) and SceneRenderer
+    // records the resource updates + the one render pass.
     void render(QRhiCommandBuffer* cb) override {
+        ses_shell::SceneRenderer::FrameInput in;
+        in.cloud = (mode_ == ViewMode::Cloud);
+        in.azimuth = azimuth_;
+        in.elevation = elevation_;
+        in.distance = distance_;
+        in.peak = peak_;
+        in.absorbance = absorbance_;
         // Photon flash: a brief warm background right after a quantum jump.
-        QColor clear_color = QColor::fromRgbF(0.04f, 0.05f, 0.09f, 1.0f);
         if (flash_ticks_ > 0) {
-            const float w = static_cast<float>(flash_ticks_) / 25.0f;
-            clear_color = QColor::fromRgbF(0.04f + 0.55f * w, 0.05f + 0.42f * w,
-                                           0.09f + 0.18f * w, 1.0f);
+            in.flash = static_cast<float>(flash_ticks_) / 25.0f;
             --flash_ticks_;
         }
-
-        const QSize out_px = renderTarget()->pixelSize();
-        const double aspect =
-            static_cast<double>(out_px.width()) / std::max(1, out_px.height());
-        // The far plane must always enclose the whole box BEHIND the target, or
-        // the volume's back-face proxy geometry (we cull front faces) gets
-        // clipped and leaves dark triangular holes when zoomed out. Track the
-        // camera distance plus the box's center-to-corner reach -- the farthest
-        // any box point can sit from the eye at any orientation.
-        const ses::Grid3D& gbox = sim_.grid();
-        const double bx = std::max(std::abs(gbox.x.xmin), std::abs(gbox.x.xmax));
-        const double by = std::max(std::abs(gbox.y.xmin), std::abs(gbox.y.xmax));
-        const double bz = std::max(std::abs(gbox.z.xmin), std::abs(gbox.z.xmax));
-        const double box_reach = std::sqrt(bx * bx + by * by + bz * bz);
-        const double zfar = distance_ + box_reach + 1.0;
-        const ses::Mat4 proj =
-            ses::perspective(45.0 * 3.14159265358979323846 / 180.0, aspect, 0.1, zfar);
-        const ses::Vec3d eye = ses::orbit_eye(azimuth_, elevation_, distance_, ses::Vec3d{});
-        const ses::Mat4 view = ses::look_at(eye, ses::Vec3d{}, ses::Vec3d{0.0, 1.0, 0.0});
-        const ses::Mat4 mvp = proj * view;
-
-        QRhiResourceUpdateBatch* u = rhi_->nextResourceUpdateBatch();
-
-        // Scene camera UBO (mesh pass): clip-space corrected for the backend.
-        MeshUbo scene_u{};
-        store_corrected_mvp(mvp, scene_u.mvp);
-        scene_u.eye[0] = static_cast<float>(eye.x);
-        scene_u.eye[1] = static_cast<float>(eye.y);
-        scene_u.eye[2] = static_cast<float>(eye.z);
-        scene_u.eye[3] = 0.0f;
-        u->updateDynamicBuffer(scene_ubuf_.data(), 0, sizeof(MeshUbo), &scene_u);
-
-        // Gizmo camera: the same orbit orientation at a FIXED distance so the
-        // corner overlay keeps a constant screen size.
-        const double d_g = 3.2;  // frames the length-1 arrows in the corner box
-        const ses::Vec3d geye = ses::orbit_eye(azimuth_, elevation_, d_g, ses::Vec3d{});
-        const ses::Mat4 gproj =
-            ses::perspective(45.0 * 3.14159265358979323846 / 180.0, 1.0, 0.1, 50.0);
-        const ses::Mat4 gview = ses::look_at(geye, ses::Vec3d{}, ses::Vec3d{0.0, 1.0, 0.0});
-        const ses::Mat4 gmvp = gproj * gview;
-        MeshUbo gizmo_u{};
-        store_corrected_mvp(gmvp, gizmo_u.mvp);
-        gizmo_u.eye[0] = static_cast<float>(geye.x);
-        gizmo_u.eye[1] = static_cast<float>(geye.y);
-        gizmo_u.eye[2] = static_cast<float>(geye.z);
-        gizmo_u.eye[3] = 0.0f;
-        u->updateDynamicBuffer(gizmo_ubuf_.data(), 0, sizeof(MeshUbo), &gizmo_u);
-
-        // Billboarded "z" glyph verts (rebuilt per frame, dynamic buffer).
-        const std::vector<float> zdata = build_z_label_verts(gview, geye);
-        u->updateDynamicBuffer(zlabel_vbuf_.data(), 0,
-                               static_cast<quint32>(zdata.size() * sizeof(float)),
-                               zdata.data());
-
-        // Volume UBO (Cloud pass).
-        VolumeUbo vol_u{};
-        store_corrected_mvp(mvp, vol_u.mvp);
-        vol_u.eye[0] = static_cast<float>(eye.x);
-        vol_u.eye[1] = static_cast<float>(eye.y);
-        vol_u.eye[2] = static_cast<float>(eye.z);
-        const ses::Grid3D& g = sim_.grid();
-        vol_u.box_min[0] = static_cast<float>(g.x.xmin);
-        vol_u.box_min[1] = static_cast<float>(g.y.xmin);
-        vol_u.box_min[2] = static_cast<float>(g.z.xmin);
-        vol_u.box_max[0] = static_cast<float>(g.x.xmax);
-        vol_u.box_max[1] = static_cast<float>(g.y.xmax);
-        vol_u.box_max[2] = static_cast<float>(g.z.xmax);
-        // The nucleus lives INSIDE the ray marcher (analytic sphere): fogged by
-        // cloud in front, occluding cloud behind.
-        vol_u.proton_center[0] = 0.0f;
-        vol_u.proton_center[1] = 0.0f;
-        vol_u.proton_center[2] = 0.0f;
-        vol_u.proton_color[0] = 1.0f;
-        vol_u.proton_color[1] = 0.45f;
-        vol_u.proton_color[2] = 0.2f;
-        vol_u.inv_peak = static_cast<float>(peak_ > 0.0 ? 1.0 / peak_ : 0.0);
-        vol_u.absorbance = static_cast<float>(absorbance_);
-        vol_u.proton_radius = static_cast<float>(kProtonMarkerRadius);
-        u->updateDynamicBuffer(volume_ubuf_.data(), 0, sizeof(VolumeUbo), &vol_u);
-
-        // Staged uploads for the active view.
-        if (mode_ == ViewMode::Cloud) {
+        // The psi display volume: the engine's bridge texture on the GPU
+        // path; null lets the renderer fall back to its CPU-staged texture.
+        if (gpu_ok_) {
+            in.psi_volume = engine_.volume_texture();
+        }
+        if (in.cloud) {
             if (volume_dirty_) {
-                upload_volume(u);  // CPU-staging path only (fallback texture)
+                // CPU staging only -- the bridge owns the texture on the GPU
+                // path, and until compute init has been ATTEMPTED the 268 MB
+                // fallback texture must not be allocated (it would be orphaned
+                // one frame later and would deflate the VRAM-budget probe).
+                if (compute_init_done_ && !gpu_ok_) {
+                    in.volume_staging = &psi_staging_;
+                }
                 volume_dirty_ = false;
             }
-            ensure_volume_srb();
         } else if (mesh_dirty_) {
-            upload_mesh(u);
+            in.mesh = &mesh_;
+            in.mesh_colors = &colors_;
             mesh_dirty_ = false;
         }
-
-        const QRhiDepthStencilClearValue ds_clear{1.0f, 0};
-        cb->beginPass(renderTarget(), clear_color, ds_clear, u);
-        const QRhiViewport full_vp(0.0f, 0.0f, static_cast<float>(out_px.width()),
-                                   static_cast<float>(out_px.height()));
-        const QRhiScissor full_sc(0, 0, out_px.width(), out_px.height());
-
-        if (mode_ == ViewMode::Cloud) {
-            if (!volume_srb_.isNull()) {
-                cb->setGraphicsPipeline(volume_pipe_.data());
-                cb->setViewport(full_vp);
-                cb->setShaderResources(volume_srb_.data());
-                const QRhiCommandBuffer::VertexInput cube_in(cube_vbuf_.data(), 0);
-                cb->setVertexInput(0, 1, &cube_in);
-                cb->draw(36);
-            }
-        } else {
-            // Surface mode keeps the mesh proton (depth-tested against the
-            // opaque isosurface, so occlusion is already correct there).
-            cb->setGraphicsPipeline(mesh_pipe_.data());
-            cb->setViewport(full_vp);
-            cb->setScissor(full_sc);
-            cb->setShaderResources(scene_srb_.data());
-            const QRhiCommandBuffer::VertexInput proton_in(proton_vbuf_.data(), 0);
-            cb->setVertexInput(0, 1, &proton_in);
-            cb->draw(static_cast<quint32>(proton_vertex_count_));
-            if (!mesh_vbuf_.isNull() && vertex_count_ > 0) {
-                const QRhiCommandBuffer::VertexInput mesh_in(mesh_vbuf_.data(), 0);
-                cb->setVertexInput(0, 1, &mesh_in);
-                cb->draw(static_cast<quint32>(vertex_count_));
-            }
-        }
-
-        // XYZ orientation gizmo in the bottom-left corner, over both views.
-        // GL cleared a scissored depth region; mid-pass clears do not exist in
-        // QRhi, so the corner viewport maps to depth range [0, 0.01] instead:
-        // always in front of the scene, self-occlusion within the gizmo intact.
-        if (gizmo_vertex_count_ > 0) {
-            const int side =
-                std::clamp(std::min(out_px.width(), out_px.height()) / 6, 96, 180);
-            const int margin = side / 8;
-            cb->setGraphicsPipeline(mesh_pipe_.data());
-            cb->setViewport(QRhiViewport(static_cast<float>(margin),
-                                         static_cast<float>(margin),
-                                         static_cast<float>(side),
-                                         static_cast<float>(side), 0.0f, 0.01f));
-            cb->setScissor(QRhiScissor(margin, margin, side, side));
-            cb->setShaderResources(gizmo_srb_.data());
-            const QRhiCommandBuffer::VertexInput gizmo_in(gizmo_vbuf_.data(), 0);
-            cb->setVertexInput(0, 1, &gizmo_in);
-            cb->draw(static_cast<quint32>(gizmo_vertex_count_));
-            // Label only Z; X, Y follow by the right-hand rule.
-            const QRhiCommandBuffer::VertexInput z_in(zlabel_vbuf_.data(), 0);
-            cb->setVertexInput(0, 1, &z_in);
-            cb->draw(18);
-        }
-
-        cb->endPass();
-    }
-
-    // mvp (ses column-major doubles) -> backend-corrected floats. QRhi's
-    // clipSpaceCorrMatrix maps the GL clip conventions the ses camera produces
-    // to the backend's (Vulkan: inverted Y, 0..1 depth).
-    void store_corrected_mvp(const ses::Mat4& mvp, float* out16) const {
-        QMatrix4x4 m;
-        float* d = m.data();  // column-major storage, matches ses::Mat4::m
-        for (int i = 0; i < 16; ++i) {
-            d[i] = static_cast<float>(mvp.m[i]);
-        }
-        const QMatrix4x4 corrected = rhi_->clipSpaceCorrMatrix() * m;
-        std::memcpy(out16, corrected.constData(), 16 * sizeof(float));
-    }
-
-    // A small billboarded "z" glyph just past the +Z arrow tip, always facing
-    // the gizmo camera: 18 verts in the mesh vertex format, rebuilt per frame.
-    std::vector<float> build_z_label_verts(const ses::Mat4& view,
-                                           const ses::Vec3d& eye) const {
-        const ses::Vec3d right{view.m[0], view.m[4], view.m[8]};
-        const ses::Vec3d up{view.m[1], view.m[5], view.m[9]};
-        const ses::Vec3d center{0.0, 0.0, 1.18};  // just past the length-1 tip
-        const double s = 0.24;
-        const ses::Vec3d nrm = normalized(eye - center);  // faces the camera
-
-        // "z" as three strokes in [-0.4,0.4] x [-0.5,0.5]: top bar, diagonal
-        // (top-right -> bottom-left), bottom bar. Each a rectangle (2 tris).
-        std::vector<std::array<double, 2>> pts;
-        auto quad = [&](std::array<double, 2> a, std::array<double, 2> b,
-                        std::array<double, 2> c, std::array<double, 2> d) {
-            pts.push_back(a);
-            pts.push_back(b);
-            pts.push_back(c);
-            pts.push_back(a);
-            pts.push_back(c);
-            pts.push_back(d);
-        };
-        quad({-0.4, 0.5}, {0.4, 0.5}, {0.4, 0.34}, {-0.4, 0.34});      // top bar
-        quad({-0.4, -0.34}, {0.4, -0.34}, {0.4, -0.5}, {-0.4, -0.5});  // bottom
-        const double ax = 0.4, ay = 0.40, bx = -0.4, by = -0.40, ht = 0.11;
-        const double dx = bx - ax, dy = by - ay;
-        const double dl = std::sqrt(dx * dx + dy * dy);
-        const double px = -dy / dl * ht, py = dx / dl * ht;  // perpendicular
-        quad({ax + px, ay + py}, {ax - px, ay - py}, {bx - px, by - py},
-             {bx + px, by + py});  // diagonal bar
-
-        std::vector<float> verts;
-        verts.reserve(pts.size() * 9);
-        for (const std::array<double, 2>& p : pts) {
-            const ses::Vec3d w = center + (p[0] * s) * right + (p[1] * s) * up;
-            verts.push_back(static_cast<float>(w.x));
-            verts.push_back(static_cast<float>(w.y));
-            verts.push_back(static_cast<float>(w.z));
-            verts.push_back(static_cast<float>(nrm.x));
-            verts.push_back(static_cast<float>(nrm.y));
-            verts.push_back(static_cast<float>(nrm.z));
-            verts.push_back(0.75f);
-            verts.push_back(0.85f);
-            verts.push_back(1.0f);
-        }
-        return verts;
-    }
-
-    // (Re)build the volume SRB against the live psi volume texture: the
-    // engine's bridge texture on the GPU path, the widget's fallback texture on
-    // the CPU path. Lazy because the engine texture exists only after
-    // init_compute + the first write; a null texture skips the volume draw.
-    void ensure_volume_srb() {
-        QRhiTexture* tex = nullptr;
-        if (gpu_ok_) {
-            tex = engine_.volume_texture();
-        } else if (!fallback_tex_.isNull()) {
-            tex = fallback_tex_.data();
-        }
-        if (tex == nullptr) {
-            volume_srb_.reset();
-            volume_tex_bound_ = nullptr;
-            return;
-        }
-        if (!volume_srb_.isNull() && volume_tex_bound_ == tex) {
-            return;
-        }
-        using B = QRhiShaderResourceBinding;
-        const auto stages = B::VertexStage | B::FragmentStage;
-        volume_srb_.reset(rhi_->newShaderResourceBindings());
-        volume_srb_->setBindings({
-            B::uniformBuffer(0, stages, volume_ubuf_.data()),
-            B::sampledTexture(1, B::FragmentStage, tex, sampler_3d_.data()),
-            B::sampledTexture(2, B::FragmentStage, phase_tex_.data(), sampler_1d_.data()),
-        });
-        if (!volume_srb_->create()) {
-            fatal_rhi_error("volume bindings", QStringLiteral("SRB create failed"));
-        }
-        volume_tex_bound_ = tex;
+        renderer_.render(cb, renderTarget(), in);
     }
 
     void mousePressEvent(QMouseEvent* e) override { last_pos_ = e->position(); }
@@ -1922,316 +1684,12 @@ private:
                  : QStringLiteral("  measured %1").arg(last_measure_)));
     }
 
-    // ---- QRhi resource builders (render side) ---------------------------
-
     // Bridge psi to the display texture. The magnetic field now evolves psi
     // itself (MagneticPropagator on the GPU: diamagnetic in the potential +
     // exact three-shear paramagnetic rotation), so the display is just the
     // real wavefunction -- no display-only rotation trick.
     void write_display_texture() {
         engine_.write_psi_to_volume();
-    }
-
-    // Load a baked .qsb from the resource system; fatal if it is missing
-    // (a build error: the shader is baked into this executable).
-    QShader load_render_shader(const char* path) {
-        const QShader sh = ses_qrhi::load_qsb(QLatin1String(path));
-        if (!sh.isValid()) {
-            fatal_rhi_error("shader load failed", QLatin1String(path));
-        }
-        return sh;
-    }
-
-    // The mesh graphics pipeline (isosurface + proton + gizmo + z label):
-    // interleaved pos3/normal3/color3 vertices, depth-tested and -written, no
-    // blend, no cull (the headlight shading uses abs(dot)); UsesScissor so the
-    // gizmo can clip to its corner (scene draws set a full-rect scissor).
-    void create_mesh_resources(QRhiResourceUpdateBatch* u) {
-        Q_UNUSED(u);
-        using B = QRhiShaderResourceBinding;
-        const auto stages = B::VertexStage | B::FragmentStage;
-        scene_srb_.reset(rhi_->newShaderResourceBindings());
-        scene_srb_->setBindings({ B::uniformBuffer(0, stages, scene_ubuf_.data()) });
-        gizmo_srb_.reset(rhi_->newShaderResourceBindings());
-        gizmo_srb_->setBindings({ B::uniformBuffer(0, stages, gizmo_ubuf_.data()) });
-        if (!scene_srb_->create() || !gizmo_srb_->create()) {
-            fatal_rhi_error("mesh bindings", QStringLiteral("SRB create failed"));
-        }
-
-        // Dynamic vertex buffer for the billboarded "z" glyph (18 verts,
-        // rebuilt per frame).
-        zlabel_vbuf_.reset(rhi_->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::VertexBuffer,
-                                           18 * 9 * sizeof(float)));
-        if (!zlabel_vbuf_->create()) {
-            fatal_rhi_error("z label buffer", QStringLiteral("create failed"));
-        }
-
-        mesh_pipe_.reset(rhi_->newGraphicsPipeline());
-        mesh_pipe_->setShaderStages({
-            { QRhiShaderStage::Vertex, load_render_shader(":/shaders/mesh.vert.qsb") },
-            { QRhiShaderStage::Fragment, load_render_shader(":/shaders/mesh.frag.qsb") },
-        });
-        QRhiVertexInputLayout mesh_layout;
-        mesh_layout.setBindings({ QRhiVertexInputBinding(9 * sizeof(float)) });
-        mesh_layout.setAttributes({
-            QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float3, 0),
-            QRhiVertexInputAttribute(0, 1, QRhiVertexInputAttribute::Float3,
-                                     3 * sizeof(float)),
-            QRhiVertexInputAttribute(0, 2, QRhiVertexInputAttribute::Float3,
-                                     6 * sizeof(float)),
-        });
-        mesh_pipe_->setVertexInputLayout(mesh_layout);
-        mesh_pipe_->setShaderResourceBindings(scene_srb_.data());
-        mesh_pipe_->setRenderPassDescriptor(renderTarget()->renderPassDescriptor());
-        mesh_pipe_->setTopology(QRhiGraphicsPipeline::Triangles);
-        mesh_pipe_->setCullMode(QRhiGraphicsPipeline::None);
-        mesh_pipe_->setDepthTest(true);
-        mesh_pipe_->setDepthWrite(true);
-        mesh_pipe_->setDepthOp(QRhiGraphicsPipeline::Less);
-        mesh_pipe_->setFlags(QRhiGraphicsPipeline::UsesScissor);
-        if (!mesh_pipe_->create()) {
-            fatal_rhi_error("mesh pipeline", QStringLiteral("create failed"));
-        }
-    }
-
-    // The volume graphics pipeline: the box proxy rasterizes its BACK faces
-    // (cull front -- works with the eye inside the box too), no depth,
-    // premultiplied-alpha blend over the clear color.
-    void create_volume_pipeline() {
-        volume_pipe_.reset(rhi_->newGraphicsPipeline());
-        volume_pipe_->setShaderStages({
-            { QRhiShaderStage::Vertex, load_render_shader(":/shaders/volume.vert.qsb") },
-            { QRhiShaderStage::Fragment, load_render_shader(":/shaders/volume.frag.qsb") },
-        });
-        QRhiVertexInputLayout cube_layout;
-        cube_layout.setBindings({ QRhiVertexInputBinding(3 * sizeof(float)) });
-        cube_layout.setAttributes({
-            QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float3, 0),
-        });
-        volume_pipe_->setVertexInputLayout(cube_layout);
-        // Layout template only: the live SRB (ensure_volume_srb) swaps the psi
-        // texture between the engine bridge and the CPU fallback. The phase LUT
-        // stands in for the (layout-compatible) 3D slot at pipeline build.
-        using B = QRhiShaderResourceBinding;
-        const auto stages = B::VertexStage | B::FragmentStage;
-        volume_layout_srb_.reset(rhi_->newShaderResourceBindings());
-        volume_layout_srb_->setBindings({
-            B::uniformBuffer(0, stages, volume_ubuf_.data()),
-            B::sampledTexture(1, B::FragmentStage, phase_tex_.data(), sampler_3d_.data()),
-            B::sampledTexture(2, B::FragmentStage, phase_tex_.data(), sampler_1d_.data()),
-        });
-        if (!volume_layout_srb_->create()) {
-            fatal_rhi_error("volume layout bindings", QStringLiteral("SRB create failed"));
-        }
-        volume_pipe_->setShaderResourceBindings(volume_layout_srb_.data());
-        volume_pipe_->setRenderPassDescriptor(renderTarget()->renderPassDescriptor());
-        volume_pipe_->setTopology(QRhiGraphicsPipeline::Triangles);
-        volume_pipe_->setCullMode(QRhiGraphicsPipeline::Front);
-        volume_pipe_->setDepthTest(false);
-        volume_pipe_->setDepthWrite(false);
-        QRhiGraphicsPipeline::TargetBlend blend;
-        blend.enable = true;  // defaults are premultiplied One/OneMinusSrcAlpha
-        volume_pipe_->setTargetBlends({ blend });
-        if (!volume_pipe_->create()) {
-            fatal_rhi_error("volume pipeline", QStringLiteral("create failed"));
-        }
-    }
-
-    // Pack a ses::Mesh + per-vertex colors into the interleaved mesh format.
-    static std::vector<float> interleave_mesh(const ses::Mesh& mesh,
-                                              const float* solid_rgb,
-                                              const std::vector<ses::Rgb>* colors) {
-        std::vector<float> out;
-        out.reserve(mesh.vertices.size() * 9);
-        for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
-            const ses::Vec3d& pt = mesh.vertices[i];
-            const ses::Vec3d& n = mesh.normals[i];
-            out.push_back(static_cast<float>(pt.x));
-            out.push_back(static_cast<float>(pt.y));
-            out.push_back(static_cast<float>(pt.z));
-            out.push_back(static_cast<float>(n.x));
-            out.push_back(static_cast<float>(n.y));
-            out.push_back(static_cast<float>(n.z));
-            if (colors != nullptr) {
-                out.push_back(static_cast<float>((*colors)[i].r));
-                out.push_back(static_cast<float>((*colors)[i].g));
-                out.push_back(static_cast<float>((*colors)[i].b));
-            } else {
-                out.push_back(solid_rgb[0]);
-                out.push_back(solid_rgb[1]);
-                out.push_back(solid_rgb[2]);
-            }
-        }
-        return out;
-    }
-
-    // XYZ orientation gizmo: three arrows from the origin -- X red, Y green,
-    // Z blue -- baked into the mesh vertex format (per-vertex color). Uploaded
-    // once; drawn each frame by the gizmo overlay in render().
-    void upload_axes_gizmo(QRhiResourceUpdateBatch* u) {
-        struct Axis {
-            ses::Vec3d dir;
-            float r, g, b;
-        };
-        const Axis axes[3] = {
-            {ses::Vec3d{1.0, 0.0, 0.0}, 0.95f, 0.25f, 0.25f},  // X red
-            {ses::Vec3d{0.0, 1.0, 0.0}, 0.30f, 0.85f, 0.30f},  // Y green
-            {ses::Vec3d{0.0, 0.0, 1.0}, 0.35f, 0.55f, 1.00f},  // Z blue
-        };
-        std::vector<float> interleaved;
-        for (const Axis& ax : axes) {
-            const ses::Mesh arrow = ses::arrow_mesh(ax.dir, 1.0, 0.045, 0.13, 0.32, 16);
-            const float rgb[3] = {ax.r, ax.g, ax.b};
-            const std::vector<float> part = interleave_mesh(arrow, rgb, nullptr);
-            interleaved.insert(interleaved.end(), part.begin(), part.end());
-        }
-        gizmo_vertex_count_ = static_cast<int>(interleaved.size() / 9);
-        gizmo_vbuf_.reset(rhi_->newBuffer(
-            QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer,
-            static_cast<quint32>(interleaved.size() * sizeof(float))));
-        if (!gizmo_vbuf_->create()) {
-            fatal_rhi_error("gizmo buffer", QStringLiteral("create failed"));
-        }
-        u->uploadStaticBuffer(gizmo_vbuf_.data(), interleaved.data());
-    }
-
-    // Static warm-colored sphere at the nucleus, in the mesh vertex format.
-    void upload_proton_marker(QRhiResourceUpdateBatch* u) {
-        const ses::Mesh sphere = ses::sphere_mesh(ses::Vec3d{}, kProtonMarkerRadius, 16, 24);
-        const float rgb[3] = {1.0f, 0.45f, 0.20f};  // warm proton color
-        const std::vector<float> interleaved = interleave_mesh(sphere, rgb, nullptr);
-        proton_vertex_count_ = static_cast<int>(sphere.vertices.size());
-        proton_vbuf_.reset(rhi_->newBuffer(
-            QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer,
-            static_cast<quint32>(interleaved.size() * sizeof(float))));
-        if (!proton_vbuf_->create()) {
-            fatal_rhi_error("proton buffer", QStringLiteral("create failed"));
-        }
-        u->uploadStaticBuffer(proton_vbuf_.data(), interleaved.data());
-    }
-
-    void upload_box_cube(QRhiResourceUpdateBatch* u) {
-        const ses::Grid3D& g = sim_.grid();
-        const float lo[3] = {static_cast<float>(g.x.xmin), static_cast<float>(g.y.xmin),
-                             static_cast<float>(g.z.xmin)};
-        const float hi[3] = {static_cast<float>(g.x.xmax), static_cast<float>(g.y.xmax),
-                             static_cast<float>(g.z.xmax)};
-        // 12 triangles, CCW seen from OUTSIDE (verified per-face normals).
-        const float v[] = {
-            lo[0],lo[1],lo[2], lo[0],lo[1],hi[2], lo[0],hi[1],hi[2],
-            lo[0],lo[1],lo[2], lo[0],hi[1],hi[2], lo[0],hi[1],lo[2],
-            hi[0],lo[1],lo[2], hi[0],hi[1],lo[2], hi[0],hi[1],hi[2],
-            hi[0],lo[1],lo[2], hi[0],hi[1],hi[2], hi[0],lo[1],hi[2],
-            lo[0],lo[1],lo[2], hi[0],lo[1],lo[2], hi[0],lo[1],hi[2],
-            lo[0],lo[1],lo[2], hi[0],lo[1],hi[2], lo[0],lo[1],hi[2],
-            lo[0],hi[1],lo[2], lo[0],hi[1],hi[2], hi[0],hi[1],hi[2],
-            lo[0],hi[1],lo[2], hi[0],hi[1],hi[2], hi[0],hi[1],lo[2],
-            lo[0],lo[1],lo[2], lo[0],hi[1],lo[2], hi[0],hi[1],lo[2],
-            lo[0],lo[1],lo[2], hi[0],hi[1],lo[2], hi[0],lo[1],lo[2],
-            lo[0],lo[1],hi[2], hi[0],lo[1],hi[2], hi[0],hi[1],hi[2],
-            lo[0],lo[1],hi[2], hi[0],hi[1],hi[2], lo[0],hi[1],hi[2],
-        };
-        cube_vbuf_.reset(rhi_->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer,
-                                         sizeof(v)));
-        if (!cube_vbuf_->create()) {
-            fatal_rhi_error("cube buffer", QStringLiteral("create failed"));
-        }
-        u->uploadStaticBuffer(cube_vbuf_.data(), v);
-    }
-
-    void create_textures(QRhiResourceUpdateBatch* u) {
-        // The TESTED cyclic phase colormap, baked to a repeating 1D texture.
-        // QRhi has no 3-channel float format, so RGBA32F with alpha = 1; the
-        // REPEAT sampler (sampler_1d_) preserves the cyclic wraparound.
-        if (!rhi_->isFeatureSupported(QRhi::OneDimensionalTextures)) {
-            fatal_rhi_error("1D textures unsupported",
-                            QStringLiteral("the phase LUT needs 1D texture support"));
-        }
-        const std::vector<ses::Rgb> lut = ses::phase_lut(kPhaseLutSize);
-        QByteArray lut_f(static_cast<qsizetype>(lut.size()) * 4 * sizeof(float),
-                         Qt::Uninitialized);
-        float* dst = reinterpret_cast<float*>(lut_f.data());
-        for (std::size_t i = 0; i < lut.size(); ++i) {
-            dst[4 * i + 0] = static_cast<float>(lut[i].r);
-            dst[4 * i + 1] = static_cast<float>(lut[i].g);
-            dst[4 * i + 2] = static_cast<float>(lut[i].b);
-            dst[4 * i + 3] = 1.0f;
-        }
-        phase_tex_.reset(rhi_->newTexture(QRhiTexture::RGBA32F, QSize(kPhaseLutSize, 1), 1,
-                                          QRhiTexture::OneDimensional));
-        if (!phase_tex_->create()) {
-            fatal_rhi_error("phase LUT texture", QStringLiteral("create failed"));
-        }
-        QRhiTextureSubresourceUploadDescription sub(lut_f.constData(), lut_f.size());
-        u->uploadTexture(phase_tex_.data(),
-                         QRhiTextureUploadDescription({ QRhiTextureUploadEntry(0, 0, sub) }));
-        // The psi display volume on the GPU path is the ENGINE's bridge texture
-        // (engine_.volume_texture()); the CPU fallback texture is created lazily
-        // by upload_volume when the engine is unavailable.
-    }
-
-    // CPU staging path (GPU engine unavailable): convert the RG staging field
-    // to RGBA texels and upload the whole volume, slice by slice.
-    void upload_volume(QRhiResourceUpdateBatch* u) {
-        // The bridge owns the texture on the GPU path; and until compute init
-        // has been ATTEMPTED (second paint), do not allocate the 268 MB CPU
-        // fallback texture that the GPU path would orphan one frame later
-        // (it would also deflate the VRAM-budget probe init_compute uses).
-        if (gpu_ok_ || !compute_init_done_) {
-            return;
-        }
-        const ses::Grid3D& g = sim_.grid();
-        const int nx = g.x.n;
-        const int ny = g.y.n;
-        const int nz = g.z.n;
-        if (fallback_tex_.isNull()) {
-            fallback_tex_.reset(rhi_->newTexture(QRhiTexture::RGBA32F, nx, ny, nz, 1,
-                                                 QRhiTexture::ThreeDimensional));
-            if (!fallback_tex_->create()) {
-                fatal_rhi_error("fallback volume texture", QStringLiteral("create failed"));
-            }
-        }
-        const std::size_t cells = static_cast<std::size_t>(g.size());
-        QByteArray rgba(static_cast<qsizetype>(cells) * 4 * sizeof(float),
-                        Qt::Uninitialized);
-        float* dst = reinterpret_cast<float*>(rgba.data());
-        for (std::size_t i = 0; i < cells; ++i) {
-            dst[4 * i + 0] = psi_staging_[2 * i];
-            dst[4 * i + 1] = psi_staging_[2 * i + 1];
-            dst[4 * i + 2] = 0.0f;
-            dst[4 * i + 3] = 0.0f;
-        }
-        // For 3D textures the upload-entry layer is the z slice.
-        const qsizetype slice_bytes =
-            static_cast<qsizetype>(nx) * ny * 4 * sizeof(float);
-        QVarLengthArray<QRhiTextureUploadEntry, 256> entries;
-        for (int z = 0; z < nz; ++z) {
-            QRhiTextureSubresourceUploadDescription sub(
-                rgba.constData() + static_cast<qsizetype>(z) * slice_bytes, slice_bytes);
-            entries.append(QRhiTextureUploadEntry(z, 0, sub));
-        }
-        QRhiTextureUploadDescription desc;
-        desc.setEntries(entries.cbegin(), entries.cend());
-        u->uploadTexture(fallback_tex_.data(), desc);
-    }
-
-    // Refill the isosurface vertex buffer from the current marching-cubes mesh
-    // (Dynamic-sized: recreate when the mesh outgrows the buffer).
-    void upload_mesh(QRhiResourceUpdateBatch* u) {
-        const std::vector<float> interleaved = interleave_mesh(mesh_, nullptr, &colors_);
-        vertex_count_ = static_cast<int>(mesh_.vertices.size());
-        const quint32 bytes = static_cast<quint32>(interleaved.size() * sizeof(float));
-        if (bytes == 0) {
-            return;
-        }
-        if (mesh_vbuf_.isNull() || mesh_vbuf_->size() < bytes) {
-            mesh_vbuf_.reset(rhi_->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::VertexBuffer,
-                                             bytes));
-            if (!mesh_vbuf_->create()) {
-                fatal_rhi_error("mesh buffer", QStringLiteral("create failed"));
-            }
-        }
-        u->updateDynamicBuffer(mesh_vbuf_.data(), 0, bytes, interleaved.data());
     }
 
     ses::WavepacketSimulation sim_;
@@ -2328,54 +1786,18 @@ private:
     bool volume_dirty_ = false;
     long long ticks_ = 0;
 
-    // std140-compatible per-pass uniform blocks (match mesh/volume .vert/.frag).
-    struct MeshUbo {
-        float mvp[16];
-        float eye[4];
-    };
-    struct VolumeUbo {
-        float mvp[16];
-        float eye[4];
-        float box_min[4];
-        float box_max[4];
-        float proton_center[4];
-        float proton_color[4];
-        float inv_peak = 0.0f;
-        float absorbance = 0.0f;
-        float proton_radius = 0.0f;
-        float pad0 = 0.0f;
-    };
-
     static std::array<int, kNumStates> make_unset_handles() {
         std::array<int, kNumStates> a{};
         a.fill(-1);
         return a;
     }
 
-    // Mesh pass (isosurface + proton + gizmo + z label).
-    QScopedPointer<QRhiGraphicsPipeline> mesh_pipe_;
-    QScopedPointer<QRhiBuffer> scene_ubuf_, gizmo_ubuf_;
-    QScopedPointer<QRhiShaderResourceBindings> scene_srb_, gizmo_srb_;
-    QScopedPointer<QRhiBuffer> mesh_vbuf_;    // dynamic, grows with the mesh
-    int vertex_count_ = 0;
-    QScopedPointer<QRhiBuffer> proton_vbuf_;
-    int proton_vertex_count_ = 0;
-    QScopedPointer<QRhiBuffer> gizmo_vbuf_;
-    int gizmo_vertex_count_ = 0;
-    QScopedPointer<QRhiBuffer> zlabel_vbuf_;  // billboarded "z", rebuilt each frame
+    // The whole render layer (Stage 4): pipelines, buffers, textures, and the
+    // per-frame record live in SceneRenderer; the shell hands it FrameInputs.
+    ses_shell::SceneRenderer renderer_;
+
     int mask_buf_ = -1;  // boundary absorber (mask, 0) complex state handle
     std::mt19937 rng_{std::random_device{}()};
-
-    // Volume pass (Cloud view).
-    QScopedPointer<QRhiGraphicsPipeline> volume_pipe_;
-    QScopedPointer<QRhiBuffer> volume_ubuf_;
-    QScopedPointer<QRhiShaderResourceBindings> volume_layout_srb_;  // pipeline template
-    QScopedPointer<QRhiShaderResourceBindings> volume_srb_;         // live (psi texture)
-    QRhiTexture* volume_tex_bound_ = nullptr;
-    QScopedPointer<QRhiBuffer> cube_vbuf_;
-    QScopedPointer<QRhiTexture> phase_tex_;
-    QScopedPointer<QRhiTexture> fallback_tex_;  // CPU staging path only
-    QScopedPointer<QRhiSampler> sampler_3d_, sampler_1d_;
 
     double azimuth_ = 0.6;
     double elevation_ = 0.4;
