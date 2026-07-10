@@ -61,6 +61,7 @@
 #include <core/marching_cubes.hpp>
 #include <core/observables.hpp>
 #include <core/potential.hpp>
+#include <core/projection.hpp>
 #include <core/sampling.hpp>
 #include <core/simulation.hpp>
 #include <core/sphere.hpp>
@@ -74,6 +75,7 @@
 #include <cstring>  // std::strcmp for the VRAM extension probe
 
 #include <QApplication>
+#include <QImage>
 #include <QKeyEvent>
 #include <QMainWindow>
 #include <QMatrix4x4>
@@ -85,6 +87,7 @@
 #include <QLabel>
 #include <QSlider>
 #include <QToolBar>
+#include <QVulkanFunctions>
 #include <QVulkanInstance>
 #include <QWheelEvent>
 
@@ -790,21 +793,21 @@ protected:
         quad({ax + px, ay + py}, {ax - px, ay - py}, {bx - px, by - py},
              {bx + px, by + py});  // diagonal bar
 
-        std::vector<float> data;
-        data.reserve(pts.size() * 9);
+        std::vector<float> verts;
+        verts.reserve(pts.size() * 9);
         for (const std::array<double, 2>& p : pts) {
             const ses::Vec3d w = center + (p[0] * s) * right + (p[1] * s) * up;
-            data.push_back(static_cast<float>(w.x));
-            data.push_back(static_cast<float>(w.y));
-            data.push_back(static_cast<float>(w.z));
-            data.push_back(static_cast<float>(nrm.x));
-            data.push_back(static_cast<float>(nrm.y));
-            data.push_back(static_cast<float>(nrm.z));
-            data.push_back(0.75f);
-            data.push_back(0.85f);
-            data.push_back(1.0f);
+            verts.push_back(static_cast<float>(w.x));
+            verts.push_back(static_cast<float>(w.y));
+            verts.push_back(static_cast<float>(w.z));
+            verts.push_back(static_cast<float>(nrm.x));
+            verts.push_back(static_cast<float>(nrm.y));
+            verts.push_back(static_cast<float>(nrm.z));
+            verts.push_back(0.75f);
+            verts.push_back(0.85f);
+            verts.push_back(1.0f);
         }
-        return data;
+        return verts;
     }
 
     // (Re)build the volume SRB against the live psi volume texture: the
@@ -883,9 +886,7 @@ public:
         }
         sim_ = make_simulation();
         stepping_ = Stepping::RealTime;
-        makeCurrent();
         free_deflation_buffers();  // drop any owned deflation phi
-        doneCurrent();
         laser_pol_ = LaserPol::Off;  // reset returns to the vanilla packet demo
         bfield_b_ = 0.0;             // and to no magnetic field
         upload_field_tables();    // restore the base half-potential
@@ -1012,9 +1013,7 @@ public:
         }
         static constexpr int kCycle[] = {k3DZ0, k4F0, k3S, k4S};
         const int idx = kCycle[excite_cycle_++ % 4];
-        makeCurrent();
         collapse_onto(idx);
-        doneCurrent();
         cpu_is_truth_ = false;  // the GPU state is ahead now
         stepping_ = Stepping::RealTime;
         after_control();
@@ -1109,7 +1108,6 @@ public:
         if (!gpu_ok_) {
             return;
         }
-        makeCurrent();
         if (efield_e0_ > 0.0 || bfield_b_ > 0.0) {
             const ses::Grid3D& g = sim_.grid();
             std::vector<double> v = sim_.potential();
@@ -1134,7 +1132,6 @@ public:
         } else {
             engine_.set_half_potential(sim_.propagator().half_potential_phase());
         }
-        doneCurrent();
     }
 
     long long photon_count() const { return photon_count_; }
@@ -1157,9 +1154,7 @@ public:
         if (!manifold_ready() || idx < 0 || idx >= kNumStates) {
             return;
         }
-        makeCurrent();
         collapse_onto(idx);
-        doneCurrent();
         cpu_is_truth_ = false;
         stepping_ = Stepping::RealTime;
         after_control();
@@ -1168,10 +1163,8 @@ public:
         if (!manifold_ready() || idx < 0 || idx >= kNumStates) {
             return 0.0;
         }
-        makeCurrent();
         engine_.project_psi();
         const double p = project_population(idx);
-        doneCurrent();
         return p;
     }
 
@@ -1208,7 +1201,6 @@ protected:
         // Deflation set synthesized into OWNED transient fp32 buffers (no resident
         // atlas): freed at auto-complete / reset / the next relaxation.
         // relax_deflated_step reads them as fp32 phi every relax frame.
-        makeCurrent();
         free_deflation_buffers();
         relax_deflate_.push_back(synth_transient(kS1));
         if (deflate_p_triplet) {
@@ -1217,7 +1209,6 @@ protected:
             relax_deflate_.push_back(synth_transient(kP2Z));
         }
         relax_deflate_owned_ = relax_deflate_;
-        doneCurrent();
         sim_.set_psi(seed);
         cpu_is_truth_ = true;
         relax_label_ = label;
@@ -1566,16 +1557,15 @@ protected:
         // across its consecutive channels (pairs are grouped by 'from'), and
         // synthesize each 'to' fresh -- peak residency is 2 orbitals, never 91.
         if (pair_from_idx_ != p.first) {
-            if (pair_from_buf_ != 0) {
-                glDeleteBuffers(1, &pair_from_buf_);
+            if (pair_from_buf_ >= 0) {
+                engine_.release_state(pair_from_buf_);
             }
             pair_from_buf_ = synth_transient(p.first);
             pair_from_idx_ = p.first;
         }
-        GLuint to_buf = synth_transient(p.second);
-        const ses::DipoleMatrixElement d =
-            engine_.dipole_between(*this, to_buf, pair_from_buf_);
-        glDeleteBuffers(1, &to_buf);
+        const int to_buf = synth_transient(p.second);
+        const ses::DipoleMatrixElement d = engine_.dipole_between(to_buf, pair_from_buf_);
+        engine_.release_state(to_buf);
         channels_.push_back(ShellChannel{
             p.first, p.second, ses::einstein_a(gap, ses::dipole_strength_sq(d)), 0.0});
         if (p.first == kP2Z && p.second == kS1) {
@@ -1612,27 +1602,20 @@ protected:
 
     // T7: the blocking fallbacks are now thin wrappers over synthesis --
     // after the startup atlas everything is already cached, so these cost
-    // nothing; if called early they synthesize just what is needed. All
-    // need a current GL context only for buffer creation (ensure_state),
-    // hence the makeCurrent bracket.
-    bool prepare_ground_cache() {
-        makeCurrent();
-        const bool ok = ensure_state(kS1);
-        doneCurrent();
-        return ok;
-    }
+    // nothing; if called early they synthesize just what is needed. The
+    // engine drives its own offscreen frames, so no context bracket is
+    // needed (legal any time between widget paints).
+    bool prepare_ground_cache() { return ensure_state(kS1); }
 
     // The laser pair (1s + 2p_z); dipole_z_ (the T3 drive strength) comes
     // from the channel table or is computed here if the table is not up.
     bool prepare_excited_cache() {
-        makeCurrent();
         const bool ok = ensure_state(kS1) && ensure_state(kP2Z);
         if (ok && dipole_z_ == 0.0) {
             const ses::DipoleMatrixElement d =
-                engine_.dipole_between(*this, handle(kP2Z), handle(kS1));
+                engine_.dipole_between(handle(kP2Z), handle(kS1));
             dipole_z_ = std::abs(d.z);
         }
-        doneCurrent();
         return ok;
     }
 
@@ -1640,20 +1623,16 @@ protected:
         if (!prepare_excited_cache()) {
             return false;
         }
-        makeCurrent();
-        const bool ok = ensure_state(kP2X) && ensure_state(kP2Y);
-        doneCurrent();
-        return ok;
+        return ensure_state(kP2X) && ensure_state(kP2Y);
     }
 
     bool prepare_manifold_cache() {
         if (!channels_.empty()) {
             return true;
         }
-        // One context bracket over the whole build: ensure_state uploads the
-        // buffers and evaluate_channel_pair reduces the dipoles on the GPU, so
-        // both need the context current (the dipoles no longer touch the CPU).
-        makeCurrent();
+        // The whole blocking build: ensure_state uploads the buffers and
+        // evaluate_channel_pair reduces the dipoles on the GPU (the dipoles no
+        // longer touch the CPU); the engine owns its frames.
         bool ok = true;
         for (int idx = 0; idx < kNumStates && ok; ++idx) {
             ok = ensure_state(idx);
@@ -1665,7 +1644,6 @@ protected:
                 pair_queue_.pop_back();
             }
         }
-        doneCurrent();
         if (!ok) {
             return false;
         }
@@ -1731,7 +1709,7 @@ protected:
                 after_control();
                 break;
             default:
-                QOpenGLWidget::keyPressEvent(e);
+                QRhiWidget::keyPressEvent(e);
                 return;
         }
     }
@@ -1781,9 +1759,7 @@ private:
         if (cpu_is_truth_ || !gpu_ok_) {
             return;
         }
-        makeCurrent();
         engine_.readback(readback_buf_);
-        doneCurrent();
         ses::Field3D f{sim_.grid()};
         for (std::size_t i = 0; i < f.data().size(); ++i) {
             f.data()[i] = ses::Complex<double>{readback_buf_[2 * i], readback_buf_[2 * i + 1]};
@@ -1814,13 +1790,13 @@ private:
 
     // Pack complex psi into RG float pairs and track the density peak.
     void stage_volume() {
-        const auto& data = sim_.psi().data();
-        psi_staging_.resize(data.size() * 2);
+        const auto& field = sim_.psi().data();
+        psi_staging_.resize(field.size() * 2);
         double peak = 0.0;
-        for (std::size_t i = 0; i < data.size(); ++i) {
-            psi_staging_[2 * i] = static_cast<float>(data[i].real());
-            psi_staging_[2 * i + 1] = static_cast<float>(data[i].imag());
-            peak = std::max(peak, ses::norm_sq(data[i]));
+        for (std::size_t i = 0; i < field.size(); ++i) {
+            psi_staging_[2 * i] = static_cast<float>(field[i].real());
+            psi_staging_[2 * i + 1] = static_cast<float>(field[i].imag());
+            peak = std::max(peak, ses::norm_sq(field[i]));
         }
         peak_ = peak;
     }
@@ -1905,7 +1881,7 @@ private:
                  : QStringLiteral("  measured %1").arg(last_measure_)));
     }
 
-    // ---- GL uploads (current context required: called from initializeGL/paintGL) ----
+    // ---- QRhi resource builders (render side) ---------------------------
 
     // Bridge psi to the display texture. The magnetic field now evolves psi
     // itself (MagneticPropagator on the GPU: diamagnetic in the potential +
@@ -1915,10 +1891,143 @@ private:
         engine_.write_psi_to_volume();
     }
 
+    // Load a baked .qsb from the resource system; fatal if it is missing
+    // (a build error: the shader is baked into this executable).
+    QShader load_render_shader(const char* path) {
+        const QShader sh = ses_qrhi::load_qsb(QLatin1String(path));
+        if (!sh.isValid()) {
+            fatal_rhi_error("shader load failed", QLatin1String(path));
+        }
+        return sh;
+    }
+
+    // The mesh graphics pipeline (isosurface + proton + gizmo + z label):
+    // interleaved pos3/normal3/color3 vertices, depth-tested and -written, no
+    // blend, no cull (the headlight shading uses abs(dot)); UsesScissor so the
+    // gizmo can clip to its corner (scene draws set a full-rect scissor).
+    void create_mesh_resources(QRhiResourceUpdateBatch* u) {
+        Q_UNUSED(u);
+        using B = QRhiShaderResourceBinding;
+        const auto stages = B::VertexStage | B::FragmentStage;
+        scene_srb_.reset(rhi_->newShaderResourceBindings());
+        scene_srb_->setBindings({ B::uniformBuffer(0, stages, scene_ubuf_.data()) });
+        gizmo_srb_.reset(rhi_->newShaderResourceBindings());
+        gizmo_srb_->setBindings({ B::uniformBuffer(0, stages, gizmo_ubuf_.data()) });
+        if (!scene_srb_->create() || !gizmo_srb_->create()) {
+            fatal_rhi_error("mesh bindings", QStringLiteral("SRB create failed"));
+        }
+
+        // Dynamic vertex buffer for the billboarded "z" glyph (18 verts,
+        // rebuilt per frame).
+        zlabel_vbuf_.reset(rhi_->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::VertexBuffer,
+                                           18 * 9 * sizeof(float)));
+        if (!zlabel_vbuf_->create()) {
+            fatal_rhi_error("z label buffer", QStringLiteral("create failed"));
+        }
+
+        mesh_pipe_.reset(rhi_->newGraphicsPipeline());
+        mesh_pipe_->setShaderStages({
+            { QRhiShaderStage::Vertex, load_render_shader(":/shaders/mesh.vert.qsb") },
+            { QRhiShaderStage::Fragment, load_render_shader(":/shaders/mesh.frag.qsb") },
+        });
+        QRhiVertexInputLayout mesh_layout;
+        mesh_layout.setBindings({ QRhiVertexInputBinding(9 * sizeof(float)) });
+        mesh_layout.setAttributes({
+            QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float3, 0),
+            QRhiVertexInputAttribute(0, 1, QRhiVertexInputAttribute::Float3,
+                                     3 * sizeof(float)),
+            QRhiVertexInputAttribute(0, 2, QRhiVertexInputAttribute::Float3,
+                                     6 * sizeof(float)),
+        });
+        mesh_pipe_->setVertexInputLayout(mesh_layout);
+        mesh_pipe_->setShaderResourceBindings(scene_srb_.data());
+        mesh_pipe_->setRenderPassDescriptor(renderTarget()->renderPassDescriptor());
+        mesh_pipe_->setTopology(QRhiGraphicsPipeline::Triangles);
+        mesh_pipe_->setCullMode(QRhiGraphicsPipeline::None);
+        mesh_pipe_->setDepthTest(true);
+        mesh_pipe_->setDepthWrite(true);
+        mesh_pipe_->setDepthOp(QRhiGraphicsPipeline::Less);
+        mesh_pipe_->setFlags(QRhiGraphicsPipeline::UsesScissor);
+        if (!mesh_pipe_->create()) {
+            fatal_rhi_error("mesh pipeline", QStringLiteral("create failed"));
+        }
+    }
+
+    // The volume graphics pipeline: the box proxy rasterizes its BACK faces
+    // (cull front -- works with the eye inside the box too), no depth,
+    // premultiplied-alpha blend over the clear color.
+    void create_volume_pipeline() {
+        volume_pipe_.reset(rhi_->newGraphicsPipeline());
+        volume_pipe_->setShaderStages({
+            { QRhiShaderStage::Vertex, load_render_shader(":/shaders/volume.vert.qsb") },
+            { QRhiShaderStage::Fragment, load_render_shader(":/shaders/volume.frag.qsb") },
+        });
+        QRhiVertexInputLayout cube_layout;
+        cube_layout.setBindings({ QRhiVertexInputBinding(3 * sizeof(float)) });
+        cube_layout.setAttributes({
+            QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float3, 0),
+        });
+        volume_pipe_->setVertexInputLayout(cube_layout);
+        // Layout template only: the live SRB (ensure_volume_srb) swaps the psi
+        // texture between the engine bridge and the CPU fallback. The phase LUT
+        // stands in for the (layout-compatible) 3D slot at pipeline build.
+        using B = QRhiShaderResourceBinding;
+        const auto stages = B::VertexStage | B::FragmentStage;
+        volume_layout_srb_.reset(rhi_->newShaderResourceBindings());
+        volume_layout_srb_->setBindings({
+            B::uniformBuffer(0, stages, volume_ubuf_.data()),
+            B::sampledTexture(1, B::FragmentStage, phase_tex_.data(), sampler_3d_.data()),
+            B::sampledTexture(2, B::FragmentStage, phase_tex_.data(), sampler_1d_.data()),
+        });
+        if (!volume_layout_srb_->create()) {
+            fatal_rhi_error("volume layout bindings", QStringLiteral("SRB create failed"));
+        }
+        volume_pipe_->setShaderResourceBindings(volume_layout_srb_.data());
+        volume_pipe_->setRenderPassDescriptor(renderTarget()->renderPassDescriptor());
+        volume_pipe_->setTopology(QRhiGraphicsPipeline::Triangles);
+        volume_pipe_->setCullMode(QRhiGraphicsPipeline::Front);
+        volume_pipe_->setDepthTest(false);
+        volume_pipe_->setDepthWrite(false);
+        QRhiGraphicsPipeline::TargetBlend blend;
+        blend.enable = true;  // defaults are premultiplied One/OneMinusSrcAlpha
+        volume_pipe_->setTargetBlends({ blend });
+        if (!volume_pipe_->create()) {
+            fatal_rhi_error("volume pipeline", QStringLiteral("create failed"));
+        }
+    }
+
+    // Pack a ses::Mesh + per-vertex colors into the interleaved mesh format.
+    static std::vector<float> interleave_mesh(const ses::Mesh& mesh,
+                                              const float* solid_rgb,
+                                              const std::vector<ses::Rgb>* colors) {
+        std::vector<float> out;
+        out.reserve(mesh.vertices.size() * 9);
+        for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
+            const ses::Vec3d& pt = mesh.vertices[i];
+            const ses::Vec3d& n = mesh.normals[i];
+            out.push_back(static_cast<float>(pt.x));
+            out.push_back(static_cast<float>(pt.y));
+            out.push_back(static_cast<float>(pt.z));
+            out.push_back(static_cast<float>(n.x));
+            out.push_back(static_cast<float>(n.y));
+            out.push_back(static_cast<float>(n.z));
+            if (colors != nullptr) {
+                out.push_back(static_cast<float>((*colors)[i].r));
+                out.push_back(static_cast<float>((*colors)[i].g));
+                out.push_back(static_cast<float>((*colors)[i].b));
+            } else {
+                out.push_back(solid_rgb[0]);
+                out.push_back(solid_rgb[1]);
+                out.push_back(solid_rgb[2]);
+            }
+        }
+        return out;
+    }
+
     // XYZ orientation gizmo: three arrows from the origin -- X red, Y green,
     // Z blue -- baked into the mesh vertex format (per-vertex color). Uploaded
-    // once; drawn each frame by draw_axes_gizmo().
-    void upload_axes_gizmo() {
+    // once; drawn each frame by the gizmo overlay in render().
+    void upload_axes_gizmo(QRhiResourceUpdateBatch* u) {
         struct Axis {
             ses::Vec3d dir;
             float r, g, b;
@@ -1931,95 +2040,36 @@ private:
         std::vector<float> interleaved;
         for (const Axis& ax : axes) {
             const ses::Mesh arrow = ses::arrow_mesh(ax.dir, 1.0, 0.045, 0.13, 0.32, 16);
-            for (std::size_t i = 0; i < arrow.vertices.size(); ++i) {
-                const ses::Vec3d& p = arrow.vertices[i];
-                const ses::Vec3d& n = arrow.normals[i];
-                interleaved.push_back(static_cast<float>(p.x));
-                interleaved.push_back(static_cast<float>(p.y));
-                interleaved.push_back(static_cast<float>(p.z));
-                interleaved.push_back(static_cast<float>(n.x));
-                interleaved.push_back(static_cast<float>(n.y));
-                interleaved.push_back(static_cast<float>(n.z));
-                interleaved.push_back(ax.r);
-                interleaved.push_back(ax.g);
-                interleaved.push_back(ax.b);
-            }
+            const float rgb[3] = {ax.r, ax.g, ax.b};
+            const std::vector<float> part = interleave_mesh(arrow, rgb, nullptr);
+            interleaved.insert(interleaved.end(), part.begin(), part.end());
         }
         gizmo_vertex_count_ = static_cast<int>(interleaved.size() / 9);
-        glGenVertexArrays(1, &gizmo_vao_);
-        glBindVertexArray(gizmo_vao_);
-        glGenBuffers(1, &gizmo_vbo_);
-        glBindBuffer(GL_ARRAY_BUFFER, gizmo_vbo_);
-        glBufferData(GL_ARRAY_BUFFER,
-                     static_cast<GLsizeiptr>(interleaved.size() * sizeof(float)),
-                     interleaved.data(), GL_STATIC_DRAW);
-        constexpr GLsizei kStride = 9 * sizeof(float);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, kStride, reinterpret_cast<void*>(0));
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, kStride,
-                              reinterpret_cast<void*>(3 * sizeof(float)));
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, kStride,
-                              reinterpret_cast<void*>(6 * sizeof(float)));
-        glEnableVertexAttribArray(2);
-        glBindVertexArray(0);
-
-        // Dynamic VBO for the billboarded "z" glyph (rebuilt each frame in
-        // draw_z_label); same attribute layout as the arrows.
-        glGenVertexArrays(1, &z_label_vao_);
-        glBindVertexArray(z_label_vao_);
-        glGenBuffers(1, &z_label_vbo_);
-        glBindBuffer(GL_ARRAY_BUFFER, z_label_vbo_);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, kStride, reinterpret_cast<void*>(0));
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, kStride,
-                              reinterpret_cast<void*>(3 * sizeof(float)));
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, kStride,
-                              reinterpret_cast<void*>(6 * sizeof(float)));
-        glEnableVertexAttribArray(2);
-        glBindVertexArray(0);
+        gizmo_vbuf_.reset(rhi_->newBuffer(
+            QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer,
+            static_cast<quint32>(interleaved.size() * sizeof(float))));
+        if (!gizmo_vbuf_->create()) {
+            fatal_rhi_error("gizmo buffer", QStringLiteral("create failed"));
+        }
+        u->uploadStaticBuffer(gizmo_vbuf_.data(), interleaved.data());
     }
 
     // Static warm-colored sphere at the nucleus, in the mesh vertex format.
-    void upload_proton_marker() {
+    void upload_proton_marker(QRhiResourceUpdateBatch* u) {
         const ses::Mesh sphere = ses::sphere_mesh(ses::Vec3d{}, kProtonMarkerRadius, 16, 24);
-        std::vector<float> interleaved;
-        interleaved.reserve(sphere.vertices.size() * 9);
-        for (std::size_t i = 0; i < sphere.vertices.size(); ++i) {
-            const ses::Vec3d& p = sphere.vertices[i];
-            const ses::Vec3d& n = sphere.normals[i];
-            interleaved.push_back(static_cast<float>(p.x));
-            interleaved.push_back(static_cast<float>(p.y));
-            interleaved.push_back(static_cast<float>(p.z));
-            interleaved.push_back(static_cast<float>(n.x));
-            interleaved.push_back(static_cast<float>(n.y));
-            interleaved.push_back(static_cast<float>(n.z));
-            interleaved.push_back(1.0f);   // warm proton color
-            interleaved.push_back(0.45f);
-            interleaved.push_back(0.20f);
-        }
+        const float rgb[3] = {1.0f, 0.45f, 0.20f};  // warm proton color
+        const std::vector<float> interleaved = interleave_mesh(sphere, rgb, nullptr);
         proton_vertex_count_ = static_cast<int>(sphere.vertices.size());
-        glGenVertexArrays(1, &proton_vao_);
-        glBindVertexArray(proton_vao_);
-        glGenBuffers(1, &proton_vbo_);
-        glBindBuffer(GL_ARRAY_BUFFER, proton_vbo_);
-        glBufferData(GL_ARRAY_BUFFER,
-                     static_cast<GLsizeiptr>(interleaved.size() * sizeof(float)),
-                     interleaved.data(), GL_STATIC_DRAW);
-        constexpr GLsizei kStride = 9 * sizeof(float);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, kStride, reinterpret_cast<void*>(0));
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, kStride,
-                              reinterpret_cast<void*>(3 * sizeof(float)));
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, kStride,
-                              reinterpret_cast<void*>(6 * sizeof(float)));
-        glEnableVertexAttribArray(2);
-        glBindVertexArray(0);
+        proton_vbuf_.reset(rhi_->newBuffer(
+            QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer,
+            static_cast<quint32>(interleaved.size() * sizeof(float))));
+        if (!proton_vbuf_->create()) {
+            fatal_rhi_error("proton buffer", QStringLiteral("create failed"));
+        }
+        u->uploadStaticBuffer(proton_vbuf_.data(), interleaved.data());
     }
 
-    void upload_box_cube() {
+    void upload_box_cube(QRhiResourceUpdateBatch* u) {
         const ses::Grid3D& g = sim_.grid();
         const float lo[3] = {static_cast<float>(g.x.xmin), static_cast<float>(g.y.xmin),
                              static_cast<float>(g.z.xmin)};
@@ -2040,113 +2090,103 @@ private:
             lo[0],lo[1],hi[2], hi[0],lo[1],hi[2], hi[0],hi[1],hi[2],
             lo[0],lo[1],hi[2], hi[0],hi[1],hi[2], lo[0],hi[1],hi[2],
         };
-        glGenVertexArrays(1, &cube_vao_);
-        glBindVertexArray(cube_vao_);
-        glGenBuffers(1, &cube_vbo_);
-        glBindBuffer(GL_ARRAY_BUFFER, cube_vbo_);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(v), v, GL_STATIC_DRAW);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float),
-                              reinterpret_cast<void*>(0));
-        glEnableVertexAttribArray(0);
-        glBindVertexArray(0);
+        cube_vbuf_.reset(rhi_->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer,
+                                         sizeof(v)));
+        if (!cube_vbuf_->create()) {
+            fatal_rhi_error("cube buffer", QStringLiteral("create failed"));
+        }
+        u->uploadStaticBuffer(cube_vbuf_.data(), v);
     }
 
-    void create_textures() {
-        const ses::Grid3D& g = sim_.grid();
-
-        glGenTextures(1, &psi_tex_);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_3D, psi_tex_);
-        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-        glTexImage3D(GL_TEXTURE_3D, 0, GL_RG32F, g.x.n, g.y.n, g.z.n, 0, GL_RG, GL_FLOAT,
-                     nullptr);
-
+    void create_textures(QRhiResourceUpdateBatch* u) {
         // The TESTED cyclic phase colormap, baked to a repeating 1D texture.
+        // QRhi has no 3-channel float format, so RGBA32F with alpha = 1; the
+        // REPEAT sampler (sampler_1d_) preserves the cyclic wraparound.
+        if (!rhi_->isFeatureSupported(QRhi::OneDimensionalTextures)) {
+            fatal_rhi_error("1D textures unsupported",
+                            QStringLiteral("the phase LUT needs 1D texture support"));
+        }
         const std::vector<ses::Rgb> lut = ses::phase_lut(kPhaseLutSize);
-        std::vector<float> lut_f;
-        lut_f.reserve(lut.size() * 3);
-        for (const ses::Rgb& c : lut) {
-            lut_f.push_back(static_cast<float>(c.r));
-            lut_f.push_back(static_cast<float>(c.g));
-            lut_f.push_back(static_cast<float>(c.b));
+        QByteArray lut_f(static_cast<qsizetype>(lut.size()) * 4 * sizeof(float),
+                         Qt::Uninitialized);
+        float* dst = reinterpret_cast<float*>(lut_f.data());
+        for (std::size_t i = 0; i < lut.size(); ++i) {
+            dst[4 * i + 0] = static_cast<float>(lut[i].r);
+            dst[4 * i + 1] = static_cast<float>(lut[i].g);
+            dst[4 * i + 2] = static_cast<float>(lut[i].b);
+            dst[4 * i + 3] = 1.0f;
         }
-        glGenTextures(1, &phase_tex_);
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_1D, phase_tex_);
-        glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_WRAP_S, GL_REPEAT);  // cyclic!
-        glTexImage1D(GL_TEXTURE_1D, 0, GL_RGB32F, kPhaseLutSize, 0, GL_RGB, GL_FLOAT,
-                     lut_f.data());
+        phase_tex_.reset(rhi_->newTexture(QRhiTexture::RGBA32F, QSize(kPhaseLutSize, 1), 1,
+                                          QRhiTexture::OneDimensional));
+        if (!phase_tex_->create()) {
+            fatal_rhi_error("phase LUT texture", QStringLiteral("create failed"));
+        }
+        QRhiTextureSubresourceUploadDescription sub(lut_f.constData(), lut_f.size());
+        u->uploadTexture(phase_tex_.data(),
+                         QRhiTextureUploadDescription({ QRhiTextureUploadEntry(0, 0, sub) }));
+        // The psi display volume on the GPU path is the ENGINE's bridge texture
+        // (engine_.volume_texture()); the CPU fallback texture is created lazily
+        // by upload_volume when the engine is unavailable.
     }
 
-    void upload_volume() {
+    // CPU staging path (GPU engine unavailable): convert the RG staging field
+    // to RGBA texels and upload the whole volume, slice by slice.
+    void upload_volume(QRhiResourceUpdateBatch* u) {
+        if (gpu_ok_) {
+            return;  // the bridge owns the texture on the GPU path
+        }
         const ses::Grid3D& g = sim_.grid();
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_3D, psi_tex_);
-        glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, g.x.n, g.y.n, g.z.n, GL_RG, GL_FLOAT,
-                        psi_staging_.data());
+        const int nx = g.x.n;
+        const int ny = g.y.n;
+        const int nz = g.z.n;
+        if (fallback_tex_.isNull()) {
+            fallback_tex_.reset(rhi_->newTexture(QRhiTexture::RGBA32F, nx, ny, nz, 1,
+                                                 QRhiTexture::ThreeDimensional));
+            if (!fallback_tex_->create()) {
+                fatal_rhi_error("fallback volume texture", QStringLiteral("create failed"));
+            }
+        }
+        const std::size_t cells = static_cast<std::size_t>(g.size());
+        QByteArray rgba(static_cast<qsizetype>(cells) * 4 * sizeof(float),
+                        Qt::Uninitialized);
+        float* dst = reinterpret_cast<float*>(rgba.data());
+        for (std::size_t i = 0; i < cells; ++i) {
+            dst[4 * i + 0] = psi_staging_[2 * i];
+            dst[4 * i + 1] = psi_staging_[2 * i + 1];
+            dst[4 * i + 2] = 0.0f;
+            dst[4 * i + 3] = 0.0f;
+        }
+        // For 3D textures the upload-entry layer is the z slice.
+        const qsizetype slice_bytes =
+            static_cast<qsizetype>(nx) * ny * 4 * sizeof(float);
+        QVarLengthArray<QRhiTextureUploadEntry, 256> entries;
+        for (int z = 0; z < nz; ++z) {
+            QRhiTextureSubresourceUploadDescription sub(
+                rgba.constData() + static_cast<qsizetype>(z) * slice_bytes, slice_bytes);
+            entries.append(QRhiTextureUploadEntry(z, 0, sub));
+        }
+        QRhiTextureUploadDescription desc;
+        desc.setEntries(entries.cbegin(), entries.cend());
+        u->uploadTexture(fallback_tex_.data(), desc);
     }
 
-    void upload_mesh() {
-        std::vector<float> interleaved;
-        interleaved.reserve(mesh_.vertices.size() * 9);
-        for (std::size_t i = 0; i < mesh_.vertices.size(); ++i) {
-            const ses::Vec3d& p = mesh_.vertices[i];
-            const ses::Vec3d& n = mesh_.normals[i];
-            const ses::Rgb& c = colors_[i];
-            interleaved.push_back(static_cast<float>(p.x));
-            interleaved.push_back(static_cast<float>(p.y));
-            interleaved.push_back(static_cast<float>(p.z));
-            interleaved.push_back(static_cast<float>(n.x));
-            interleaved.push_back(static_cast<float>(n.y));
-            interleaved.push_back(static_cast<float>(n.z));
-            interleaved.push_back(static_cast<float>(c.r));
-            interleaved.push_back(static_cast<float>(c.g));
-            interleaved.push_back(static_cast<float>(c.b));
-        }
+    // Refill the isosurface vertex buffer from the current marching-cubes mesh
+    // (Dynamic-sized: recreate when the mesh outgrows the buffer).
+    void upload_mesh(QRhiResourceUpdateBatch* u) {
+        const std::vector<float> interleaved = interleave_mesh(mesh_, nullptr, &colors_);
         vertex_count_ = static_cast<int>(mesh_.vertices.size());
-        glBindBuffer(GL_ARRAY_BUFFER, mesh_vbo_);
-        glBufferData(GL_ARRAY_BUFFER,
-                     static_cast<GLsizeiptr>(interleaved.size() * sizeof(float)),
-                     interleaved.data(), GL_DYNAMIC_DRAW);
-    }
-
-    GLuint compile_shader(GLenum type, const char* src) {
-        const GLuint shader = glCreateShader(type);
-        glShaderSource(shader, 1, &src, nullptr);
-        glCompileShader(shader);
-        GLint ok = GL_FALSE;
-        glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
-        if (ok != GL_TRUE) {
-            char log[2048];
-            glGetShaderInfoLog(shader, sizeof(log), nullptr, log);
-            fatal_gl_error("shader compile failed", QString::fromLatin1(log));
+        const quint32 bytes = static_cast<quint32>(interleaved.size() * sizeof(float));
+        if (bytes == 0) {
+            return;
         }
-        return shader;
-    }
-
-    GLuint link_program(const char* vs_src, const char* fs_src) {
-        const GLuint vs = compile_shader(GL_VERTEX_SHADER, vs_src);
-        const GLuint fs = compile_shader(GL_FRAGMENT_SHADER, fs_src);
-        const GLuint prog = glCreateProgram();
-        glAttachShader(prog, vs);
-        glAttachShader(prog, fs);
-        glLinkProgram(prog);
-        GLint ok = GL_FALSE;
-        glGetProgramiv(prog, GL_LINK_STATUS, &ok);
-        if (ok != GL_TRUE) {
-            char log[2048];
-            glGetProgramInfoLog(prog, sizeof(log), nullptr, log);
-            fatal_gl_error("program link failed", QString::fromLatin1(log));
+        if (mesh_vbuf_.isNull() || mesh_vbuf_->size() < bytes) {
+            mesh_vbuf_.reset(rhi_->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::VertexBuffer,
+                                             bytes));
+            if (!mesh_vbuf_->create()) {
+                fatal_rhi_error("mesh buffer", QStringLiteral("create failed"));
+            }
         }
-        glDeleteShader(vs);
-        glDeleteShader(fs);
-        return prog;
+        u->updateDynamicBuffer(mesh_vbuf_.data(), 0, bytes, interleaved.data());
     }
 
     ses::WavepacketSimulation sim_;
@@ -2155,12 +2195,15 @@ private:
 
     // GPU stepping state (docs/GPU_PLAN.md G5). cpu_is_truth_ is the single
     // sync invariant: true -> sim_.psi() is current, false -> the engine's
-    // SSBO is ahead and must be read back before any CPU-side operation.
-    ses_gpu::GpuEngine engine_;
+    // psi buffer is ahead and must be read back before any CPU-side operation.
+    ses_qrhi::QrhiEngine engine_;
+    QRhi* rhi_ = nullptr;             // the widget's QRhi, cached in initialize()
+    bool rhi_ready_ = false;          // render resources built
+    bool compute_init_done_ = false;  // engine + atom solve done (run_gpu_frame)
     bool gpu_ok_ = false;
     bool cpu_is_truth_ = true;
     int pending_gpu_steps_ = 0;
-    bool pending_energy_measure_ = false;  // Key E: serviced in paintGL
+    bool pending_energy_measure_ = false;  // Key E: serviced in run_gpu_frame
     bool gpu_title_due_ = false;
     double gpu_time_ = 0.0;
     double norm_display_ = 1.0;
@@ -2170,7 +2213,8 @@ private:
 
     // Transitions arc T1/T4/T5: the cached eigenstate manifold, the decay
     // channel table (built on first decay toggle), and jump bookkeeping.
-    std::array<GLuint, kNumStates> state_buf_{};
+    // Engine handles are ints; -1 = not resident.
+    std::array<int, kNumStates> state_buf_ = make_unset_handles();
     // Atlas storage precision, decided at startup from free VRAM: the fp32
     // n<=6 manifold is ~12 GB and oversubscribes a small card. Fp16 halves it.
     ses::GpuPrecision state_precision_ = ses::GpuPrecision::Fp32;
@@ -2186,10 +2230,10 @@ private:
     QString last_measure_;  // last energy-measurement readout (Key E)
     int last_measured_index_ = -2;  // last energy-measurement outcome (selftest)
     QString relax_label_ = QStringLiteral("2p");
-    std::vector<GLuint> relax_deflate_;        // live RelaxingExcited deflation set
-    std::vector<GLuint> relax_deflate_owned_;  // owned transient buffers to free
-    int pair_from_idx_ = -1;                   // channel-build 'from' cache (transient)
-    GLuint pair_from_buf_ = 0;
+    std::vector<int> relax_deflate_;        // live RelaxingExcited deflation set
+    std::vector<int> relax_deflate_owned_;  // owned transient states to release
+    int pair_from_idx_ = -1;                // channel-build 'from' cache (transient)
+    int pair_from_buf_ = -1;
     double relax_prev_energy_ = 0.0;     // T7 auto-complete plateau tracking
     int relax_plateau_ = 0;
 
@@ -2239,38 +2283,54 @@ private:
     bool volume_dirty_ = false;
     long long ticks_ = 0;
 
-    GLuint mesh_program_ = 0;
-    GLuint mesh_vao_ = 0;
-    GLuint mesh_vbo_ = 0;
-    GLint mesh_mvp_loc_ = -1;
-    GLint mesh_eye_loc_ = -1;
-    int vertex_count_ = 0;
+    // std140-compatible per-pass uniform blocks (match mesh/volume .vert/.frag).
+    struct MeshUbo {
+        float mvp[16];
+        float eye[4];
+    };
+    struct VolumeUbo {
+        float mvp[16];
+        float eye[4];
+        float box_min[4];
+        float box_max[4];
+        float proton_center[4];
+        float proton_color[4];
+        float inv_peak = 0.0f;
+        float absorbance = 0.0f;
+        float proton_radius = 0.0f;
+        float pad0 = 0.0f;
+    };
 
-    GLuint proton_vao_ = 0;
-    GLuint proton_vbo_ = 0;
+    static std::array<int, kNumStates> make_unset_handles() {
+        std::array<int, kNumStates> a{};
+        a.fill(-1);
+        return a;
+    }
+
+    // Mesh pass (isosurface + proton + gizmo + z label).
+    QScopedPointer<QRhiGraphicsPipeline> mesh_pipe_;
+    QScopedPointer<QRhiBuffer> scene_ubuf_, gizmo_ubuf_;
+    QScopedPointer<QRhiShaderResourceBindings> scene_srb_, gizmo_srb_;
+    QScopedPointer<QRhiBuffer> mesh_vbuf_;    // dynamic, grows with the mesh
+    int vertex_count_ = 0;
+    QScopedPointer<QRhiBuffer> proton_vbuf_;
     int proton_vertex_count_ = 0;
-    GLuint gizmo_vao_ = 0;
-    GLuint gizmo_vbo_ = 0;
+    QScopedPointer<QRhiBuffer> gizmo_vbuf_;
     int gizmo_vertex_count_ = 0;
-    GLuint z_label_vao_ = 0;
-    GLuint z_label_vbo_ = 0;  // billboarded "z" glyph, rebuilt each frame
-    GLuint mask_buf_ = 0;     // boundary absorber (mask, 0) complex buffer
+    QScopedPointer<QRhiBuffer> zlabel_vbuf_;  // billboarded "z", rebuilt each frame
+    int mask_buf_ = -1;  // boundary absorber (mask, 0) complex state handle
     std::mt19937 rng_{std::random_device{}()};
 
-    GLuint volume_program_ = 0;
-    GLuint cube_vao_ = 0;
-    GLuint cube_vbo_ = 0;
-    GLuint psi_tex_ = 0;
-    GLuint phase_tex_ = 0;
-    GLint vol_mvp_loc_ = -1;
-    GLint vol_eye_loc_ = -1;
-    GLint vol_boxmin_loc_ = -1;
-    GLint vol_boxmax_loc_ = -1;
-    GLint vol_invpeak_loc_ = -1;
-    GLint vol_absorb_loc_ = -1;
-    GLint vol_pcenter_loc_ = -1;
-    GLint vol_pradius_loc_ = -1;
-    GLint vol_pcolor_loc_ = -1;
+    // Volume pass (Cloud view).
+    QScopedPointer<QRhiGraphicsPipeline> volume_pipe_;
+    QScopedPointer<QRhiBuffer> volume_ubuf_;
+    QScopedPointer<QRhiShaderResourceBindings> volume_layout_srb_;  // pipeline template
+    QScopedPointer<QRhiShaderResourceBindings> volume_srb_;         // live (psi texture)
+    QRhiTexture* volume_tex_bound_ = nullptr;
+    QScopedPointer<QRhiBuffer> cube_vbuf_;
+    QScopedPointer<QRhiTexture> phase_tex_;
+    QScopedPointer<QRhiTexture> fallback_tex_;  // CPU staging path only
+    QScopedPointer<QRhiSampler> sampler_3d_, sampler_1d_;
 
     double azimuth_ = 0.6;
     double elevation_ = 0.4;
@@ -2295,15 +2355,11 @@ void run_when_manifold_ready(Viewport* viewport, F fn) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    QSurfaceFormat format;
-    format.setVersion(4, 3);
-    format.setProfile(QSurfaceFormat::CoreProfile);
-    format.setDepthBufferSize(24);
-    // No MSAA: the volume ray marcher is a full-screen fragment pass where
-    // 4x multisampling only multiplies its cost (it smooths nothing but
-    // the cube edges) -- at 256^3 that budget belongs to the physics.
-    QSurfaceFormat::setDefaultFormat(format);
-
+    // QRhi on the Vulkan backend (Viewport::setApi). No MSAA: the volume ray
+    // marcher is a full-screen fragment pass where 4x multisampling only
+    // multiplies its cost (it smooths nothing but the cube edges) -- at 256^3
+    // that budget belongs to the physics. QRhiWidget's sampleCount default (1)
+    // already matches.
     QApplication app(argc, argv);
 
     QMainWindow window;
@@ -2415,6 +2471,24 @@ int main(int argc, char** argv) {
     // StrongFocus only ACCEPTS focus; grab it so the 1/2/R/M/space keys work
     // immediately without a click.
     viewport->setFocus();
+
+    // Render verification hook: once the manifold is up (the cloud shows the
+    // resumed wavepacket), grab the composited frame to frame_dump.bmp and
+    // exit. grabFramebuffer renders offscreen + reads the color buffer back,
+    // so this verifies the whole QRhi render path end to end. BMP because the
+    // lean static Qt is built without the png feature (no libpng).
+    if (app.arguments().contains(QStringLiteral("--dump-frame"))) {
+        run_when_manifold_ready(viewport, [viewport, &app] {
+            QTimer::singleShot(2000, viewport, [viewport, &app] {
+                const QImage frame = viewport->grabFramebuffer();
+                const bool ok = !frame.isNull() &&
+                                frame.save(QStringLiteral("frame_dump.bmp"), "BMP");
+                std::fprintf(stderr, "dump-frame: %dx%d  [%s]\n", frame.width(),
+                             frame.height(), ok ? "PASS" : "FAIL");
+                app.exit(ok ? 0 : 1);
+            });
+        });
+    }
 
     // Headless-ish regression of the decay demo arc: prepare 2p, return to
     // real time, enable decay, and require at least one quantum jump.

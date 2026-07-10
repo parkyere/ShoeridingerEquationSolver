@@ -1,23 +1,31 @@
 # ---------------------------------------------------------------------------
-# sesolver_app : the Qt + OpenGL GUI shell ("Humble Object").
+# sesolver_app : the Qt + QRhi (Vulkan) GUI shell ("Humble Object").
 #
 # This layer holds NO domain logic. It links sesolver_core, owns the window /
-# OpenGL context (Qt) and the hand-written OpenGL rendering, and is verified
-# manually rather than by unit tests (the chosen Humble Object pattern).
+# QRhiWidget (Qt) and the hand-written QRhi rendering + compute engine, and is
+# verified manually rather than by unit tests (the chosen Humble Object
+# pattern) -- plus the --selftest-* arcs.
 #
-# Reuse boundary (purist): Qt provides ONLY the window, GL context, and UI.
-# All math, FFT, physics, and the OpenGL rendering logic are hand-written.
+# Reuse boundary (purist): Qt provides ONLY the window, the QRhi device layer,
+# and UI. All math, FFT, physics, and rendering logic are hand-written.
 # ---------------------------------------------------------------------------
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
+
+# The app itself now runs on QRhi/Vulkan: the private QRhi module, the qsb
+# shader baker, and the Vulkan headers are REQUIRED (vcpkg manifest provides
+# all three). NOTE: with the vcpkg Qt, Qt6::GuiPrivate must be requested by
+# name -- find_package(Qt6 COMPONENTS Gui) alone does not create the target.
+find_package(Qt6 REQUIRED COMPONENTS ShaderTools GuiPrivate)
+find_package(VulkanHeaders CONFIG REQUIRED)  # vcpkg port: Vulkan::Headers
 
 add_executable(sesolver_app
     src/main.cpp
 )
 # GUI subsystem on Windows for optimized builds so double-clicking the exe
 # does not spawn a companion console window (closing it would kill the app).
-# Debug keeps the console so qCritical GL logs stay visible outside a
+# Debug keeps the console so qCritical logs stay visible outside a
 # debugger; fatal errors also surface via QMessageBox either way.
 set_target_properties(sesolver_app PROPERTIES
     WIN32_EXECUTABLE "$<CONFIG:Release,RelWithDebInfo,MinSizeRel>"
@@ -27,12 +35,65 @@ target_link_libraries(sesolver_app
         sesolver_core
         Qt6::Core
         Qt6::Gui
+        Qt6::GuiPrivate
         Qt6::Widgets
-        Qt6::OpenGL
-        Qt6::OpenGLWidgets
+        Vulkan::Headers
         ses_warnings
 )
 target_compile_features(sesolver_app PRIVATE cxx_std_20)
+
+# Bake every compute kernel the QrhiEngine loads at 256^3 plus the mesh +
+# volume render shaders into the app's resources (SPIR-V only: the app is
+# Vulkan-backend, and the default ESSL targets reject compute shaders).
+qt6_add_shaders(sesolver_app "app_shaders"
+    PREFIX "/shaders"
+    NOGLSL NOHLSL NOMSL
+    FILES
+        src/qrhi_shaders/phase_multiply.comp
+        src/qrhi_shaders/scale.comp
+        src/qrhi_shaders/norm_peak.comp
+        src/qrhi_shaders/inner_product.comp
+        src/qrhi_shaders/dipole_kick.comp
+        src/qrhi_shaders/mean_force.comp
+        src/qrhi_shaders/dipole.comp
+        src/qrhi_shaders/pack_half.comp
+        src/qrhi_shaders/unpack_half.comp
+        src/qrhi_shaders/conj_scale.comp
+        src/qrhi_shaders/axpy.comp
+        src/qrhi_shaders/copy_state.comp
+        src/qrhi_shaders/shear.comp
+        src/qrhi_shaders/synth.comp
+        src/qrhi_shaders/bridge_store.comp
+        src/qrhi_shaders/bridge_load.comp
+        src/qrhi_shaders/project_deposit.comp
+        src/qrhi_shaders/fft_line256.comp
+        src/qrhi_shaders/mesh.vert
+        src/qrhi_shaders/mesh.frag
+        src/qrhi_shaders/volume.vert
+        src/qrhi_shaders/volume.frag
+    OUTPUTS
+        phase_multiply.comp.qsb
+        scale.comp.qsb
+        norm_peak.comp.qsb
+        inner_product.comp.qsb
+        dipole_kick.comp.qsb
+        mean_force.comp.qsb
+        dipole.comp.qsb
+        pack_half.comp.qsb
+        unpack_half.comp.qsb
+        conj_scale.comp.qsb
+        axpy.comp.qsb
+        copy_state.comp.qsb
+        shear.comp.qsb
+        synth.comp.qsb
+        bridge_store.comp.qsb
+        bridge_load.comp.qsb
+        project_deposit.comp.qsb
+        fft_line256.comp.qsb
+        mesh.vert.qsb
+        mesh.frag.qsb
+        volume.vert.qsb
+        volume.frag.qsb)
 
 # ---------------------------------------------------------------------------
 # sesolver_gpucheck: verification harness for GPU compute kernels
