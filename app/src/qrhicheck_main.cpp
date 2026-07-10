@@ -9,6 +9,14 @@
 // Exit 77 = SKIP (ctest SKIP_RETURN_CODE) when no Vulkan device is available,
 // mirroring sesolver_gpucheck's no-context convention.
 
+#ifdef SES_HAVE_VKFFT
+// vulkan.h must be seen WITH prototypes before any Qt header pulls it in
+// under VK_NO_PROTOTYPES (include guards would then keep the prototypes
+// hidden from the header-only VkFFT, which calls vk* directly and links
+// against the loader import library).
+#include <vulkan/vulkan.h>
+#endif
+
 #include "qrhi_engine.hpp"
 
 #include <core/complex.hpp>
@@ -28,11 +36,17 @@
 #include <core/wavepacket.hpp>
 
 #include <rhi/qrhi.h>
+#include <rhi/qrhi_platform.h>
 
 #include <QGuiApplication>
 #include <QVulkanInstance>
 #include <QFile>
 #include <QScopedPointer>
+
+#ifdef SES_HAVE_VKFFT
+#include <QVulkanFunctions>
+#include <VkFFT/vkFFT.h>
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -1496,6 +1510,176 @@ bool check_project(QRhi* rhi) {
     return ok;
 }
 
+#ifdef SES_HAVE_VKFFT
+// M4 spike: VkFFT (the library that lifts the pow2 cap and coalesces the
+// transpose passes) running a forward 3D C2C fp32 FFT IN PLACE on the native
+// VkBuffer of a QRhi Static storage buffer, vs ses::fft. This proves the whole
+// interop chain the engine swap needs: QRhi native handles (device/queue),
+// plan creation on the shared device (glslang runtime compile), a raw command
+// buffer submitted BETWEEN QRhi frames with explicit memory barriers, and the
+// buffer read back through QRhi afterwards.
+bool check_vkfft(QRhi* rhi) {
+    const int N = 64;
+    const std::size_t cells = static_cast<std::size_t>(N) * N * N;
+
+    // Deterministic complex field + the CPU double reference (forward,
+    // unnormalized, exp(-2 pi i k n / N) -- the kernel/FFTW sign convention).
+    const ses::Grid1D axis{0.0, 1.0, N};
+    const ses::Grid3D g{axis, axis, axis};
+    ses::Field3D cpu{g};
+    for (std::size_t i = 0; i < cells; ++i) {
+        const double x = static_cast<double>(i);
+        cpu.data()[i] = ses::Complex<double>{std::sin(0.013 * x) + 0.2,
+                                             std::cos(0.007 * x) - 0.1};
+    }
+    const std::vector<float> in = to_rg32f(cpu.data());
+    ses::fft(cpu);
+
+    const quint32 bytes = static_cast<quint32>(2 * cells * sizeof(float));
+    QScopedPointer<QRhiBuffer> buf(
+        rhi->newBuffer(QRhiBuffer::Static, QRhiBuffer::StorageBuffer, bytes));
+    if (!buf->create()) { std::printf("vkfft: buffer create FAIL\n"); return false; }
+    {
+        QRhiCommandBuffer* cb = nullptr;
+        if (rhi->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) { return false; }
+        QRhiResourceUpdateBatch* u = rhi->nextResourceUpdateBatch();
+        u->uploadStaticBuffer(buf.data(), in.data());
+        cb->resourceUpdate(u);
+        rhi->endOffscreenFrame();
+    }
+
+    // Native handles: the shared device/queue QRhi runs on, and the VkBuffer
+    // behind the QRhi storage buffer (Static = one durable slot).
+    const auto* h = static_cast<const QRhiVulkanNativeHandles*>(rhi->nativeHandles());
+    if (h == nullptr || h->inst == nullptr) {
+        std::printf("vkfft: no native handles  [FAIL]\n");
+        return false;
+    }
+    QVulkanDeviceFunctions* df = h->inst->deviceFunctions(h->dev);
+    VkPhysicalDevice phys_dev = h->physDev;
+    VkDevice dev = h->dev;
+    VkQueue queue = h->gfxQueue;
+    VkBuffer vkbuf = *reinterpret_cast<const VkBuffer*>(buf->nativeBuffer().objects[0]);
+
+    VkCommandPool pool = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    VkCommandPoolCreateInfo pool_info{};
+    pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    pool_info.queueFamilyIndex = h->gfxQueueFamilyIdx;
+    VkFenceCreateInfo fence_info{};
+    fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    if (df->vkCreateCommandPool(dev, &pool_info, nullptr, &pool) != VK_SUCCESS ||
+        df->vkCreateFence(dev, &fence_info, nullptr, &fence) != VK_SUCCESS) {
+        std::printf("vkfft: pool/fence create  [FAIL]\n");
+        return false;
+    }
+
+    // Plan: 3D C2C fp32, in place on the QRhi buffer.
+    VkFFTConfiguration conf{};
+    VkFFTApplication app{};
+    quint64 buf_size = bytes;
+    conf.FFTdim = 3;
+    conf.size[0] = static_cast<quint64>(N);
+    conf.size[1] = static_cast<quint64>(N);
+    conf.size[2] = static_cast<quint64>(N);
+    conf.physicalDevice = &phys_dev;
+    conf.device = &dev;
+    conf.queue = &queue;
+    conf.commandPool = &pool;
+    conf.fence = &fence;
+    conf.buffer = &vkbuf;
+    conf.bufferSize = &buf_size;
+    const VkFFTResult init_res = initializeVkFFT(&app, conf);
+    if (init_res != VKFFT_SUCCESS) {
+        std::printf("vkfft: initializeVkFFT = %d  [FAIL]\n",
+                    static_cast<int>(init_res));
+        df->vkDestroyFence(dev, fence, nullptr);
+        df->vkDestroyCommandPool(dev, pool, nullptr);
+        return false;
+    }
+
+    // One raw command buffer between QRhi frames: barrier (make QRhi's upload
+    // visible), forward FFT, barrier (make FFT writes visible to the readback).
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+    VkCommandBufferAllocateInfo alloc{};
+    alloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    alloc.commandPool = pool;
+    alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    alloc.commandBufferCount = 1;
+    bool ok = df->vkAllocateCommandBuffers(dev, &alloc, &cb) == VK_SUCCESS;
+    if (ok) {
+        VkCommandBufferBeginInfo begin{};
+        begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        df->vkBeginCommandBuffer(cb, &begin);
+        VkMemoryBarrier mb{};
+        mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        mb.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+        mb.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+        df->vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                 VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb, 0,
+                                 nullptr, 0, nullptr);
+        VkFFTLaunchParams lp{};
+        lp.buffer = &vkbuf;
+        lp.commandBuffer = &cb;
+        const VkFFTResult app_res = VkFFTAppend(&app, -1, &lp);  // -1 = forward
+        df->vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                 VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb, 0,
+                                 nullptr, 0, nullptr);
+        df->vkEndCommandBuffer(cb);
+        ok = app_res == VKFFT_SUCCESS;
+        if (!ok) {
+            std::printf("vkfft: VkFFTAppend = %d  [FAIL]\n", static_cast<int>(app_res));
+        } else {
+            VkSubmitInfo submit{};
+            submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submit.commandBufferCount = 1;
+            submit.pCommandBuffers = &cb;
+            ok = df->vkQueueSubmit(queue, 1, &submit, fence) == VK_SUCCESS &&
+                 df->vkWaitForFences(dev, 1, &fence, VK_TRUE, 5000000000ull) ==
+                     VK_SUCCESS;
+            if (!ok) { std::printf("vkfft: submit/wait  [FAIL]\n"); }
+        }
+        df->vkFreeCommandBuffers(dev, pool, 1, &cb);
+    }
+
+    double max_err = 0.0;
+    double max_mag = 0.0;
+    if (ok) {
+        QRhiCommandBuffer* qcb = nullptr;
+        if (rhi->beginOffscreenFrame(&qcb) != QRhi::FrameOpSuccess) { ok = false; }
+        if (ok) {
+            QRhiReadbackResult rb;
+            QRhiResourceUpdateBatch* d = rhi->nextResourceUpdateBatch();
+            d->readBackBuffer(buf.data(), 0, bytes, &rb);
+            qcb->resourceUpdate(d);
+            rhi->endOffscreenFrame();
+            const float* out = reinterpret_cast<const float*>(rb.data.constData());
+            for (std::size_t i = 0; i < cells; ++i) {
+                max_err = std::max(max_err, std::abs(out[2 * i] - cpu.data()[i].real()));
+                max_err = std::max(max_err,
+                                   std::abs(out[2 * i + 1] - cpu.data()[i].imag()));
+                max_mag = std::max(max_mag, std::abs(cpu.data()[i].real()));
+                max_mag = std::max(max_mag, std::abs(cpu.data()[i].imag()));
+            }
+        }
+    }
+
+    deleteVkFFT(&app);
+    df->vkDestroyFence(dev, fence, nullptr);
+    df->vkDestroyCommandPool(dev, pool, nullptr);
+
+    if (!ok) { return false; }
+    const double tol = 1e-3 + 1e-5 * max_mag;
+    const bool pass = max_err < tol;
+    std::printf("VkFFT fwd 64^3 in-place on QRhi buffer: max |gpu - cpu| = %.3e "
+                "(tol %.3e)  [%s]\n",
+                max_err, tol, pass ? "PASS" : "FAIL");
+    return pass;
+}
+#endif  // SES_HAVE_VKFFT
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1546,6 +1730,9 @@ int main(int argc, char** argv) {
     ok = check_bridge(rhi.data()) && ok;
     ok = check_fp16_consumers(rhi.data()) && ok;
     ok = check_project(rhi.data()) && ok;
+#ifdef SES_HAVE_VKFFT
+    ok = check_vkfft(rhi.data()) && ok;
+#endif
     std::printf("%s\n", ok ? "QRhi kernel checks PASS" : "QRhi kernel checks FAILED");
     return ok ? 0 : 1;
 }

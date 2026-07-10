@@ -217,6 +217,29 @@ if(TARGET Qt6::GuiPrivate AND TARGET Qt6::ShaderTools AND TARGET Vulkan::Headers
             bridge_store.comp.qsb
             bridge_load.comp.qsb
             project_deposit.comp.qsb)
+    # M4 spike: VkFFT (header-only, vcpkg) + its runtime shader compiler
+    # (glslang) + the Vulkan loader import lib. Optional: the check self-skips
+    # when absent so the harness still builds on a lean setup.
+    find_package(Vulkan QUIET)
+    find_package(glslang CONFIG QUIET)
+    # VkFFT includes the bare 'glslang_c_interface.h'; vcpkg installs it under
+    # glslang/Include/, so that directory must be on the include path.
+    find_path(SES_GLSLANG_C_INCLUDE_DIR glslang_c_interface.h
+              PATH_SUFFIXES glslang/Include)
+    if(TARGET Vulkan::Vulkan AND TARGET glslang::glslang AND SES_GLSLANG_C_INCLUDE_DIR)
+        target_compile_definitions(sesolver_qrhicheck PRIVATE
+            SES_HAVE_VKFFT=1 VKFFT_BACKEND=0)
+        target_include_directories(sesolver_qrhicheck SYSTEM PRIVATE
+            "${SES_GLSLANG_C_INCLUDE_DIR}")
+        target_link_libraries(sesolver_qrhicheck PRIVATE
+            Vulkan::Vulkan
+            glslang::glslang
+            glslang::SPIRV
+            glslang::glslang-default-resource-limits)
+        message(STATUS "VkFFT spike enabled in sesolver_qrhicheck.")
+    else()
+        message(STATUS "VkFFT spike skipped (needs vkfft + glslang + Vulkan loader).")
+    endif()
     if(_ses_qt_platform_plugins)
         qt6_import_plugins(sesolver_qrhicheck INCLUDE ${_ses_qt_platform_plugins})
     endif()
