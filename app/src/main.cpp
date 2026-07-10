@@ -309,14 +309,23 @@ protected:
                                     : "  [WARNING: even fp16 is tight -- consider a "
                                       "smaller box or manifold]");
             // Imaginary-time weights from the tested CPU relaxer (G7).
+            // These QRhi ports are FALLIBLE (buffer/pipeline create can fail
+            // under VRAM pressure, unlike the void GL uploads); a failed relax
+            // table would silently run REAL-TIME phase tables in imaginary
+            // time, so failure demotes to the CPU fallback path wholesale.
             const ses::ImaginaryTimePropagator3D relaxer{sim_.grid(), sim_.potential(),
                                                          kRelaxDtau};
-            engine_.set_relax_tables(relaxer.half_potential_weight(),
-                                     relaxer.kinetic_weight(), kRelaxDtau,
-                                     sim_.grid().cell_volume());
-            // Radiation: the atomic potential gradient (for the live
-            // semiclassical radiated power <grad V> reduction).
-            engine_.set_potential_gradient(sim_.potential());
+            if (!engine_.set_relax_tables(relaxer.half_potential_weight(),
+                                          relaxer.kinetic_weight(), kRelaxDtau,
+                                          sim_.grid().cell_volume()) ||
+                !engine_.set_potential_gradient(sim_.potential())) {
+                std::fprintf(stderr, "engine: relax/gradient setup failed -- "
+                                     "falling back to CPU stepping\n");
+                gpu_ok_ = false;
+                decay_on_ = false;
+                atlas_done_ = true;
+                return;
+            }
             // T6/T7: solve the atom up front. The radial engine gets every
             // bound level to n = 10 (the full lifetime table, printed
             // below); the 3D tracked manifold (n <= 6, what the box holds)
@@ -330,9 +339,14 @@ protected:
             {
                 const ses::RadialBinIndex bin_idx =
                     ses::build_radial_bin_index(sim_.grid(), radial_grid_);
-                engine_.set_projection_index(bin_idx.sorted_cell, bin_idx.bin_off,
-                                             radial_grid_.n, radial_grid_.h(), 5);
-                proj_ready_ = true;
+                proj_ready_ = engine_.set_projection_index(
+                    bin_idx.sorted_cell, bin_idx.bin_off, radial_grid_.n,
+                    radial_grid_.h(), 5);
+                if (!proj_ready_) {
+                    std::fprintf(stderr, "engine: projection index setup failed -- "
+                                         "populations/decay/laser disabled\n");
+                    decay_on_ = false;  // trials need projected populations
+                }
             }
             synth_queue_.clear();
             for (int idx = 0; idx < kNumStates; ++idx) {
@@ -350,6 +364,12 @@ protected:
                 }
                 mask_buf_ = engine_.create_state_buffer(mf.data());
             }
+            // A field slider moved before this point stored its value but
+            // could not upload the augmented half-potential (gpu_ok_ was
+            // false): re-apply so the table matches the UI. Self-healing.
+            if (efield_e0_ > 0.0 || bfield_b_ > 0.0) {
+                upload_field_tables();
+            }
         } else {
             decay_on_ = false;  // jump trials are GPU-only
             atlas_done_ = true;
@@ -364,19 +384,20 @@ protected:
             init_compute();
             compute_init_done_ = true;
         }
+        // T6/T7: the startup atlas build advances regardless of the view
+        // mode -- a Tab to Surface during the startup window must not wedge
+        // solving() forever (the build owns the psi buffer either way; the
+        // Surface view simply does not display it while it runs).
+        if (gpu_ok_ && !atlas_done_) {
+            run_atlas_chunk();
+            pending_gpu_steps_ = 0;
+            if (gpu_title_due_) {
+                gpu_title_due_ = false;
+                refresh_title();
+            }
+            return;
+        }
         if (use_gpu_path()) {
-            if (!atlas_done_) {
-                // T6/T7: startup atlas build owns the psi buffer this
-                // frame; each synthesized orbital IS the picture (a
-                // flick-through of the atom's states). Normal stepping
-                // resumes when the whole channel table is assembled.
-                run_atlas_chunk();
-                pending_gpu_steps_ = 0;
-                if (gpu_title_due_) {
-                    gpu_title_due_ = false;
-                    refresh_title();
-                }
-            } else {
             if (cpu_is_truth_) {
                 // The CPU state is authoritative here: refresh the brightness
                 // normalizer from it (covers post-M collapse, post-R reset).
@@ -583,7 +604,6 @@ protected:
                     refresh_title();
                 }
             }
-            }  // end of the non-building (normal stepping) branch
         }
     }
 
@@ -2132,8 +2152,12 @@ private:
     // CPU staging path (GPU engine unavailable): convert the RG staging field
     // to RGBA texels and upload the whole volume, slice by slice.
     void upload_volume(QRhiResourceUpdateBatch* u) {
-        if (gpu_ok_) {
-            return;  // the bridge owns the texture on the GPU path
+        // The bridge owns the texture on the GPU path; and until compute init
+        // has been ATTEMPTED (second paint), do not allocate the 268 MB CPU
+        // fallback texture that the GPU path would orphan one frame later
+        // (it would also deflate the VRAM-budget probe init_compute uses).
+        if (gpu_ok_ || !compute_init_done_) {
+            return;
         }
         const ses::Grid3D& g = sim_.grid();
         const int nx = g.x.n;

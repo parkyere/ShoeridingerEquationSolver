@@ -528,7 +528,9 @@ public:
     // <grad V> = sum |psi|^2 grad V * dV -- the Ehrenfest dipole acceleration
     // for the semiclassical radiated power. Zero if no gradient was uploaded.
     ses::Vec3d mean_force() {
-        if (grad_v_buf_.isNull()) { return ses::Vec3d{}; }
+        // Gate on the last resource ensure_force builds: a partial failure
+        // leaves earlier pointers set, and dispatching a null pipeline is UB.
+        if (force_pipe_.isNull() || grad_v_buf_.isNull()) { return ses::Vec3d{}; }
         QRhiReadbackResult rb;
         run_reduce(force_pipe_.data(), force_srb_.data(), force_partials_.data(),
                    static_cast<quint32>(4 * kGroups * sizeof(float)), &rb);
@@ -707,6 +709,7 @@ public:
     // to glm_host_ as double. Then call project_amplitude per state. Mirrors
     // Projector::project.
     void project_psi() {
+        if (proj_pipe_.isNull()) { return; }  // set_projection_index failed/absent
         ProjectParams pp{};
         pp.nx = grid_.x.n;
         pp.ny = grid_.y.n;
@@ -751,8 +754,9 @@ public:
     // <n|psi> raw amplitude = sum_j u_nl[j] g_lm[lm(l,m)][j] (double CPU finish).
     // Needs a prior project_psi(). Mirrors Projector::amplitude.
     ses::Complex<double> project_amplitude(const std::vector<double>& u, int l, int m) const {
-        const std::vector<ses::Complex<double>>& gc =
-            glm_host_[static_cast<std::size_t>(l * l + (l + m))];
+        const std::size_t comp = static_cast<std::size_t>(l * l + (l + m));
+        if (comp >= glm_host_.size()) { return {}; }  // no deposit yet / setup failed
+        const std::vector<ses::Complex<double>>& gc = glm_host_[comp];
         ses::Complex<double> raw{};
         const int n = std::min(static_cast<int>(u.size()), proj_nr_);
         for (int j = 0; j < n; ++j) {
@@ -1105,11 +1109,23 @@ private:
         a->mul_srb->setBindings({ B::bufferLoadStore(0, cs, psi_.data()),
                                   B::bufferLoad(1, cs, a->buf.data()),
                                   B::uniformBuffer(2, cs, muln_ubo_.data()) });
+        // Success is keyed off inner_srb being non-null, so every failure
+        // path must roll the partially built SRBs back for a clean retry.
+        const auto fail = [a]() {
+            a->inner_srb.reset();
+            a->axpy_srb.reset();
+            a->copy_srb.reset();
+            a->mul_srb.reset();
+            return false;
+        };
         if (!a->inner_srb->create() || !a->axpy_srb->create() || !a->copy_srb->create() ||
             !a->mul_srb->create()) {
-            return false;
+            return fail();
         }
-        return ensure_inner() && ensure_axpy_copy(a);
+        if (!ensure_inner() || !ensure_axpy_copy(a)) {
+            return fail();
+        }
+        return true;
     }
 
     // Build the axpy/copy pipelines once from `tpl`'s SRBs as layout template.
@@ -1131,13 +1147,20 @@ private:
     // SRB + pipeline). Called by set_potential_gradient.
     bool ensure_force() {
         if (!force_pipe_.isNull()) { return true; }
+        const auto fail = [this]() {
+            force_pipe_.reset();
+            force_srb_.reset();
+            force_partials_.reset();
+            grad_v_buf_.reset();
+            return false;
+        };
         const QShader forcecs = load_qsb(QStringLiteral(":/shaders/mean_force.comp.qsb"));
-        if (!forcecs.isValid()) { return false; }
+        if (!forcecs.isValid()) { return fail(); }
         grad_v_buf_.reset(rhi_->newBuffer(QRhiBuffer::Static, QRhiBuffer::StorageBuffer,
                                           static_cast<quint32>(4 * cells_ * sizeof(float))));
         force_partials_.reset(rhi_->newBuffer(QRhiBuffer::Static, QRhiBuffer::StorageBuffer,
                                               static_cast<quint32>(4 * kGroups * sizeof(float))));
-        if (!grad_v_buf_->create() || !force_partials_->create()) { return false; }
+        if (!grad_v_buf_->create() || !force_partials_->create()) { return fail(); }
         using B = QRhiShaderResourceBinding;
         const auto cs = B::ComputeStage;
         force_srb_.reset(rhi_->newShaderResourceBindings());
@@ -1145,11 +1168,12 @@ private:
                                   B::uniformBuffer(1, cs, muln_ubo_.data()),
                                   B::bufferLoadStore(2, cs, force_partials_.data()),
                                   B::bufferLoad(4, cs, grad_v_buf_.data()) });
-        if (!force_srb_->create()) { return false; }
+        if (!force_srb_->create()) { return fail(); }
         force_pipe_.reset(rhi_->newComputePipeline());
         force_pipe_->setShaderStage(QRhiShaderStage(QRhiShaderStage::Compute, forcecs));
         force_pipe_->setShaderResourceBindings(force_srb_.data());
-        return force_pipe_->create();
+        if (!force_pipe_->create()) { return fail(); }
+        return true;
     }
 
     // Lazily build the synth UBO/SRB/pipeline. rebuild_srb re-points the SRB at a
