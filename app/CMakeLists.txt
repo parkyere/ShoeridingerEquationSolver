@@ -126,24 +126,6 @@ qt6_add_shaders(sesolver_app "app_shaders"
         volume.vert.qsb
         volume.frag.qsb)
 
-# ---------------------------------------------------------------------------
-# sesolver_gpucheck: verification harness for GPU compute kernels
-# (docs/GPU_PLAN.md). Compares each kernel against the unit-tested CPU core;
-# registered with ctest (label "gpu", exit 77 = SKIP when no 4.3 context).
-# ---------------------------------------------------------------------------
-add_executable(sesolver_gpucheck
-    src/gpucheck_main.cpp
-)
-target_link_libraries(sesolver_gpucheck
-    PRIVATE
-        sesolver_core
-        Qt6::Core
-        Qt6::Gui
-        Qt6::OpenGL
-        ses_warnings
-)
-target_compile_features(sesolver_gpucheck PRIVATE cxx_std_20)
-
 # Static Qt (the vcpkg x64-windows-static / x64-linux triplets) does NOT load
 # plugins at runtime -- the platform plugin must be linked in, or the executable
 # aborts with "no Qt platform plugin could be initialized". Collect the platform
@@ -162,24 +144,17 @@ if(_ses_qt_core_type STREQUAL "STATIC_LIBRARY")
 endif()
 if(_ses_qt_platform_plugins)
     qt6_import_plugins(sesolver_app INCLUDE ${_ses_qt_platform_plugins})
-    qt6_import_plugins(sesolver_gpucheck INCLUDE ${_ses_qt_platform_plugins})
 endif()
 
 # Qt DLLs must be findable when ctest launches the harness.
 get_target_property(_qt6_core_dll Qt6::Core LOCATION)
 get_filename_component(_qt6_bin_dir "${_qt6_core_dll}" DIRECTORY)
-add_test(NAME GpuCheck COMMAND sesolver_gpucheck)
-set_tests_properties(GpuCheck PROPERTIES
-    LABELS "gpu"
-    SKIP_RETURN_CODE 77
-    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_qt6_bin_dir}"
-)
 
 # ---------------------------------------------------------------------------
 # sesolver_qrhicheck: QRhi (Vulkan backend) verification harness -- the seed of
 # the GL->QRhi migration (M1). Bakes the decorated Vulkan-GLSL kernels to SPIR-V
 # via qsb (qt6_add_shaders) and runs them through QRhi, comparing against the
-# same CPU reference as sesolver_gpucheck. Built only when the QRhi private
+# same CPU double reference the core tests pin. Built only when the QRhi private
 # module (Qt6::GuiPrivate), the shader baker (Qt6::ShaderTools), and the vcpkg
 # vulkan-headers (Vulkan::Headers, needed to compile QVulkanInstance) are all
 # present; otherwise skipped with a status message so the normal build is

@@ -37,7 +37,7 @@ endif()
 
 project(ShoeridingerEquationSolver
     VERSION 0.0.1
-    DESCRIPTION "From-scratch FDM/TDSE single-electron Schrodinger solver with hand-written OpenGL visualization"
+    DESCRIPTION "From-scratch FDM/TDSE single-electron Schrodinger solver with hand-written QRhi/Vulkan visualization"
     LANGUAGES CXX)
 
 # ---------------------------------------------------------------------------
@@ -59,7 +59,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Options
 # ---------------------------------------------------------------------------
 option(SES_BUILD_TESTS        "Build unit tests"                          ON)
-option(SES_BUILD_APP          "Build the Qt/OpenGL app (requires Qt6)"    ON)
+option(SES_BUILD_APP          "Build the Qt/QRhi app (requires Qt6)"      ON)
 option(SES_BUILD_BENCH        "Build the manual micro-benchmark"          ON)
 option(SES_ENABLE_AVX2        "Compile with AVX2 (x86-64 CPUs from ~2013)" ON)
 option(SES_NATIVE             "Tune for the build host CPU (-march=native)" OFF)
@@ -145,7 +145,7 @@ endif()
 # GUI shell. Auto-skipped (with a warning) when Qt6 is not installed, so the
 # core library and the TDD test loop never depend on a Qt toolchain.
 if(SES_BUILD_APP)
-    find_package(Qt6 COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets QUIET)
+    find_package(Qt6 COMPONENTS Core Gui Widgets QUIET)
     if(Qt6_FOUND)
         message(STATUS "Qt6 ${Qt6_VERSION} found - building 'sesolver_app'.")
         add_subdirectory(app)
@@ -153,6 +153,6 @@ if(SES_BUILD_APP)
         message(WARNING
             "Qt6 not found - skipping the GUI target 'sesolver_app'. "
             "The core library and tests still build. "
-            "Install Qt6 (Core Gui Widgets OpenGL OpenGLWidgets) and reconfigure to build the GUI.")
+            "Install Qt6 (Core Gui Widgets) and reconfigure to build the GUI.")
     endif()
 endif()

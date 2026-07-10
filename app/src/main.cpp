@@ -230,6 +230,12 @@ protected:
         QRhiWidget::paintEvent(e);
     }
 
+    // The widget is about to lose its graphics resources for good: destroy
+    // the engine's RAW Vulkan objects (the VkFFT plan + pool/fence) while the
+    // device is still known-alive. The engine's QRhi-object members are
+    // handled by QRhi's own teardown accounting.
+    void releaseResources() override { engine_.release_native(); }
+
     // Build the RENDER resources (pipelines, samplers, UBOs, static vertex
     // buffers, the phase LUT). Called by QRhiWidget once the backing QRhi
     // exists, and again on every resize -- the guard makes re-entry a no-op

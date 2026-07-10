@@ -87,6 +87,11 @@ public:
 #endif
     }
 
+    // Destroy the raw Vulkan objects (the VkFFT plan + its pool/fence) while
+    // the device is still known-alive. QRhiWidget::releaseResources() is the
+    // right call site; the destructor also calls this as a backstop.
+    void release_native() { release_vkfft(); }
+
     // Returns false if a shader is missing or a resource fails to build. half_v
     // / kinetic are SplitOperator3D's phase tables; psi0 the initial field.
     bool initialize(QRhi* rhi, const ses::Grid3D& grid,
