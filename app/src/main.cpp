@@ -1166,6 +1166,14 @@ public:
     }
     double peak_excited_population() const { return rabi_peak_; }
 
+    // Verification hook (--dump-frame-near): place the camera at an explicit
+    // distance -- inside the box (< ~80) exercises the volume proxy's
+    // front-face culling, which only matters from an interior viewpoint.
+    void debug_set_camera_distance(double d) {
+        distance_ = std::clamp(d, 4.0, 300.0);
+        update();
+    }
+
     // Selftest hooks (magnetic Larmor precession): set psi to a cached
     // manifold eigenstate and probe another state's population. A field along
     // z rotates 2p_x -> 2p_y at omega_L = B/2, so P(2p_y) must rise -- proving
@@ -2508,6 +2516,25 @@ int main(int argc, char** argv) {
                 const bool ok = !frame.isNull() &&
                                 frame.save(QStringLiteral("frame_dump.bmp"), "BMP");
                 std::fprintf(stderr, "dump-frame: %dx%d  [%s]\n", frame.width(),
+                             frame.height(), ok ? "PASS" : "FAIL");
+                app.exit(ok ? 0 : 1);
+            });
+        });
+    }
+    // Same, from INSIDE the box (distance 4 Bohr in the +-80 box): the volume
+    // pass rasterizes the proxy's back faces (front-face culled), which is
+    // only exercised by an interior eye -- if the culling/winding choice were
+    // wrong under Vulkan, this frame would lose the cloud entirely.
+    if (app.arguments().contains(QStringLiteral("--dump-frame-near"))) {
+        run_when_manifold_ready(viewport, [viewport, &app] {
+            std::fprintf(stderr, "dump-frame-near: manifold ready, zooming in\n");
+            viewport->debug_set_camera_distance(4.0);
+            QTimer::singleShot(2000, viewport, [viewport, &app] {
+                std::fprintf(stderr, "dump-frame-near: grabbing\n");
+                const QImage frame = viewport->grabFramebuffer();
+                const bool ok = !frame.isNull() &&
+                                frame.save(QStringLiteral("frame_dump_near.bmp"), "BMP");
+                std::fprintf(stderr, "dump-frame-near: %dx%d  [%s]\n", frame.width(),
                              frame.height(), ok ? "PASS" : "FAIL");
                 app.exit(ok ? 0 : 1);
             });
