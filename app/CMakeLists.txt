@@ -20,6 +20,36 @@ set(CMAKE_AUTOUIC ON)
 find_package(Qt6 REQUIRED COMPONENTS ShaderTools GuiPrivate)
 find_package(VulkanHeaders CONFIG REQUIRED)  # vcpkg port: Vulkan::Headers
 
+# VkFFT (M4): header-only FFT + its runtime shader compiler (glslang) + the
+# Vulkan loader import lib. Optional -- when absent the engine compiles
+# without SES_HAVE_VKFFT and stays on the hand-rolled line FFT. VkFFT
+# includes the bare 'glslang_c_interface.h'; vcpkg installs it under
+# glslang/Include/, so that directory must be on the include path.
+find_package(Vulkan QUIET)
+find_package(glslang CONFIG QUIET)
+find_path(SES_GLSLANG_C_INCLUDE_DIR glslang_c_interface.h
+          PATH_SUFFIXES glslang/Include)
+if(TARGET Vulkan::Vulkan AND TARGET glslang::glslang AND SES_GLSLANG_C_INCLUDE_DIR)
+    set(SES_VKFFT_AVAILABLE ON)
+    message(STATUS "VkFFT enabled (engine step-body 3D transforms).")
+else()
+    set(SES_VKFFT_AVAILABLE OFF)
+    message(STATUS "VkFFT unavailable -- engine keeps the hand-rolled FFT.")
+endif()
+# One helper applies the flags to any target embedding the engine header.
+function(ses_enable_vkfft target)
+    if(SES_VKFFT_AVAILABLE)
+        target_compile_definitions(${target} PRIVATE SES_HAVE_VKFFT=1 VKFFT_BACKEND=0)
+        target_include_directories(${target} SYSTEM PRIVATE
+            "${SES_GLSLANG_C_INCLUDE_DIR}")
+        target_link_libraries(${target} PRIVATE
+            Vulkan::Vulkan
+            glslang::glslang
+            glslang::SPIRV
+            glslang::glslang-default-resource-limits)
+    endif()
+endfunction()
+
 add_executable(sesolver_app
     src/main.cpp
 )
@@ -41,6 +71,7 @@ target_link_libraries(sesolver_app
         ses_warnings
 )
 target_compile_features(sesolver_app PRIVATE cxx_std_20)
+ses_enable_vkfft(sesolver_app)
 
 # Bake every compute kernel the QrhiEngine loads at 256^3 plus the mesh +
 # volume render shaders into the app's resources (SPIR-V only: the app is
@@ -217,29 +248,9 @@ if(TARGET Qt6::GuiPrivate AND TARGET Qt6::ShaderTools AND TARGET Vulkan::Headers
             bridge_store.comp.qsb
             bridge_load.comp.qsb
             project_deposit.comp.qsb)
-    # M4 spike: VkFFT (header-only, vcpkg) + its runtime shader compiler
-    # (glslang) + the Vulkan loader import lib. Optional: the check self-skips
-    # when absent so the harness still builds on a lean setup.
-    find_package(Vulkan QUIET)
-    find_package(glslang CONFIG QUIET)
-    # VkFFT includes the bare 'glslang_c_interface.h'; vcpkg installs it under
-    # glslang/Include/, so that directory must be on the include path.
-    find_path(SES_GLSLANG_C_INCLUDE_DIR glslang_c_interface.h
-              PATH_SUFFIXES glslang/Include)
-    if(TARGET Vulkan::Vulkan AND TARGET glslang::glslang AND SES_GLSLANG_C_INCLUDE_DIR)
-        target_compile_definitions(sesolver_qrhicheck PRIVATE
-            SES_HAVE_VKFFT=1 VKFFT_BACKEND=0)
-        target_include_directories(sesolver_qrhicheck SYSTEM PRIVATE
-            "${SES_GLSLANG_C_INCLUDE_DIR}")
-        target_link_libraries(sesolver_qrhicheck PRIVATE
-            Vulkan::Vulkan
-            glslang::glslang
-            glslang::SPIRV
-            glslang::glslang-default-resource-limits)
-        message(STATUS "VkFFT spike enabled in sesolver_qrhicheck.")
-    else()
-        message(STATUS "VkFFT spike skipped (needs vkfft + glslang + Vulkan loader).")
-    endif()
+    # VkFFT: engine integration + the standalone spike check (see the shared
+    # helper above; the check self-skips when the ports are absent).
+    ses_enable_vkfft(sesolver_qrhicheck)
     if(_ses_qt_platform_plugins)
         qt6_import_plugins(sesolver_qrhicheck INCLUDE ${_ses_qt_platform_plugins})
     endif()

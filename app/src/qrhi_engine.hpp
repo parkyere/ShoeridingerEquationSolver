@@ -11,6 +11,13 @@
 // psi buffer is a single Static VkBuffer (GPU-written in place, read back), which
 // is also what a later VkFFT drop-in needs (one durable handle).
 
+#ifdef SES_HAVE_VKFFT
+// vulkan.h must be seen WITH prototypes before any Qt header pulls it in
+// under VK_NO_PROTOTYPES (include guards would then hide the prototypes from
+// header-only VkFFT, which calls vk* directly against the loader import lib).
+#include <vulkan/vulkan.h>
+#endif
+
 #include <core/complex.hpp>
 #include <core/decay.hpp>
 #include <core/drive.hpp>
@@ -18,9 +25,16 @@
 #include <core/vec.hpp>
 
 #include <rhi/qrhi.h>
+#include <rhi/qrhi_platform.h>
 
 #include <QFile>
 #include <QString>
+
+#ifdef SES_HAVE_VKFFT
+#include <QVulkanFunctions>
+#include <QVulkanInstance>
+#include <VkFFT/vkFFT.h>
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -50,6 +64,29 @@ inline QShader load_qsb(const QString& path) {
 
 class QrhiEngine {
 public:
+    QrhiEngine() = default;
+    ~QrhiEngine() { release_vkfft(); }
+    QrhiEngine(const QrhiEngine&) = delete;
+    QrhiEngine& operator=(const QrhiEngine&) = delete;
+
+    // Prefer VkFFT for the step body's 3D transforms when the plan built
+    // (checks use this to also cover the hand-rolled path). No-op when built
+    // without VkFFT support.
+    void set_use_vkfft(bool on) {
+#ifdef SES_HAVE_VKFFT
+        use_vkfft_ = on;
+#else
+        (void)on;
+#endif
+    }
+    bool vkfft_active() const {
+#ifdef SES_HAVE_VKFFT
+        return use_vkfft_ && vkfft_ready_;
+#else
+        return false;
+#endif
+    }
+
     // Returns false if a shader is missing or a resource fails to build. half_v
     // / kinetic are SplitOperator3D's phase tables; psi0 the initial field.
     bool initialize(QRhi* rhi, const ses::Grid3D& grid,
@@ -198,6 +235,11 @@ public:
         u->uploadStaticBuffer(kin_.data(), kin_f.data());
         cb->resourceUpdate(u);
         rhi_->endOffscreenFrame();
+
+        // M4: plan the VkFFT 3D transform on psi's native VkBuffer (outside any
+        // frame -- plan creation compiles shaders via glslang). On failure the
+        // step body stays on the hand-rolled line FFT.
+        ensure_vkfft();
         return true;
     }
 
@@ -210,7 +252,7 @@ public:
         if (rhi_->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) { return; }
         QRhiResourceUpdateBatch* u = rhi_->nextResourceUpdateBatch();
         update_step_ubos(u);
-        cb->beginComputePass(u);
+        cb->beginComputePass(u, QRhiCommandBuffer::ExternalContent);
         for (int s = 0; s < nsteps; ++s) {
             run_step_body(cb, mul_groups, mul_half_srb_.data(), mul_kin_srb_.data());
         }
@@ -245,7 +287,7 @@ public:
                                    static_cast<quint32>(2 * s + 1) * kick_stride_,
                                    sizeof(KickParams), &kp);
         }
-        cb->beginComputePass(u);
+        cb->beginComputePass(u, QRhiCommandBuffer::ExternalContent);
         for (int s = 0; s < nsteps; ++s) {
             record_kick(cb, mul_groups, static_cast<quint32>(2 * s) * kick_stride_);
             run_step_body(cb, mul_groups, mul_half_srb_.data(), mul_kin_srb_.data());
@@ -314,7 +356,7 @@ public:
             if (rhi_->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) { return stats; }
             QRhiResourceUpdateBatch* u = rhi_->nextResourceUpdateBatch();
             update_step_ubos(u);
-            cb->beginComputePass(u);
+            cb->beginComputePass(u, QRhiCommandBuffer::ExternalContent);
             run_step_body(cb, mul_groups, relax_half_srb_.data(), relax_kin_srb_.data());
             cb->endComputePass();
             rhi_->endOffscreenFrame();
@@ -424,7 +466,7 @@ public:
                 if (rhi_->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) { return stats; }
                 QRhiResourceUpdateBatch* u = rhi_->nextResourceUpdateBatch();
                 update_step_ubos(u);
-                cb->beginComputePass(u);
+                cb->beginComputePass(u, QRhiCommandBuffer::ExternalContent);
                 run_step_body(cb, mul_groups, relax_half_srb_.data(), relax_kin_srb_.data());
                 cb->endComputePass();
                 rhi_->endOffscreenFrame();
@@ -828,7 +870,7 @@ public:
         QRhiResourceUpdateBatch* u = rhi_->nextResourceUpdateBatch();
         update_step_ubos(u);
         stage_rotation_ubos(u, b, c, half_angle);
-        cb->beginComputePass(u);
+        cb->beginComputePass(u, QRhiCommandBuffer::ExternalContent);
         for (int s = 0; s < nsteps; ++s) {
             record_rotation(cb, mul_groups, b, c);
             run_step_body(cb, mul_groups, mul_half_srb_.data(), mul_kin_srb_.data());
@@ -990,10 +1032,23 @@ private:
 
     // One split-operator step in the current pass: halfV . IFFT . kin . FFT .
     // halfV, using the given half/kin multiply bindings (real vs relax tables).
+    // With VkFFT active, the two 3D transforms are recorded as external blocks
+    // (coalesced transposes; the inverse carries the 1/N normalize), replacing
+    // six line-FFT dispatches and both conj-scale dispatches; the enclosing
+    // pass must have been begun with QRhiCommandBuffer::ExternalContent.
     void run_step_body(QRhiCommandBuffer* cb, int mul_groups,
                        QRhiShaderResourceBindings* half_srb,
                        QRhiShaderResourceBindings* kin_srb) {
         multiply(cb, half_srb, mul_groups);
+#ifdef SES_HAVE_VKFFT
+        if (vkfft_active()) {
+            record_vkfft(cb, -1);  // forward
+            multiply(cb, kin_srb, mul_groups);
+            record_vkfft(cb, 1);   // inverse, normalized 1/N by the plan
+            multiply(cb, half_srb, mul_groups);
+            return;
+        }
+#endif
         fft3(cb);
         multiply(cb, kin_srb, mul_groups);
         conjscale(cb, conj1_srb_.data(), mul_groups);
@@ -1316,6 +1371,123 @@ private:
         store_pipe_->setShaderResourceBindings(store_srb_.data());
         return store_pipe_->create();
     }
+
+#ifdef SES_HAVE_VKFFT
+    // ---- VkFFT (M4): the 3D transforms of the step body ------------------
+    // Plan a 3D C2C fp32 transform IN PLACE on psi's native VkBuffer, on the
+    // QRhi device/queue. Called once from initialize() (outside any frame:
+    // plan creation compiles shaders via glslang). Failure leaves the engine
+    // on the hand-rolled path.
+    bool ensure_vkfft() {
+        if (vkfft_ready_ || vkfft_failed_) { return vkfft_ready_; }
+        vkfft_failed_ = true;
+        const auto* h =
+            static_cast<const QRhiVulkanNativeHandles*>(rhi_->nativeHandles());
+        if (h == nullptr || h->inst == nullptr) { return false; }
+        vkfft_df_ = h->inst->deviceFunctions(h->dev);
+        vkfft_phys_dev_ = h->physDev;
+        vkfft_dev_ = h->dev;
+        vkfft_queue_ = h->gfxQueue;
+        VkCommandPoolCreateInfo pool_info{};
+        pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        pool_info.queueFamilyIndex = h->gfxQueueFamilyIdx;
+        VkFenceCreateInfo fence_info{};
+        fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        if (vkfft_df_->vkCreateCommandPool(vkfft_dev_, &pool_info, nullptr,
+                                           &vkfft_pool_) != VK_SUCCESS ||
+            vkfft_df_->vkCreateFence(vkfft_dev_, &fence_info, nullptr,
+                                     &vkfft_fence_) != VK_SUCCESS) {
+            release_vkfft();
+            return false;
+        }
+        vkfft_psi_buf_ =
+            *reinterpret_cast<const VkBuffer*>(psi_->nativeBuffer().objects[0]);
+        vkfft_buf_size_ = static_cast<quint64>(2 * cells_ * sizeof(float));
+        // The configuration stores POINTERS; the pointees are members so they
+        // outlive the plan (VkFFTAppend dereferences them per call).
+        VkFFTConfiguration conf{};
+        conf.FFTdim = 3;
+        conf.size[0] = static_cast<quint64>(grid_.x.n);
+        conf.size[1] = static_cast<quint64>(grid_.y.n);
+        conf.size[2] = static_cast<quint64>(grid_.z.n);
+        conf.physicalDevice = &vkfft_phys_dev_;
+        conf.device = &vkfft_dev_;
+        conf.queue = &vkfft_queue_;
+        conf.commandPool = &vkfft_pool_;
+        conf.fence = &vkfft_fence_;
+        conf.buffer = &vkfft_psi_buf_;
+        conf.bufferSize = &vkfft_buf_size_;
+        conf.normalize = 1;  // inverse divides by N (replaces the conj/N pass)
+        const VkFFTResult res = initializeVkFFT(&vkfft_app_, conf);
+        if (res != VKFFT_SUCCESS) {
+            std::fprintf(stderr, "QrhiEngine: initializeVkFFT = %d -- staying on "
+                                 "the hand-rolled FFT\n",
+                         static_cast<int>(res));
+            release_vkfft();
+            return false;
+        }
+        std::fprintf(stderr, "QrhiEngine: VkFFT 3D plan active (%dx%dx%d)\n",
+                     grid_.x.n, grid_.y.n, grid_.z.n);
+        vkfft_ready_ = true;
+        vkfft_failed_ = false;
+        return true;
+    }
+
+    void release_vkfft() {
+        if (vkfft_ready_) {
+            deleteVkFFT(&vkfft_app_);
+            vkfft_ready_ = false;
+        }
+        if (vkfft_df_ != nullptr) {
+            if (vkfft_fence_ != VK_NULL_HANDLE) {
+                vkfft_df_->vkDestroyFence(vkfft_dev_, vkfft_fence_, nullptr);
+                vkfft_fence_ = VK_NULL_HANDLE;
+            }
+            if (vkfft_pool_ != VK_NULL_HANDLE) {
+                vkfft_df_->vkDestroyCommandPool(vkfft_dev_, vkfft_pool_, nullptr);
+                vkfft_pool_ = VK_NULL_HANDLE;
+            }
+        }
+    }
+
+    // Record one whole-3D transform as an external block in the current
+    // ExternalContent compute pass. direction: -1 forward, 1 inverse (1/N).
+    // QRhi's resource tracking is suspended inside the block, so explicit
+    // compute-to-compute memory barriers order psi against the surrounding
+    // QRhi dispatches on both sides.
+    void record_vkfft(QRhiCommandBuffer* cb, int direction) {
+        cb->beginExternal();
+        // Re-query AFTER beginExternal: on Vulkan this is the pass's live
+        // secondary command buffer, not the primary.
+        const auto* nh = static_cast<const QRhiVulkanCommandBufferNativeHandles*>(
+            cb->nativeHandles());
+        VkCommandBuffer vkcb = nh->commandBuffer;
+        VkMemoryBarrier mb{};
+        mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        vkfft_df_->vkCmdPipelineBarrier(vkcb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                                        &mb, 0, nullptr, 0, nullptr);
+        VkFFTLaunchParams lp{};
+        lp.buffer = &vkfft_psi_buf_;
+        lp.commandBuffer = &vkcb;
+        const VkFFTResult res = VkFFTAppend(&vkfft_app_, direction, &lp);
+        if (res != VKFFT_SUCCESS) {
+            // Should be impossible after a successful plan; surface loudly.
+            std::fprintf(stderr, "QrhiEngine: VkFFTAppend = %d\n",
+                         static_cast<int>(res));
+        }
+        vkfft_df_->vkCmdPipelineBarrier(vkcb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                                        &mb, 0, nullptr, 0, nullptr);
+        cb->endExternal();
+    }
+#else
+    void release_vkfft() {}
+    bool ensure_vkfft() { return false; }
+#endif  // SES_HAVE_VKFFT
 
     // Check-only extras: the imageLoad readback path of bridge_roundtrip.
     bool ensure_bridge_check() {
@@ -1716,6 +1888,23 @@ private:
     QScopedPointer<QRhiShaderResourceBindings> proj_srb_;
     QScopedPointer<QRhiComputePipeline> proj_pipe_;
     std::vector<std::vector<ses::Complex<double>>> glm_host_;
+
+#ifdef SES_HAVE_VKFFT
+    // VkFFT (M4): the 3D-transform plan on psi's native VkBuffer. The Vk
+    // handles are members because VkFFTConfiguration stores POINTERS to them.
+    bool use_vkfft_ = true;
+    bool vkfft_ready_ = false;
+    bool vkfft_failed_ = false;
+    VkFFTApplication vkfft_app_{};
+    VkBuffer vkfft_psi_buf_ = VK_NULL_HANDLE;
+    quint64 vkfft_buf_size_ = 0;
+    VkPhysicalDevice vkfft_phys_dev_ = VK_NULL_HANDLE;
+    VkDevice vkfft_dev_ = VK_NULL_HANDLE;
+    VkQueue vkfft_queue_ = VK_NULL_HANDLE;
+    VkCommandPool vkfft_pool_ = VK_NULL_HANDLE;
+    VkFence vkfft_fence_ = VK_NULL_HANDLE;
+    QVulkanDeviceFunctions* vkfft_df_ = nullptr;
+#endif
 };
 
 }  // namespace ses_qrhi
