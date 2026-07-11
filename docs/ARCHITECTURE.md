@@ -9,8 +9,8 @@ Solve and visualize the **single-electron** time-dependent Schrödinger equation
 i ∂ψ/∂t = H ψ,    H = -½ ∇² + V(r, t)
 ```
 
-First deliverable: a **Gaussian wavepacket** evolving in real time (free space,
-then a potential), with `|ψ(r,t)|²` rendered as an electron cloud.
+The app renders `|ψ(r,t)|²` as a real-time **electron cloud** — from free
+Gaussian wavepackets to the full hydrogen atom-and-light demo.
 
 **Out of scope (by design):** multiple electrons, Hartree/HF/DFT, the many-body
 wavefunction. The exact `N`-electron wavefunction lives in `3N` dimensions, so a
@@ -100,10 +100,12 @@ FFTW (the CPU FFT is hand-rolled), Eigen/BLAS/LAPACK.
 - **Regularize the bare Coulomb `-Z/r`** rather than softening it: the single
   cell on the nucleus (where `-Z/r` = -∞) takes the analytic cell average
   `-Z·C/h` (`C = ∫1/r` over the unit cube ≈ 2.380), while every other cell keeps
-  the exact `-Z/r`. This yields the textbook hydrogen spectrum (`E(1s) = -13.6
-  eV`, exact `2s = 2p` degeneracy); the older soft-Coulomb `-Z/√(r²+a²)` rounded
-  the whole well and pushed `E(1s)` up to -9 eV. The radial solves feed bare
-  `-Z/r` directly (their grid `r = (i+1)h` never hits 0).
+  the exact `-Z/r`. The radial solves feed bare `-Z/r` directly (their grid
+  `r = (i+1)h` never hits 0) and reproduce the textbook spectrum
+  (`E(1s) = -13.6 eV`, exact `2s = 2p` degeneracy); on the 3D grid the s-state
+  energies sit within the cusp-resolution gap of textbook (~1.5 eV shallow for
+  1s at `h = 0.625`, shrinking ~`1/n³`). Softening instead
+  (`-Z/√(r²+a²)`) rounds the whole well and pushes `E(1s)` up to ~-9 eV.
 
 ## Validation strategy
 
@@ -114,7 +116,7 @@ analytic oracle as its red test:
   `σ(t) = σ₀·√(1 + (t/(2σ₀²))²)` (atomic units, mₑ=1), center moves at `k₀`.
   Norm stays 1.
 - Bound dynamics: harmonic-oscillator coherent state oscillates rigidly;
-  stationary states (later, via imaginary time) match `E` and shape.
+  stationary states (via imaginary time) match `E` and shape.
 - Every discretization carries a **convergence-order** test (error ~ `h^p`).
 - **GPU kernels**: the GPU runs fp32 for display speed; the CPU double core
   stays THE tested truth. `sesolver_vkcheck` compares every kernel and engine
