@@ -19,7 +19,7 @@ layout(std140, binding = 0) uniform Ubo {
     float inv_peak;
     float absorbance;
     float proton_radius;
-    float pad0;
+    float jitter_frame;  // temporal rotation of the raymarch jitter
 };
 
 layout(binding = 1) uniform sampler3D psi_tex;
@@ -70,8 +70,11 @@ void main() {
 
     const int kSteps = 384;  // ~0.42 Bohr/sample across the +-80 box
     float step_len = (t_stop - tn) / float(kSteps);
-    // Per-pixel jitter of the ray start kills wood-grain banding.
-    float jitter = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+    // Interleaved gradient noise, rotated per frame (golden-ratio walk):
+    // spatially it kills wood-grain banding; temporally it decorrelates the
+    // residual noise so the accumulation pass averages it away.
+    vec2 jp = gl_FragCoord.xy + 5.588238 * jitter_frame;
+    float jitter = fract(52.9829189 * fract(0.06711056 * jp.x + 0.00583715 * jp.y));
 
     vec3 C = vec3(0.0);
     float A = 0.0;

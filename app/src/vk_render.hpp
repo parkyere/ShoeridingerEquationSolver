@@ -36,7 +36,7 @@ namespace ses_vk {
 constexpr int kPhaseLutSize = 256;
 constexpr double kProtonMarkerRadius = 0.35;  // symbolic (real ~1e-5 Bohr)
 
-// SPIR-V blobs for the two pipelines (offline-baked; caller owns storage).
+// SPIR-V blobs for the pipelines + post chain (offline-baked; caller owns).
 struct RenderKernels {
     const unsigned char* mesh_vert = nullptr;
     std::size_t mesh_vert_size = 0;
@@ -46,6 +46,14 @@ struct RenderKernels {
     std::size_t volume_vert_size = 0;
     const unsigned char* volume_frag = nullptr;
     std::size_t volume_frag_size = 0;
+    const unsigned char* accum = nullptr;  // temporal accumulation
+    std::size_t accum_size = 0;
+    const unsigned char* bloom_down = nullptr;
+    std::size_t bloom_down_size = 0;
+    const unsigned char* bloom_up = nullptr;
+    std::size_t bloom_up_size = 0;
+    const unsigned char* compose = nullptr;  // tonemap + bloom + dither
+    std::size_t compose_size = 0;
 };
 
 class SceneRenderer {
@@ -60,6 +68,8 @@ public:
         double peak = 0.0;        // |psi|^2 brightness normalizer
         double absorbance = 0.0;  // Beer-Lambert opacity
         float flash = 0.0f;       // photon-flash background weight, 0..1
+        bool accumulate = false;  // scene static: keep temporal averaging
+        float frame_index = 0.0f;  // temporal jitter/dither rotation
         VkImageView psi_volume = VK_NULL_HANDLE;  // engine bridge; null -> CPU fallback
         const ses::Mesh* mesh = nullptr;          // non-null: upload isosurface
         const std::vector<ses::Rgb>* mesh_colors = nullptr;
@@ -75,12 +85,12 @@ public:
                     const RenderKernels& blobs) {
         ctx_ = &ctx;
         grid_ = grid;
-        if (!arena_.create(ctx, 8, 4, 8, 0, 0, 8)) {
+        if (!arena_.create(ctx, 32, 32, 24, 0, 32, 24)) {
             return false;
         }
         if (!create_samplers() || !create_ubos() || !create_render_pass() ||
             !create_pipelines(blobs) || !create_static_geometry() ||
-            !create_phase_lut()) {
+            !create_phase_lut() || !create_post_kernels(blobs)) {
             return false;
         }
         scene_set_ = arena_.allocate(*ctx_, mesh_dsl_holder_.set);
@@ -121,8 +131,10 @@ public:
 
     std::uint32_t width() const { return width_; }
     std::uint32_t height() const { return height_; }
-    VkImage color_image() const { return color_.img; }
-    VkImageView color_view() const { return color_.view; }
+    // What the presentation shell samples: the tonemapped RGBA8 composite
+    // (handed over in SHADER_READ_ONLY after every frame).
+    VkImage color_image() const { return present_.img; }
+    VkImageView color_view() const { return present_.view; }
 
     // Record + submit the whole scene into the offscreen color image; on
     // return the image is in SHADER_READ_ONLY_OPTIMAL for the shell's blit.
@@ -209,6 +221,30 @@ public:
         }
 
         vkCmdEndRenderPass(cb);
+
+        // Per-frame post parameters, then the post chain in the same cb.
+        struct alignas(16) AccumParams {
+            std::int32_t accumulate;
+            std::int32_t p0, p1, p2;
+        };
+        const AccumParams ap{
+            (in.accumulate && !force_accum_reset_) ? 1 : 0, 0, 0, 0};
+        force_accum_reset_ = false;
+        std::memcpy(accum_ubo_.mapped, &ap, sizeof(ap));
+        vmaFlushAllocation(ctx_->allocator, accum_ubo_.alloc, 0,
+                           VK_WHOLE_SIZE);
+        struct alignas(16) ComposeParams {
+            float bloom_strength;
+            float exposure;
+            float frame;
+            float p0;
+        };
+        const ComposeParams cp{0.35f, 1.0f, in.frame_index, 0.0f};
+        std::memcpy(compose_ubo_.mapped, &cp, sizeof(cp));
+        vmaFlushAllocation(ctx_->allocator, compose_ubo_.alloc, 0,
+                           VK_WHOLE_SIZE);
+        record_post(cb);
+
         const bool ok = shot.submit_and_wait(*ctx_);
         shot.destroy(*ctx_);
         return ok;
@@ -223,6 +259,15 @@ public:
         }
         destroy_target();
         arena_.destroy(*ctx_);
+        compose_k_.destroy(*ctx_);
+        up_k_.destroy(*ctx_);
+        down_k_.destroy(*ctx_);
+        accum_k_.destroy(*ctx_);
+        ctx_->destroy_buffer(&compose_ubo_);
+        for (int i = 0; i < 3; ++i) {
+            ctx_->destroy_buffer(&down_ubo_[i]);
+        }
+        ctx_->destroy_buffer(&accum_ubo_);
         destroy_pipe(mesh_pipe_);
         destroy_pipe(volume_pipe_);
         destroy_layout(mesh_pl_);
@@ -271,7 +316,7 @@ private:
         float inv_peak = 0.0f;
         float absorbance = 0.0f;
         float proton_radius = 0.0f;
-        float pad0 = 0.0f;
+        float jitter_frame = 0.0f;  // temporal raymarch jitter rotation
     };
 
     struct DslHolder {
@@ -366,14 +411,14 @@ private:
     // shell's sampling of the previous frame against this frame's clear.
     bool create_render_pass() {
         VkAttachmentDescription atts[2]{};
-        atts[0].format = VK_FORMAT_R8G8B8A8_UNORM;
+        atts[0].format = VK_FORMAT_R16G16B16A16_SFLOAT;  // HDR scene
         atts[0].samples = VK_SAMPLE_COUNT_1_BIT;
         atts[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         atts[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         atts[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         atts[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         atts[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        atts[0].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        atts[0].finalLayout = VK_IMAGE_LAYOUT_GENERAL;  // post chain imageLoads
         atts[1].format = VK_FORMAT_D32_SFLOAT;
         atts[1].samples = VK_SAMPLE_COUNT_1_BIT;
         atts[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -409,7 +454,7 @@ private:
         deps[1].dstSubpass = VK_SUBPASS_EXTERNAL;
         deps[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        deps[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        deps[1].dstStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
         deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
         VkRenderPassCreateInfo rpci{};
@@ -425,13 +470,15 @@ private:
     }
 
     bool create_target() {
-        if (!create_attachment(VK_FORMAT_R8G8B8A8_UNORM,
+        if (!create_attachment(VK_FORMAT_R16G16B16A16_SFLOAT,
                                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                                   VK_IMAGE_USAGE_SAMPLED_BIT,
-                               VK_IMAGE_ASPECT_COLOR_BIT, &color_) ||
+                                   VK_IMAGE_USAGE_STORAGE_BIT,
+                               VK_IMAGE_ASPECT_COLOR_BIT, &color_, width_,
+                               height_) ||
             !create_attachment(VK_FORMAT_D32_SFLOAT,
                                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                               VK_IMAGE_ASPECT_DEPTH_BIT, &depth_)) {
+                               VK_IMAGE_ASPECT_DEPTH_BIT, &depth_, width_,
+                               height_)) {
             return false;
         }
         const VkImageView views[2] = {color_.view, depth_.view};
@@ -443,18 +490,22 @@ private:
         fci.width = width_;
         fci.height = height_;
         fci.layers = 1;
-        return vkCreateFramebuffer(ctx_->device, &fci, nullptr, &fb_) ==
-               VK_SUCCESS;
+        if (vkCreateFramebuffer(ctx_->device, &fci, nullptr, &fb_) !=
+            VK_SUCCESS) {
+            return false;
+        }
+        return create_post_chain();
     }
 
     bool create_attachment(VkFormat fmt, VkImageUsageFlags usage,
                            VkImageAspectFlags aspect,
-                           DeviceContext::Image* out) {
+                           DeviceContext::Image* out, std::uint32_t w,
+                           std::uint32_t h) {
         VkImageCreateInfo ici{};
         ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         ici.imageType = VK_IMAGE_TYPE_2D;
         ici.format = fmt;
-        ici.extent = {width_, height_, 1};
+        ici.extent = {w, h, 1};
         ici.mipLevels = 1;
         ici.arrayLayers = 1;
         ici.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -484,6 +535,127 @@ private:
         }
         ctx_->destroy_image(&color_);
         ctx_->destroy_image(&depth_);
+        ctx_->destroy_image(&accum_);
+        for (int i = 0; i < 3; ++i) {
+            ctx_->destroy_image(&bloom_[i]);
+        }
+        ctx_->destroy_image(&present_);
+    }
+
+    // The post-processing chain images (all storage, kept in GENERAL except
+    // the present image, which round-trips to SHADER_READ_ONLY for the
+    // shell) + their descriptor sets, rebuilt with the target on resize.
+    bool create_post_chain() {
+        const std::uint32_t hw = std::max(1u, width_ / 2);
+        const std::uint32_t hh = std::max(1u, height_ / 2);
+        const std::uint32_t qw = std::max(1u, hw / 2);
+        const std::uint32_t qh = std::max(1u, hh / 2);
+        const std::uint32_t ew = std::max(1u, qw / 2);
+        const std::uint32_t eh = std::max(1u, qh / 2);
+        const VkImageUsageFlags post_usage =
+            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        if (!create_attachment(VK_FORMAT_R16G16B16A16_SFLOAT, post_usage,
+                               VK_IMAGE_ASPECT_COLOR_BIT, &accum_, width_,
+                               height_) ||
+            !create_attachment(VK_FORMAT_R16G16B16A16_SFLOAT, post_usage,
+                               VK_IMAGE_ASPECT_COLOR_BIT, &bloom_[0], hw, hh) ||
+            !create_attachment(VK_FORMAT_R16G16B16A16_SFLOAT, post_usage,
+                               VK_IMAGE_ASPECT_COLOR_BIT, &bloom_[1], qw, qh) ||
+            !create_attachment(VK_FORMAT_R16G16B16A16_SFLOAT, post_usage,
+                               VK_IMAGE_ASPECT_COLOR_BIT, &bloom_[2], ew, eh) ||
+            !create_attachment(VK_FORMAT_R8G8B8A8_UNORM, post_usage,
+                               VK_IMAGE_ASPECT_COLOR_BIT, &present_, width_,
+                               height_)) {
+            return false;
+        }
+        bloom_size_[0] = {hw, hh};
+        bloom_size_[1] = {qw, qh};
+        bloom_size_[2] = {ew, eh};
+
+        // One transition pass: everything to GENERAL.
+        OneShot shot;
+        if (!shot.begin(*ctx_)) {
+            return false;
+        }
+        const DeviceContext::Image* imgs[5] = {&accum_, &bloom_[0], &bloom_[1],
+                                               &bloom_[2], &present_};
+        for (const DeviceContext::Image* im : imgs) {
+            image_layout_barrier(shot.cb(), im->img, VK_IMAGE_LAYOUT_UNDEFINED,
+                                 VK_IMAGE_LAYOUT_GENERAL,
+                                 VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 VK_ACCESS_SHADER_READ_BIT |
+                                     VK_ACCESS_SHADER_WRITE_BIT);
+        }
+        shot.submit_and_wait(*ctx_);
+        shot.destroy(*ctx_);
+        present_layout_ = VK_IMAGE_LAYOUT_GENERAL;
+        force_accum_reset_ = true;
+
+        // (Re)point the post sets at the fresh images.
+        const auto ubo = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        if (accum_set_ == VK_NULL_HANDLE) {
+            accum_set_ = arena_.allocate(*ctx_, accum_k_.set_layout());
+            for (int i = 0; i < 3; ++i) {
+                down_set_[i] = arena_.allocate(*ctx_, down_k_.set_layout());
+            }
+            for (int i = 0; i < 2; ++i) {
+                up_set_[i] = arena_.allocate(*ctx_, up_k_.set_layout());
+            }
+            compose_set_ = arena_.allocate(*ctx_, compose_k_.set_layout());
+            if (accum_set_ == VK_NULL_HANDLE ||
+                down_set_[0] == VK_NULL_HANDLE ||
+                down_set_[1] == VK_NULL_HANDLE ||
+                down_set_[2] == VK_NULL_HANDLE ||
+                up_set_[0] == VK_NULL_HANDLE || up_set_[1] == VK_NULL_HANDLE ||
+                compose_set_ == VK_NULL_HANDLE) {
+                return false;
+            }
+        }
+        arena_.write_image(*ctx_, accum_set_, 0, color_.view);
+        arena_.write_image(*ctx_, accum_set_, 1, accum_.view);
+        arena_.write_buffer(*ctx_, accum_set_, 2, ubo, accum_ubo_.buf, 16);
+        // Downsample chain: accum -> half (bright pass), half -> quarter,
+        // quarter -> eighth. Sampled reads run in GENERAL.
+        const VkImageView down_src[3] = {accum_.view, bloom_[0].view,
+                                         bloom_[1].view};
+        for (int i = 0; i < 3; ++i) {
+            arena_.write_sampled(*ctx_, down_set_[i], 0, down_src[i], samp_3d_,
+                                 VK_IMAGE_LAYOUT_GENERAL);
+            arena_.write_image(*ctx_, down_set_[i], 1, bloom_[i].view);
+            arena_.write_buffer(*ctx_, down_set_[i], 2, ubo,
+                                down_ubo_[i].buf, 16);
+        }
+        // Upsample additive: eighth -> quarter, quarter -> half.
+        arena_.write_sampled(*ctx_, up_set_[0], 0, bloom_[2].view, samp_3d_,
+                             VK_IMAGE_LAYOUT_GENERAL);
+        arena_.write_image(*ctx_, up_set_[0], 1, bloom_[1].view);
+        arena_.write_sampled(*ctx_, up_set_[1], 0, bloom_[1].view, samp_3d_,
+                             VK_IMAGE_LAYOUT_GENERAL);
+        arena_.write_image(*ctx_, up_set_[1], 1, bloom_[0].view);
+        // Compose: accum + half-res bloom -> present.
+        arena_.write_image(*ctx_, compose_set_, 0, accum_.view);
+        arena_.write_sampled(*ctx_, compose_set_, 1, bloom_[0].view, samp_3d_,
+                             VK_IMAGE_LAYOUT_GENERAL);
+        arena_.write_image(*ctx_, compose_set_, 2, present_.view);
+        arena_.write_buffer(*ctx_, compose_set_, 3, ubo, compose_ubo_.buf, 16);
+
+        // Constant down-pass params (bright threshold on the first).
+        struct alignas(16) DownParams {
+            std::int32_t bright;
+            float threshold;
+            float p0, p1;
+        };
+        const DownParams d0{1, 0.6f, 0, 0};  // bright pass off the accum
+        const DownParams dn{0, 0.0f, 0, 0};
+        std::memcpy(down_ubo_[0].mapped, &d0, sizeof(d0));
+        std::memcpy(down_ubo_[1].mapped, &dn, sizeof(dn));
+        std::memcpy(down_ubo_[2].mapped, &dn, sizeof(dn));
+        for (int i = 0; i < 3; ++i) {
+            vmaFlushAllocation(ctx_->allocator, down_ubo_[i].alloc, 0,
+                               VK_WHOLE_SIZE);
+        }
+        return true;
     }
 
     VkShaderModule make_module(const unsigned char* spv, std::size_t size) {
@@ -679,6 +851,84 @@ private:
         vkDestroyShaderModule(ctx_->device, vs, nullptr);
         vkDestroyShaderModule(ctx_->device, fs, nullptr);
         return pipe;
+    }
+
+    bool create_post_kernels(const RenderKernels& blobs) {
+        const auto simg = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        const auto cis = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        const auto ubo = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        if (!accum_k_.create(*ctx_, blobs.accum, blobs.accum_size,
+                             {{0, simg}, {1, simg}, {2, ubo}}) ||
+            !down_k_.create(*ctx_, blobs.bloom_down, blobs.bloom_down_size,
+                            {{0, cis}, {1, simg}, {2, ubo}}) ||
+            !up_k_.create(*ctx_, blobs.bloom_up, blobs.bloom_up_size,
+                          {{0, cis}, {1, simg}}) ||
+            !compose_k_.create(*ctx_, blobs.compose, blobs.compose_size,
+                               {{0, simg}, {1, cis}, {2, simg}, {3, ubo}})) {
+            return false;
+        }
+        // Tiny per-pass parameter blocks (host-mapped).
+        const std::uint32_t zero16[4] = {0, 0, 0, 0};
+        if (!write_host(&accum_ubo_, zero16, 16,
+                        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
+            !write_host(&down_ubo_[0], zero16, 16,
+                        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
+            !write_host(&down_ubo_[1], zero16, 16,
+                        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
+            !write_host(&down_ubo_[2], zero16, 16,
+                        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
+            !write_host(&compose_ubo_, zero16, 16,
+                        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)) {
+            return false;
+        }
+        return true;
+    }
+
+    // Record the post chain into the frame's command buffer: accumulation,
+    // the dual-filter bloom pyramid, and the tonemapped composite into the
+    // present image (handed to SHADER_READ_ONLY for the shell).
+    void record_post(VkCommandBuffer cb) {
+        auto dispatch_2d = [cb](const Kernel& k, VkDescriptorSet set,
+                                std::uint32_t w, std::uint32_t h) {
+            k.bind(cb, set);
+            vkCmdDispatch(cb, (w + 15) / 16, (h + 15) / 16, 1);
+        };
+        // Scene (GENERAL after the pass) -> accumulation buffer.
+        dispatch_2d(accum_k_, accum_set_, width_, height_);
+        barrier_compute_to_compute(cb);
+        // Bright pass + down pyramid.
+        dispatch_2d(down_k_, down_set_[0], bloom_size_[0].width,
+                    bloom_size_[0].height);
+        barrier_compute_to_compute(cb);
+        dispatch_2d(down_k_, down_set_[1], bloom_size_[1].width,
+                    bloom_size_[1].height);
+        barrier_compute_to_compute(cb);
+        dispatch_2d(down_k_, down_set_[2], bloom_size_[2].width,
+                    bloom_size_[2].height);
+        barrier_compute_to_compute(cb);
+        // Up pyramid (additive).
+        dispatch_2d(up_k_, up_set_[0], bloom_size_[1].width,
+                    bloom_size_[1].height);
+        barrier_compute_to_compute(cb);
+        dispatch_2d(up_k_, up_set_[1], bloom_size_[0].width,
+                    bloom_size_[0].height);
+        barrier_compute_to_compute(cb);
+        // Composite -> present, then hand it to the shell's sampling.
+        if (present_layout_ != VK_IMAGE_LAYOUT_GENERAL) {
+            image_layout_barrier(
+                cb, present_.img, present_layout_, VK_IMAGE_LAYOUT_GENERAL,
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_ACCESS_SHADER_WRITE_BIT);
+        }
+        dispatch_2d(compose_k_, compose_set_, width_, height_);
+        image_layout_barrier(cb, present_.img, VK_IMAGE_LAYOUT_GENERAL,
+                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_ACCESS_SHADER_WRITE_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             VK_ACCESS_SHADER_READ_BIT);
+        present_layout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
 
     void destroy_pipe(VkPipeline& p) {
@@ -1051,6 +1301,7 @@ private:
             static_cast<float>(in.peak > 0.0 ? 1.0 / in.peak : 0.0);
         vol_u.absorbance = static_cast<float>(in.absorbance);
         vol_u.proton_radius = static_cast<float>(kProtonMarkerRadius);
+        vol_u.jitter_frame = in.frame_index;
         std::memcpy(volume_ubuf_.mapped, &vol_u, sizeof(vol_u));
 
         vmaFlushAllocation(ctx_->allocator, scene_ubuf_.alloc, 0,
@@ -1115,8 +1366,27 @@ private:
 
     VkRenderPass rp_ = VK_NULL_HANDLE;
     VkFramebuffer fb_ = VK_NULL_HANDLE;
-    DeviceContext::Image color_{};
+    DeviceContext::Image color_{};  // HDR scene (RGBA16F)
     DeviceContext::Image depth_{};
+    // Post chain: temporal accumulation, bloom pyramid, tonemapped present.
+    DeviceContext::Image accum_{};
+    DeviceContext::Image bloom_[3]{};
+    VkExtent2D bloom_size_[3]{};
+    DeviceContext::Image present_{};  // RGBA8, what the shell samples
+    VkImageLayout present_layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    bool force_accum_reset_ = true;
+    Kernel accum_k_;
+    Kernel down_k_;
+    Kernel up_k_;
+    Kernel compose_k_;
+    VkDescriptorSet accum_set_ = VK_NULL_HANDLE;
+    VkDescriptorSet down_set_[3] = {VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                    VK_NULL_HANDLE};
+    VkDescriptorSet up_set_[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VkDescriptorSet compose_set_ = VK_NULL_HANDLE;
+    Buffer accum_ubo_{};
+    Buffer down_ubo_[3]{};
+    Buffer compose_ubo_{};
 
     DslHolder mesh_dsl_holder_;
     DslHolder vol_dsl_holder_;

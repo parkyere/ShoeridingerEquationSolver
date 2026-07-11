@@ -672,6 +672,20 @@ protected:
             in.flash = static_cast<float>(flash_ticks_) / 25.0f;
             --flash_ticks_;
         }
+        // Temporal accumulation: keep averaging only while NOTHING changed
+        // -- camera, display params, view mode, flash, and the psi volume
+        // itself (any bridge write this frame resets the history).
+        in.frame_index = static_cast<float>(frame_index_++ % 4096);
+        const bool scene_static =
+            !volume_written_ && azimuth_ == acc_prev_.azimuth &&
+            elevation_ == acc_prev_.elevation &&
+            distance_ == acc_prev_.distance && peak_ == acc_prev_.peak &&
+            absorbance_ == acc_prev_.absorbance && in.flash == 0.0f &&
+            acc_prev_.flash == 0.0f && in.cloud == acc_prev_.cloud;
+        in.accumulate = scene_static;
+        acc_prev_ = {azimuth_, elevation_, distance_, peak_, absorbance_,
+                     in.flash, in.cloud};
+        volume_written_ = false;
         // The psi display volume: the engine's bridge image on the GPU path;
         // null lets the renderer fall back to its CPU-staged texture.
         if (gpu_ok_) {
@@ -1543,6 +1557,7 @@ private:
     // real wavefunction -- no display-only rotation trick.
     void write_display_texture() {
         engine_.write_psi_to_volume();
+        volume_written_ = true;  // resets the temporal accumulation
     }
 
     ses::WavepacketSimulation sim_;
@@ -1556,6 +1571,15 @@ private:
     ses_vk::Engine engine_;
     ses_vk::SceneRenderer vk_renderer_;  // the whole scene, framework-free
     bool vk_renderer_ready_ = false;
+    // Temporal-accumulation bookkeeping (render polish).
+    struct AccumPrev {
+        double azimuth = 1e9, elevation = 0, distance = 0, peak = 0,
+               absorbance = 0;
+        float flash = 0.0f;
+        bool cloud = true;
+    } acc_prev_;
+    long long frame_index_ = 0;
+    bool volume_written_ = false;  // bridge wrote psi this frame
     // Qt's entire render surface: the imported scene image + one blit pass.
     QScopedPointer<QRhiTexture> scene_wrap_;  // createFrom import (non-owning)
     VkImage scene_wrapped_img_ = VK_NULL_HANDLE;

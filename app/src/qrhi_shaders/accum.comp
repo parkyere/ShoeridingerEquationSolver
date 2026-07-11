@@ -1,0 +1,31 @@
+#version 450
+
+// Temporal accumulation (render polish): running average of the HDR scene
+// while nothing changes (camera, params, psi all static), snap-reset on any
+// change. The sample count rides in .a (the scene alpha is not needed
+// downstream). Jittered raymarch + accumulation = hundreds of effective
+// samples on a still frame; banding and noise melt away.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba16f) uniform readonly image2D scene;
+layout(binding = 1, rgba16f) uniform image2D accum;
+layout(std140, binding = 2) uniform Params {
+    int accumulate;  // 0 = reset (scene changed), 1 = keep averaging
+};
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(accum);
+    if (p.x >= size.x || p.y >= size.y) {
+        return;
+    }
+    vec3 cur = imageLoad(scene, p).rgb;
+    if (accumulate == 0) {
+        imageStore(accum, p, vec4(cur, 1.0));
+        return;
+    }
+    vec4 prev = imageLoad(accum, p);
+    float n = min(prev.a + 1.0, 512.0);  // cap the window
+    vec3 avg = prev.rgb + (cur - prev.rgb) / n;
+    imageStore(accum, p, vec4(avg, n));
+}
