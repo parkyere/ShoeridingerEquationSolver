@@ -687,6 +687,10 @@ protected:
             absorbance_ == acc_prev_.absorbance && in.flash == 0.0f &&
             acc_prev_.flash == 0.0f && in.cloud == acc_prev_.cloud;
         in.accumulate = scene_static && !(in.flow && in.flow_animate);
+        // Occupancy + self-shadow rebuild when the field or the absorbance
+        // dial (baked into the shadow transmittance) moved.
+        in.volume_changed =
+            volume_written_ || absorbance_ != acc_prev_.absorbance;
         acc_prev_ = {azimuth_, elevation_, distance_, peak_, absorbance_,
                      in.flash, in.cloud};
         volume_written_ = false;

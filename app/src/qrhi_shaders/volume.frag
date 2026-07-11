@@ -24,6 +24,8 @@ layout(std140, binding = 0) uniform Ubo {
 
 layout(binding = 1) uniform sampler3D psi_tex;
 layout(binding = 2) uniform sampler1D phase_tex;
+layout(binding = 3) uniform sampler3D occ_tex;     // dilated block max (NEAREST)
+layout(binding = 4) uniform sampler3D shadow_tex;  // key-light transmittance
 
 layout(location = 0) out vec4 frag;
 
@@ -81,20 +83,42 @@ void main() {
     // without the correction the displayed cloud sits half a cell
     // (~0.3 Bohr) off the analytic proton/world coordinates.
     vec3 half_texel = 0.5 / vec3(textureSize(psi_tex, 0));
+    vec3 ext = box_max.xyz - box_min.xyz;
+    // Empty-space skipping: while the (dilated) occupancy block under the
+    // ray is empty, jump a whole block; otherwise fine-march a block's worth
+    // at the ORIGINAL step length, so occupied regions look identical.
+    float skip_len = min(min(ext.x, ext.y), ext.z) / 32.0;
 
     vec3 C = vec3(0.0);
     float A = 0.0;
-    for (int i = 0; i < kSteps; ++i) {
-        vec3 p = eye.xyz + (tn + (float(i) + jitter) * step_len) * dir;
-        vec3 uvw = (p - box_min.xyz) / (box_max.xyz - box_min.xyz) + half_texel;
-        vec2 s = texture(psi_tex, uvw).rg;
-        float dens = dot(s, s) * inv_peak;
-        float alpha = 1.0 - exp(-absorbance * dens * step_len);
-        float phase01 = (atan(s.g, s.r) + 3.14159265358979) / 6.28318530717959;
-        vec3 col = texture(phase_tex, phase01).rgb;
-        float w = (1.0 - A) * alpha;
-        C += w * col;
-        A += w;
+    float t_cur = tn + jitter * step_len;
+    int fine_budget = kSteps;
+    while (t_cur < t_stop && fine_budget > 0) {
+        vec3 pc = eye.xyz + t_cur * dir;
+        vec3 uvw_c = (pc - box_min.xyz) / ext;
+        if (texture(occ_tex, uvw_c).r < 1e-5) {
+            t_cur += skip_len;
+            continue;
+        }
+        for (int k = 0; k < 8 && t_cur < t_stop && fine_budget > 0; ++k) {
+            vec3 p = eye.xyz + t_cur * dir;
+            vec3 uvw = (p - box_min.xyz) / ext + half_texel;
+            vec2 s = texture(psi_tex, uvw).rg;
+            float dens = dot(s, s) * inv_peak;
+            float alpha = 1.0 - exp(-absorbance * dens * step_len);
+            float phase01 =
+                (atan(s.g, s.r) + 3.14159265358979) / 6.28318530717959;
+            vec3 col = texture(phase_tex, phase01).rgb;
+            // Self-shadow: the key-light transmittance carves real 3D
+            // depth into the lobes (ambient floor keeps nodes readable).
+            float T = texture(shadow_tex, uvw_c).r;
+            col *= 0.35 + 0.65 * T;
+            float w = (1.0 - A) * alpha;
+            C += w * col;
+            A += w;
+            t_cur += step_len;
+            --fine_budget;
+        }
         if (A >= 0.999) {
             break;
         }

@@ -1,0 +1,56 @@
+#version 450
+
+// Volumetric self-shadow: per voxel of a coarse (64^3) volume, march from
+// the voxel toward a fixed key light accumulating optical depth through
+// |psi|^2, store the transmittance T = exp(-tau). The raymarcher multiplies
+// its emission by (ambient + (1-ambient) T): the cloud shades ITSELF, and
+// lobes/nodal structure gain real 3D depth. Rebuilt only when the volume
+// (or the absorbance dial) changes.
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(binding = 0, r32f) uniform writeonly image3D shadow_img;
+layout(std140, binding = 1) uniform Ubo {
+    mat4 mvp;
+    vec4 eye;
+    vec4 box_min;
+    vec4 box_max;
+    vec4 proton_center;
+    vec4 proton_color;
+    float inv_peak;
+    float absorbance;
+    float proton_radius;
+    float jitter_frame;
+};
+layout(binding = 2) uniform sampler3D psi_tex;
+
+const vec3 kLightDir = normalize(vec3(0.45, 0.80, 0.35));  // world-fixed key
+
+void main() {
+    ivec3 c = ivec3(gl_GlobalInvocationID.xyz);
+    ivec3 size = imageSize(shadow_img);
+    if (any(greaterThanEqual(c, size))) {
+        return;
+    }
+    vec3 ext = box_max.xyz - box_min.xyz;
+    vec3 p = box_min.xyz + (vec3(c) + 0.5) / vec3(size) * ext;
+
+    // Distance to the box exit along the light direction.
+    vec3 inv = 1.0 / kLightDir;
+    vec3 t1 = (box_min.xyz - p) * inv;
+    vec3 t2 = (box_max.xyz - p) * inv;
+    vec3 tmax = max(t1, t2);
+    float t_exit = min(min(tmax.x, tmax.y), tmax.z);
+
+    const int kSteps = 48;
+    float dl = t_exit / float(kSteps);
+    vec3 half_texel = 0.5 / vec3(textureSize(psi_tex, 0));
+    float tau = 0.0;
+    for (int i = 0; i < kSteps; ++i) {
+        vec3 q = p + (float(i) + 0.5) * dl * kLightDir;
+        vec3 uvw = (q - box_min.xyz) / ext + half_texel;
+        vec2 s = texture(psi_tex, uvw).xy;
+        tau += dot(s, s) * inv_peak * dl;
+    }
+    float T = exp(-absorbance * tau);
+    imageStore(shadow_img, c, vec4(T, 0.0, 0.0, 0.0));
+}

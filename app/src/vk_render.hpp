@@ -56,6 +56,12 @@ struct RenderKernels {
     std::size_t compose_size = 0;
     const unsigned char* particles = nullptr;  // probability-flow advection
     std::size_t particles_size = 0;
+    const unsigned char* occupancy = nullptr;  // block-max density
+    std::size_t occupancy_size = 0;
+    const unsigned char* occ_dilate = nullptr;  // conservative 3^3 dilation
+    std::size_t occ_dilate_size = 0;
+    const unsigned char* shadow = nullptr;  // key-light transmittance
+    std::size_t shadow_size = 0;
     const unsigned char* flow_vert = nullptr;  // particle sprites
     std::size_t flow_vert_size = 0;
     const unsigned char* flow_frag = nullptr;
@@ -78,6 +84,7 @@ public:
         float frame_index = 0.0f;  // temporal jitter/dither rotation
         bool flow = false;          // draw the probability-flow particles
         bool flow_animate = false;  // advance the advection (false = paused)
+        bool volume_changed = false;  // psi/absorbance changed: rebuild aux
         VkImageView psi_volume = VK_NULL_HANDLE;  // engine bridge; null -> CPU fallback
         const ses::Mesh* mesh = nullptr;          // non-null: upload isosurface
         const std::vector<ses::Rgb>* mesh_colors = nullptr;
@@ -99,7 +106,7 @@ public:
         if (!create_samplers() || !create_ubos() || !create_render_pass() ||
             !create_pipelines(blobs) || !create_static_geometry() ||
             !create_phase_lut() || !create_post_kernels(blobs) ||
-            !create_flow(blobs)) {
+            !create_flow(blobs) || !create_volume_aux(blobs)) {
             return false;
         }
         scene_set_ = arena_.allocate(*ctx_, mesh_dsl_holder_.set);
@@ -120,6 +127,11 @@ public:
         // Binding 1 (the psi volume) is pointed per frame; seed it with the
         // LUT so the set is never invalid.
         arena_.write_sampled(*ctx_, volume_set_, 1, phase_tex_.view, samp_3d_);
+        // Occupancy (NEAREST: conservative block tests) + shadow volumes.
+        arena_.write_sampled(*ctx_, volume_set_, 3, occ_b_.view, samp_nearest_,
+                             VK_IMAGE_LAYOUT_GENERAL);
+        arena_.write_sampled(*ctx_, volume_set_, 4, shadow_vol_.view, samp_3d_,
+                             VK_IMAGE_LAYOUT_GENERAL);
         return true;
     }
 
@@ -167,6 +179,26 @@ public:
             return false;
         }
         VkCommandBuffer cb = shot.cb();
+
+        // Rebuild the occupancy + shadow volumes when the displayed field
+        // (or absorbance) changed; the pass's fragment reads then see them
+        // through the compute-to-fragment edge below.
+        if (in.cloud && (in.volume_changed || !aux_valid_) &&
+            volume_bound_view_ != VK_NULL_HANDLE) {
+            occ_k_.bind(cb, occ_set_);
+            vkCmdDispatch(cb, 8, 8, 8);  // 32^3 / 4^3
+            barrier_compute_to_compute(cb);
+            dilate_k_.bind(cb, dilate_set_);
+            vkCmdDispatch(cb, 8, 8, 8);
+            barrier_compute_to_compute(cb);
+            shadow_k_.bind(cb, shadow_set_);
+            vkCmdDispatch(cb, 16, 16, 16);  // 64^3 / 4^3
+            memory_barrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                           VK_ACCESS_SHADER_WRITE_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                           VK_ACCESS_SHADER_READ_BIT);
+            aux_valid_ = true;
+        }
 
         // Advect the probability-flow particles BEFORE the pass (their SSBO
         // is vertex-pulled by the sprite draw inside it).
@@ -337,6 +369,16 @@ public:
             vkDestroySampler(ctx_->device, samp_1d_, nullptr);
             samp_1d_ = VK_NULL_HANDLE;
         }
+        if (samp_nearest_ != VK_NULL_HANDLE) {
+            vkDestroySampler(ctx_->device, samp_nearest_, nullptr);
+            samp_nearest_ = VK_NULL_HANDLE;
+        }
+        shadow_k_.destroy(*ctx_);
+        dilate_k_.destroy(*ctx_);
+        occ_k_.destroy(*ctx_);
+        ctx_->destroy_image(&occ_a_);
+        ctx_->destroy_image(&occ_b_);
+        ctx_->destroy_image(&shadow_vol_);
         ctx_->destroy_image(&phase_tex_);
         ctx_->destroy_image(&fallback_tex_);
         ctx_->destroy_buffer(&scene_ubuf_);
@@ -428,7 +470,104 @@ private:
         sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;  // cyclic phase LUT
         sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        return vkCreateSampler(ctx_->device, &sci, nullptr, &samp_1d_) ==
+        if (vkCreateSampler(ctx_->device, &sci, nullptr, &samp_1d_) !=
+            VK_SUCCESS) {
+            return false;
+        }
+        sci.magFilter = VK_FILTER_NEAREST;  // conservative occupancy tests
+        sci.minFilter = VK_FILTER_NEAREST;
+        sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        return vkCreateSampler(ctx_->device, &sci, nullptr, &samp_nearest_) ==
+               VK_SUCCESS;
+    }
+
+    // Fixed-size auxiliary volumes (grid-independent normalized coords):
+    // occupancy 32^3 (build + dilated) and the 64^3 shadow transmittance,
+    // rebuilt only when the displayed volume (or absorbance) changes.
+    bool create_volume_aux(const RenderKernels& blobs) {
+        const auto simg = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        const auto cis = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        const auto ubo = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        if (!occ_k_.create(*ctx_, blobs.occupancy, blobs.occupancy_size,
+                           {{0, simg}, {1, ubo}, {2, cis}}) ||
+            !dilate_k_.create(*ctx_, blobs.occ_dilate, blobs.occ_dilate_size,
+                              {{0, simg}, {1, simg}}) ||
+            !shadow_k_.create(*ctx_, blobs.shadow, blobs.shadow_size,
+                              {{0, simg}, {1, ubo}, {2, cis}})) {
+            return false;
+        }
+        const VkImageUsageFlags usage =
+            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        if (!create_aux_image(32, usage, &occ_a_) ||
+            !create_aux_image(32, usage, &occ_b_) ||
+            !create_aux_image(64, usage, &shadow_vol_)) {
+            return false;
+        }
+        OneShot shot;
+        if (!shot.begin(*ctx_)) {
+            return false;
+        }
+        const DeviceContext::Image* imgs[3] = {&occ_a_, &occ_b_, &shadow_vol_};
+        for (const DeviceContext::Image* im : imgs) {
+            image_layout_barrier(shot.cb(), im->img, VK_IMAGE_LAYOUT_UNDEFINED,
+                                 VK_IMAGE_LAYOUT_GENERAL,
+                                 VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 VK_ACCESS_SHADER_READ_BIT |
+                                     VK_ACCESS_SHADER_WRITE_BIT);
+        }
+        shot.submit_and_wait(*ctx_);
+        shot.destroy(*ctx_);
+
+        occ_set_ = arena_.allocate(*ctx_, occ_k_.set_layout());
+        dilate_set_ = arena_.allocate(*ctx_, dilate_k_.set_layout());
+        shadow_set_ = arena_.allocate(*ctx_, shadow_k_.set_layout());
+        if (occ_set_ == VK_NULL_HANDLE || dilate_set_ == VK_NULL_HANDLE ||
+            shadow_set_ == VK_NULL_HANDLE) {
+            return false;
+        }
+        arena_.write_image(*ctx_, occ_set_, 0, occ_a_.view);
+        arena_.write_buffer(*ctx_, occ_set_, 1, ubo, volume_ubuf_.buf,
+                            sizeof(VolumeUbo));
+        arena_.write_image(*ctx_, dilate_set_, 0, occ_b_.view);
+        arena_.write_image(*ctx_, dilate_set_, 1, occ_a_.view);
+        arena_.write_image(*ctx_, shadow_set_, 0, shadow_vol_.view);
+        arena_.write_buffer(*ctx_, shadow_set_, 1, ubo, volume_ubuf_.buf,
+                            sizeof(VolumeUbo));
+        // Binding 2 (psi) of occ/shadow follows point_volume_binding; seed.
+        arena_.write_sampled(*ctx_, occ_set_, 2, phase_tex_.view, samp_3d_);
+        arena_.write_sampled(*ctx_, shadow_set_, 2, phase_tex_.view, samp_3d_);
+        return true;
+    }
+
+    bool create_aux_image(std::uint32_t n, VkImageUsageFlags usage,
+                          DeviceContext::Image* out) {
+        VkImageCreateInfo ici{};
+        ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        ici.imageType = VK_IMAGE_TYPE_3D;
+        ici.format = VK_FORMAT_R32_SFLOAT;
+        ici.extent = {n, n, n};
+        ici.mipLevels = 1;
+        ici.arrayLayers = 1;
+        ici.samples = VK_SAMPLE_COUNT_1_BIT;
+        ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ici.usage = usage;
+        ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VmaAllocationCreateInfo alc{};
+        alc.usage = VMA_MEMORY_USAGE_AUTO;
+        if (vmaCreateImage(ctx_->allocator, &ici, &alc, &out->img, &out->alloc,
+                           nullptr) != VK_SUCCESS) {
+            return false;
+        }
+        VkImageViewCreateInfo vci{};
+        vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vci.image = out->img;
+        vci.viewType = VK_IMAGE_VIEW_TYPE_3D;
+        vci.format = VK_FORMAT_R32_SFLOAT;
+        vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        return vkCreateImageView(ctx_->device, &vci, nullptr, &out->view) ==
                VK_SUCCESS;
     }
 
@@ -737,16 +876,20 @@ private:
             }
         }
         {
-            const VkDescriptorSetLayoutBinding bs[3] = {
+            const VkDescriptorSetLayoutBinding bs[5] = {
                 {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, vf, nullptr},
                 {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
                  VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
                 {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
                  VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+                {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+                {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
             };
             VkDescriptorSetLayoutCreateInfo ci{};
             ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-            ci.bindingCount = 3;
+            ci.bindingCount = 5;
             ci.pBindings = bs;
             if (vkCreateDescriptorSetLayout(ctx_->device, &ci, nullptr,
                                             &vol_dsl_holder_.set) !=
@@ -1400,6 +1543,9 @@ private:
         arena_.write_sampled(*ctx_, volume_set_, 1, view, samp_3d_);
         arena_.write_sampled(*ctx_, particles_set_, 2, view, samp_3d_);
         arena_.write_sampled(*ctx_, flow_set_, 2, view, samp_3d_);
+        arena_.write_sampled(*ctx_, occ_set_, 2, view, samp_3d_);
+        arena_.write_sampled(*ctx_, shadow_set_, 2, view, samp_3d_);
+        aux_valid_ = false;  // fresh field: rebuild occupancy + shadow
         volume_bound_view_ = view;
     }
 
@@ -1595,6 +1741,19 @@ private:
         std::int32_t animate;
         std::int32_t p0, p1;
     };
+    // Occupancy skipping + self-shadow.
+    Kernel occ_k_;
+    Kernel dilate_k_;
+    Kernel shadow_k_;
+    DeviceContext::Image occ_a_{};
+    DeviceContext::Image occ_b_{};
+    DeviceContext::Image shadow_vol_{};
+    VkDescriptorSet occ_set_ = VK_NULL_HANDLE;
+    VkDescriptorSet dilate_set_ = VK_NULL_HANDLE;
+    VkDescriptorSet shadow_set_ = VK_NULL_HANDLE;
+    VkSampler samp_nearest_ = VK_NULL_HANDLE;
+    bool aux_valid_ = false;
+
     Kernel particles_k_;
     DslHolder flow_dsl_holder_;
     VkPipelineLayout flow_pl_ = VK_NULL_HANDLE;

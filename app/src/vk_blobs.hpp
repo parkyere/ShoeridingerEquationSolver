@@ -38,6 +38,9 @@
 #include <bloom_up_spv.h>
 #include <compose_spv.h>
 #include <particles_spv.h>
+#include <occupancy_spv.h>
+#include <occ_dilate_spv.h>
+#include <shadow_spv.h>
 #include <flow_vert_spv.h>
 #include <flow_frag_spv.h>
 
@@ -124,6 +127,12 @@ inline ses_vk::RenderKernels app_render_blobs() {
     r.compose_size = k_compose_spv_size;
     r.particles = k_particles_spv;
     r.particles_size = k_particles_spv_size;
+    r.occupancy = k_occupancy_spv;
+    r.occupancy_size = k_occupancy_spv_size;
+    r.occ_dilate = k_occ_dilate_spv;
+    r.occ_dilate_size = k_occ_dilate_spv_size;
+    r.shadow = k_shadow_spv;
+    r.shadow_size = k_shadow_spv_size;
     r.flow_vert = k_flow_vert_spv;
     r.flow_vert_size = k_flow_vert_spv_size;
     r.flow_frag = k_flow_frag_spv;

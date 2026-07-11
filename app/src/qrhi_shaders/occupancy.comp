@@ -1,0 +1,43 @@
+#version 450
+
+// Occupancy build (empty-space skipping): one thread per coarse cell takes
+// the MAX normalized density over its block of the psi volume. Rebuilt only
+// when the displayed volume changes. The raymarcher skips blocks whose
+// (dilated) max is negligible -- most of the +-80 Bohr box.
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(binding = 0, r32f) uniform writeonly image3D occ;
+layout(std140, binding = 1) uniform Ubo {
+    mat4 mvp;
+    vec4 eye;
+    vec4 box_min;
+    vec4 box_max;
+    vec4 proton_center;
+    vec4 proton_color;
+    float inv_peak;
+    float absorbance;
+    float proton_radius;
+    float jitter_frame;
+};
+layout(binding = 2) uniform sampler3D psi_tex;
+
+void main() {
+    ivec3 c = ivec3(gl_GlobalInvocationID.xyz);
+    ivec3 osize = imageSize(occ);
+    if (any(greaterThanEqual(c, osize))) {
+        return;
+    }
+    ivec3 fsize = textureSize(psi_tex, 0);
+    ivec3 block = fsize / osize;  // e.g. 256/32 = 8
+    ivec3 base = c * block;
+    float m = 0.0;
+    for (int k = 0; k < block.z; ++k) {
+        for (int j = 0; j < block.y; ++j) {
+            for (int i = 0; i < block.x; ++i) {
+                vec2 s = texelFetch(psi_tex, base + ivec3(i, j, k), 0).xy;
+                m = max(m, dot(s, s));
+            }
+        }
+    }
+    imageStore(occ, c, vec4(m * inv_peak, 0.0, 0.0, 0.0));
+}
