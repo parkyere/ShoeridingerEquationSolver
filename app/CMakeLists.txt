@@ -241,6 +241,70 @@ else()
         "(needs Qt6::GuiPrivate + Qt6::ShaderTools + Vulkan::Headers via vcpkg).")
 endif()
 
+# ---------------------------------------------------------------------------
+# sesolver_vkcheck: framework-free Vulkan verification harness (M5 Stage 0).
+# NO Qt anywhere in this binary: volk loads the loader, VMA allocates, and the
+# SAME Vulkan-GLSL kernel sources are baked to plain SPIR-V offline by
+# glslangValidator (the glslang port's "tools" feature) and embedded as C
+# arrays via tools/cmake/bin2h.cmake -- the qsb-independent shader path. Each
+# kernel is verified against the SAME CPU double reference as qrhicheck, so
+# the two harnesses cross-check as the M5 port proceeds. Skipped with a status
+# message when volk/VMA/glslangValidator are absent. ctest: label "gpu",
+# exit 77 = SKIP without a Vulkan device; SES_VK_VALIDATION=1 turns on the
+# validation layers (classic-mode vcpkg install or SDK) and fails on errors.
+# ---------------------------------------------------------------------------
+find_package(volk CONFIG QUIET)
+find_package(VulkanMemoryAllocator CONFIG QUIET)
+find_program(SES_GLSLANG_VALIDATOR glslangValidator
+    HINTS "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/glslang")
+if(TARGET volk::volk AND TARGET GPUOpen::VulkanMemoryAllocator
+        AND SES_GLSLANG_VALIDATOR)
+    set(_ses_vk_spv_dir "${CMAKE_CURRENT_BINARY_DIR}/vk_spv")
+    file(MAKE_DIRECTORY "${_ses_vk_spv_dir}")
+    set(_ses_vk_headers "")
+    foreach(_k IN ITEMS phase_multiply)
+        set(_src "${CMAKE_CURRENT_SOURCE_DIR}/src/qrhi_shaders/${_k}.comp")
+        set(_spv "${_ses_vk_spv_dir}/${_k}.spv")
+        set(_hdr "${_ses_vk_spv_dir}/${_k}_spv.h")
+        add_custom_command(
+            OUTPUT "${_hdr}"
+            BYPRODUCTS "${_spv}"
+            COMMAND "${SES_GLSLANG_VALIDATOR}" -V --target-env vulkan1.1
+                    -o "${_spv}" "${_src}"
+            COMMAND "${CMAKE_COMMAND}" "-DIN=${_spv}" "-DOUT=${_hdr}"
+                    "-DNAME=k_${_k}_spv"
+                    -P "${CMAKE_SOURCE_DIR}/tools/cmake/bin2h.cmake"
+            DEPENDS "${_src}" "${CMAKE_SOURCE_DIR}/tools/cmake/bin2h.cmake"
+            COMMENT "glslangValidator: ${_k}.comp -> SPIR-V header"
+            VERBATIM)
+        list(APPEND _ses_vk_headers "${_hdr}")
+    endforeach()
+    add_executable(sesolver_vkcheck src/vkcheck_main.cpp ${_ses_vk_headers})
+    # A deliberately Qt-free binary: no moc/rcc/uic passes, and
+    # _CRT_SECURE_NO_WARNINGS keeps MSVC quiet about std::getenv (the
+    # SES_VK_VALIDATION toggle; reading it is race-free here).
+    set_target_properties(sesolver_vkcheck PROPERTIES
+        AUTOMOC OFF AUTORCC OFF AUTOUIC OFF)
+    if(MSVC)
+        target_compile_definitions(sesolver_vkcheck PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
+    target_include_directories(sesolver_vkcheck PRIVATE "${_ses_vk_spv_dir}")
+    target_link_libraries(sesolver_vkcheck PRIVATE
+        sesolver_core
+        volk::volk
+        GPUOpen::VulkanMemoryAllocator
+        ses_warnings)
+    target_compile_features(sesolver_vkcheck PRIVATE cxx_std_20)
+    add_test(NAME VkCheck COMMAND sesolver_vkcheck)
+    set_tests_properties(VkCheck PROPERTIES
+        LABELS "gpu"
+        SKIP_RETURN_CODE 77)
+    message(STATUS "Framework-free harness 'sesolver_vkcheck' enabled.")
+else()
+    message(STATUS "sesolver_vkcheck skipped "
+        "(needs volk + vulkan-memory-allocator + glslangValidator).")
+endif()
+
 # Stage the Qt runtime next to the app after every build, so it launches
 # from the IDE or Explorer without Qt on PATH (the classic missing-
 # Qt6Widgets.dll failure when pressing F5 in Visual Studio). Skipped for a

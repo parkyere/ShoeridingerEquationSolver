@@ -7,6 +7,8 @@
     "dependencies": [
         "vulkan-headers",
         "vulkan-loader",
+        "volk",
+        "vulkan-memory-allocator",
         "vkfft",
         {
             "name": "glslang",
