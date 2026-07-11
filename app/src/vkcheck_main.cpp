@@ -21,14 +21,20 @@
 // device on this machine; ctest maps 77 to SKIP).
 
 #define VMA_IMPLEMENTATION
-#include "vk_compute.hpp"
+#include "vk_engine.hpp"
 
 #include <core/complex.hpp>
 #include <core/fft.hpp>
 #include <core/field.hpp>
 #include <core/grid.hpp>
+#include <core/imaginary_time.hpp>
+#include <core/potential.hpp>
+#include <core/propagator.hpp>
+#include <core/vec.hpp>
+#include <core/wavepacket.hpp>
 
 #include <phase_multiply_spv.h>
+#include <conj_scale_spv.h>
 #include <scale_spv.h>
 #include <norm_peak_spv.h>
 #include <inner_product_spv.h>
@@ -1053,6 +1059,123 @@ bool check_fft3(ses_vk::DeviceContext& ctx) {
     return pass;
 }
 
+ses_vk::EngineKernels engine_blobs_8() {
+    ses_vk::EngineKernels b;
+    b.mul = k_phase_multiply_spv;
+    b.mul_size = k_phase_multiply_spv_size;
+    b.conj = k_conj_scale_spv;
+    b.conj_size = k_conj_scale_spv_size;
+    b.fft = k_fft_line8_spv;
+    b.fft_size = k_fft_line8_spv_size;
+    b.norm = k_norm_peak_spv;
+    b.norm_size = k_norm_peak_spv_size;
+    b.scale = k_scale_spv;
+    b.scale_size = k_scale_spv_size;
+    return b;
+}
+
+// The production Strang step through ses_vk::Engine, 20 steps on an 8x8x8
+// soft-Coulomb grid vs SplitOperator3D::step -- the raw-Vulkan analog of
+// qrhicheck's check_engine_step (hand-rolled line-FFT path; same oracle).
+bool check_engine_step(ses_vk::DeviceContext& ctx) {
+    const ses::Grid1D axis{-4.0, 4.0, 8};
+    const ses::Grid3D g{axis, axis, axis};
+    const std::vector<double> v =
+        ses::soft_coulomb_potential(g, 1.0, 1.0, ses::Vec3d{});
+    const double dt = 0.02;
+    const ses::SplitOperator3D cpu_prop{g, v, dt};
+    ses::Field3D psi0 = ses::gaussian_wavepacket(g, ses::Vec3d{1.0, 0.0, 0.0},
+                                                 ses::Vec3d{1.2, 1.2, 1.2},
+                                                 ses::Vec3d{0.0, 0.5, 0.0});
+
+    ses_vk::Engine engine;
+    if (!engine.initialize(ctx, g, engine_blobs_8(), cpu_prop.half_potential_phase(),
+                           cpu_prop.kinetic_phase(), psi0.data())) {
+        std::printf("engine 20 steps (raw Vulkan): engine init FAIL\n");
+        return false;
+    }
+    engine.step(20);
+    std::vector<float> gpu_out;
+    if (!engine.readback(gpu_out)) {
+        std::printf("engine 20 steps (raw Vulkan): readback FAIL\n");
+        return false;
+    }
+
+    ses::Field3D cpu = psi0;
+    cpu_prop.step(cpu, 20);
+
+    double max_err = 0.0;
+    double max_mag = 0.0;
+    for (std::size_t i = 0; i < cpu.data().size(); ++i) {
+        max_err = std::max(max_err, std::abs(gpu_out[2 * i] - cpu.data()[i].real()));
+        max_err =
+            std::max(max_err, std::abs(gpu_out[2 * i + 1] - cpu.data()[i].imag()));
+        max_mag = std::max(max_mag, std::abs(cpu.data()[i].real()));
+        max_mag = std::max(max_mag, std::abs(cpu.data()[i].imag()));
+    }
+    const double tol = 1e-4 + 1e-5 * max_mag;
+    const bool pass = max_err < tol;
+    std::printf(
+        "engine 20 steps (raw Vulkan, line FFT): max |gpu - cpu| = %.3e "
+        "(tol %.3e)  [%s]\n",
+        max_err, tol, pass ? "PASS" : "FAIL");
+    return pass;
+}
+
+// Imaginary-time relaxation through ses_vk::Engine, 50 steps on an 8x8x8
+// harmonic grid vs ImaginaryTimePropagator3D::relax -- the raw-Vulkan analog
+// of qrhicheck's check_relax (per-step renormalize: reduce -> host -> scale).
+bool check_engine_relax(ses_vk::DeviceContext& ctx) {
+    const ses::Grid1D axis{-4.0, 4.0, 8};
+    const ses::Grid3D g{axis, axis, axis};
+    const std::vector<double> v = ses::harmonic_potential(g, 1.0, ses::Vec3d{});
+    const double dtau = 0.05;
+    const ses::SplitOperator3D real_prop{g, v, 0.02};  // phase tables for init
+    const ses::ImaginaryTimePropagator3D cpu_relaxer{g, v, dtau};
+    ses::Field3D psi0 = ses::gaussian_wavepacket(
+        g, ses::Vec3d{1.0, 0.0, 0.0}, ses::Vec3d{1.5, 1.5, 1.5}, ses::Vec3d{});
+
+    ses_vk::Engine engine;
+    if (!engine.initialize(ctx, g, engine_blobs_8(),
+                           real_prop.half_potential_phase(),
+                           real_prop.kinetic_phase(), psi0.data())) {
+        std::printf("relax 50 steps (raw Vulkan): engine init FAIL\n");
+        return false;
+    }
+    if (!engine.set_relax_tables(cpu_relaxer.half_potential_weight(),
+                                 cpu_relaxer.kinetic_weight(), dtau,
+                                 g.cell_volume())) {
+        std::printf("relax 50 steps (raw Vulkan): set_relax_tables FAIL\n");
+        return false;
+    }
+    const ses_vk::Engine::RelaxStats stats = engine.relax_step(50);
+    std::vector<float> gpu_out;
+    if (!engine.readback(gpu_out)) {
+        std::printf("relax 50 steps (raw Vulkan): readback FAIL\n");
+        return false;
+    }
+
+    ses::Field3D cpu = psi0;
+    cpu_relaxer.relax(cpu, 50);
+
+    double max_err = 0.0;
+    double max_mag = 0.0;
+    for (std::size_t i = 0; i < cpu.data().size(); ++i) {
+        max_err = std::max(max_err, std::abs(gpu_out[2 * i] - cpu.data()[i].real()));
+        max_err =
+            std::max(max_err, std::abs(gpu_out[2 * i + 1] - cpu.data()[i].imag()));
+        max_mag = std::max(max_mag, std::abs(cpu.data()[i].real()));
+        max_mag = std::max(max_mag, std::abs(cpu.data()[i].imag()));
+    }
+    const double tol = 1e-4 + 1e-5 * max_mag;
+    const bool pass = max_err < tol;
+    std::printf(
+        "relax 50 steps (raw Vulkan): max |gpu - cpu| = %.3e (tol %.3e), "
+        "E~%.3f  [%s]\n",
+        max_err, tol, stats.energy, pass ? "PASS" : "FAIL");
+    return pass;
+}
+
 }  // namespace
 
 int main() {
@@ -1089,6 +1212,8 @@ int main() {
             ? 0
             : 1;
     failures += check_fft3(ctx) ? 0 : 1;
+    failures += check_engine_step(ctx) ? 0 : 1;
+    failures += check_engine_relax(ctx) ? 0 : 1;
 
     const int verrs = ses_vk::g_validation_errors.load();
     if (ctx.validation_active && verrs != 0) {

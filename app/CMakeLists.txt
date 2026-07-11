@@ -263,7 +263,7 @@ if(TARGET volk::volk AND TARGET GPUOpen::VulkanMemoryAllocator
     file(MAKE_DIRECTORY "${_ses_vk_spv_dir}")
     set(_ses_vk_headers "")
     foreach(_k IN ITEMS phase_multiply scale norm_peak inner_product
-            dipole_kick mean_force dipole pack_half unpack_half
+            dipole_kick mean_force dipole pack_half unpack_half conj_scale
             fft_line8 fft_line64 fft_line256)
         set(_src "${CMAKE_CURRENT_SOURCE_DIR}/src/qrhi_shaders/${_k}.comp")
         set(_spv "${_ses_vk_spv_dir}/${_k}.spv")
