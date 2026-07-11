@@ -2,9 +2,9 @@
 
 A from-scratch, **reinvent-the-wheel** solver and 3D visualizer for the
 **single-electron** time-dependent Schrödinger equation (TDSE), built for
-learning. The first goal is a hydrogen-scale electron treated as a **Gaussian
-wavepacket** whose probability cloud `|ψ(r,t)|²` evolves in real time and is
-rendered as an **electron cloud** with hand-written OpenGL.
+learning. The probability cloud `|ψ(r,t)|²` evolves in real time on the GPU
+and is volume-rendered as an **electron cloud** by a hand-written,
+framework-free Vulkan renderer.
 
 > Scope is deliberately bounded to a single electron. Many-electron and DFT are
 > explicitly **out of scope** — solving the many-body wavefunction directly on a
@@ -15,121 +15,79 @@ rendered as an **electron cloud** with hand-written OpenGL.
 
 | Decision | Choice |
 |---|---|
-| Language / build | C++20, CMake |
-| GUI / window / context | **Qt 6** (window, GL context, widgets only) |
-| Rendering | **Hand-written OpenGL 4.3 core** (no GL helper libs) |
-| First physics target | **Real-time Gaussian wavepacket dynamics** (TDSE) |
-| Time propagator | **Split-operator (Fourier)** using a **hand-written FFT** |
-| Reinvention boundary | **Purist** — hand-roll math, FFT, physics, render logic; reuse only Qt (shell) + GoogleTest |
+| Language / build | C++20, CMake, pinned vcpkg submodule (static deps) |
+| GUI shell | **Qt 6** — window, input, widgets, and ONE textured-triangle blit of the renderer's image; nothing else |
+| GPU compute + rendering | **Framework-free Vulkan** (`ses_vk`: volk + VMA + VkFFT), shaders offline-baked to SPIR-V by glslangValidator |
+| Physics core | CPU double-precision truth in `core/`, no GPU/GUI dependencies |
+| Time propagator | **Split-operator (Fourier)** — hand-written FFT on the CPU core; VkFFT on the GPU, with hand-rolled line-FFT kernels kept as a verified alternative |
+| Reinvention boundary | **Purist** — hand-roll math, FFT, physics, render logic; reuse only Qt (shell), GoogleTest, and vendored Vulkan infrastructure (volk / VMA / VkFFT / glslang) |
 | Units | Atomic units (ℏ = mₑ = e = 1) |
-| Testing | **Strict TDD** + Humble Object (see below) |
+| Testing | **Strict TDD** + Humble Object; a zero-Qt GPU oracle binary (`sesolver_vkcheck`) verifies every kernel |
 
 ## Layout
 
 ```
-core/    Pure numerical/physics core. NO Qt, NO OpenGL. Fully unit-tested.
-app/     Qt + hand-written OpenGL shell ("Humble Object"). Manually verified.
+core/    Pure numerical/physics core. NO Qt, NO GPU. Fully unit-tested.
+app/     Qt shell (window/input/UI) + ses_vk (framework-free Vulkan engine
+         and renderer) + sesolver_vkcheck (zero-Qt GPU test oracle).
 tests/   GoogleTest suite driving core/, test-first.
+bench/   Manual micro-benchmark.
 docs/    Architecture, TDD rules, physics roadmap.
-tools/   Git hooks (TDD commit-discipline guard).
+tools/   Git hooks (TDD commit-discipline guard) + CMake helpers.
 ```
 
-The hard seam: **`core` depends on nothing**; `app` depends on `core` + Qt;
-`tests` depend on `core` + GoogleTest. This makes the physics trivially testable
-and confines all untestable GL/Qt code to a thin shell.
+The hard seams: **`core` depends on nothing**; `ses_vk` depends on `core` +
+Vulkan infrastructure only (proven by `sesolver_vkcheck`, which links zero Qt);
+the Qt shell depends on both, and only raw Khronos handles cross the
+shell ↔ `ses_vk` boundary. The physics is trivially testable, the GPU engine is
+testable without a GUI, and Qt stays a thin, replaceable shell.
 
 ## Prerequisites
 
-- CMake ≥ 3.21
-- A C++20 compiler (MSVC 2022, GCC ≥ 11, or Clang ≥ 14)
-- Qt 6 (Core Gui Widgets OpenGL OpenGLWidgets) — **only needed for the GUI**;
-  `core` + `tests` build without it.
-- Network access on first configure (GoogleTest is fetched via CMake `FetchContent`).
+- CMake ≥ 3.21 and Ninja
+- A C++20 compiler (MSVC 2022+, GCC ≥ 11, or Clang ≥ 14)
+- A Vulkan 1.1+ GPU/driver — needed to RUN the app and `sesolver_vkcheck`;
+  `core` + `tests` need none.
+- No system Qt: all dependencies, static Qt included, come from the
+  `external/vcpkg` submodule. The FIRST configure builds Qt from source
+  (slow once, then binary-cached).
+- Network access on first configure (vcpkg fetches sources; without the vcpkg
+  toolchain, GoogleTest falls back to CMake `FetchContent`).
 
 ## Build & test
 
 ```sh
-# Configure (core + tests only; skip the GUI):
-cmake -S . -B build -DSES_BUILD_APP=OFF
+git submodule update --init --recursive      # after clone (or clone --recursive)
+external/vcpkg/bootstrap-vcpkg.bat           # one-time (.sh on Linux)
 
-# Build and run the tests:
+# From an MSVC vcvarsall x64 environment on Windows:
+cmake --preset msvc-release
+cmake --build --preset msvc-release
+ctest --preset msvc-release
+```
+
+Linux: the same flow with the `linux-release` preset (Qt's xcb platform plugin
+needs the X11 dev stack: `libx11-dev libxkbcommon-dev libfontconfig1-dev
+'^libxcb.*-dev'`). The routinely exercised configuration is Windows/MSVC.
+
+Lightweight core-only loop (no vcpkg, no Qt, no GPU):
+
+```sh
+cmake -S . -B build -DSES_BUILD_APP=OFF
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-To build the GUI too, install Qt 6 and configure with `-DSES_BUILD_APP=ON`
-(default). If Qt 6 is not found, the GUI target is skipped with a warning and
-the core/test build still succeeds.
-
-> Windows: pass your Qt install to CMake, e.g.
-> `-DCMAKE_PREFIX_PATH="C:/Qt/6.x.x/msvc2022_64"`.
+Dev-time Vulkan validation layers are an opt-in vcpkg manifest feature
+(`VCPKG_MANIFEST_FEATURES=validation`); see [vcpkg.json](vcpkg.json) for the
+activation environment variables.
 
 ### Visual Studio
 
-Open the folder; VS picks up [CMakePresets.json](CMakePresets.json) --
-choose the **`MSVC RelWithDebInfo (Qt msvc2022_64)`** preset (avoid plain
-Debug: the 3D physics tests crawl at `-Od`). Then select
-**`sesolver_app.exe`** in the startup-item dropdown next to the Run button
-and press F5. `windeployqt` stages the Qt runtime next to the exe after
-every build, so it also launches from Explorer. Tests run via the Test
-Explorer or `ctest --preset msvc`.
-
-### VSCode on Linux (remote or local)
-
-The repo ships `.vscode/` (CMake Tools driven) + Linux presets, so **F5**
-builds and runs `sesolver_app` on Linux (needs a GL 4.3 context -- any recent
-NVIDIA/Mesa driver; the app opens a window, so use a real display or
-X/Wayland forwarding).
-
-1. Accept the recommended extensions (VSCode prompts): **CMake Tools** +
-   **C/C++**. Have a C++20 toolchain (`clang` or `g++`), CMake >= 3.21, Ninja,
-   and Qt 6 (`apt install qt6-base-dev libqt6opengl6-dev`, or a Qt install on
-   `CMAKE_PREFIX_PATH`).
-2. In the CMake Tools status bar pick the **`linux-native`** configure preset
-   -- it turns on `SES_NATIVE` (`-march=native`, host-CPU tuned) and
-   auto-detects the newest installed `clang++`/`g++`. Then pick **`sesolver_app`**
-   as the launch target.
-3. Press **F5**: the `cmake-build` task builds the active preset, then gdb
-   launches the app.
-
-Presets: `linux-native` (`-march=native`, host-tuned) · `linux` (portable
-AVX2) · `linux-clang` · `linux-gcc`. `linux-native` pins the vector width to
-256-bit, so it stays **bitwise-reproducible with the AVX2 oracles even on an
-AVX-512 host** (`-mprefer-vector-width=256`) -- fine for the app **and** the
-suite (`ctest --preset linux-native`). Verify GPU kernels with
-`sesolver_gpucheck` (needs a GL context).
-
-`linux-native` auto-detects the newest `clang++`/`g++` on `PATH` (up to
-`clang++-25`, LLVM before GCC), so an installed `clang++-22` (LLVM 22) is
-picked automatically. For a custom/from-source toolchain, pin it:
-`-DCMAKE_CXX_COMPILER=/path/to/clang++` (or export `$CXX`). Two notes when you
-swap compilers: the exact-value test oracles are pinned against GCC, so a
-different compiler may differ bitwise on a few reduction-based `EXPECT_EQ`
-tests (compiler-dependent FP rounding -- not a bug; the app is unaffected);
-and `SES_WARNINGS_AS_ERRORS` is OFF by default, so a bleeding-edge clang's new
-`-Wall`/`-Wextra` diagnostics won't fail the build.
-
-**Static Qt via the vcpkg submodule (self-contained, portable).** `external/vcpkg`
-is a git submodule and `vcpkg.json` pins a static Qt, so the app can link Qt
-statically instead of using a system Qt:
-
-```sh
-git submodule update --init --recursive         # after clone (or clone --recursive)
-external/vcpkg/bootstrap-vcpkg.sh                # one-time
-# vcpkg's Qt still needs the X11/GL dev stack to build its xcb platform plugin:
-sudo apt install -y libx11-dev libxkbcommon-dev libgl1-mesa-dev \
-    libfontconfig1-dev '^libxcb.*-dev'
-cmake --preset linux-vcpkg                       # FIRST configure builds Qt from source (slow; cached after)
-cmake --build --preset linux-vcpkg
-```
-
-The `linux-vcpkg` preset points CMake at the vcpkg toolchain (`x64-linux` =
-static) so `find_package(Qt6)` resolves to the vcpkg build; the app CMake then
-imports the static xcb platform plugin automatically (a static Qt won't load it
-at runtime otherwise). Note this buys a **pinned, portable, static** binary --
-not a smaller apt footprint: Qt is a long one-time source build, and its xcb
-plugin still needs the X11/GL dev libraries above. For a quick dev loop the
-plain `linux` preset with system `qt6-base-dev` is far faster.
+Open the folder; VS picks up [CMakePresets.json](CMakePresets.json) — choose
+**`msvc-release`** (avoid Debug for the suite: the 3D physics tests crawl
+unoptimized). Select **`sesolver_app.exe`** as the startup item and press F5.
+Tests run via the Test Explorer or `ctest --preset msvc-release`.
 
 ## Working agreement
 
@@ -142,68 +100,63 @@ enable the guard hook once:
 git config core.hooksPath tools/git-hooks
 ```
 
-## Status
+## What it does
 
-Phases 0-7 plus the GPU engine and the transitions, static-field, magnetic
-(Larmor), and radiation arcs are delivered: the hand-rolled
-Complex/FFT/split-operator/imaginary-time stack is validated against analytic
-oracles through 3D, and `sesolver_app` renders the TDSE as a TRUE
-VOLUME-RENDERED electron cloud -- propagation, relaxation, orbital synthesis,
-and rendering all GPU-resident (OpenGL 4.3 compute; every kernel verified
-against the unit-tested CPU double core by `sesolver_gpucheck`). The full
-atom-and-light demo works from first principles computed by the solver itself:
-
-At startup the app SOLVES the atom first. The spherical potential reduces
+At startup the app **solves the atom first**. The spherical potential reduces
 exactly to 1D per angular momentum, so the hand-rolled radial engine (Sturm
-bisection + inverse iteration) finds every bound level and its E1 lifetime --
+bisection + inverse iteration) finds every bound level and its E1 lifetime —
 the full spectrum table prints to the console. The 3D tracked manifold is the
-full m-resolved bound shell the box and the GPU can hold, synthesized directly
-on the GPU as (u/r) Y_lm (no CPU field), with the decay channels and dipole
-matrix elements reduced on the GPU and E_radial audited against <H>_grid on
-every launch. The m-selection physics emerges numerically (3d_z2 -> 2p branches
-4:1:1, Clebsch-Gordan). Then the wavepacket demo begins with spontaneous decay
-ARMED, as in nature. Energies are shown in eV.
+full m-resolved bound shell the box can hold, synthesized directly on the GPU
+as (u/r)·Y_lm, with every allowed decay channel's Einstein A reduced on the GPU
+from OUR wavefunctions and the s-state energies audited against the grid
+Hamiltonian on every launch. The Δl = ±1 rule is applied analytically; the
+Δm selection physics **emerges numerically** from the computed dipoles
+(forbidden channels come out suppressed by ~17 orders of magnitude, and
+branching ratios like 3d_z² → 2p at 4:1:1 reproduce Clebsch-Gordan). Then the
+wavepacket demo begins with spontaneous decay ARMED, as in nature. Energies are
+shown in eV.
 
-- **1** real time / **2** relax to 1s / **3** relax to 2p_z / **4** relax
-  to 2s (deflated imaginary time, live energy readout; relaxation
-  AUTO-COMPLETES on convergence so the prepared state visibly decays);
-- **5** excite an n=3/4 state and watch the CASCADE: 3d -> 2p (photon) ->
-  1s (photon), or the triple chain 4f -> 3d -> 2p -> 1s -- the
-  Delta-l = +-1 ladder forced by the selection rules;
-- **M** soft Gaussian position measurement / **E** projective energy
-  measurement (collapse onto an eigenstate sampled by |<n|psi>|^2, or an
-  honest "outside the tracked manifold" outcome from the bound set's
-  incompleteness);
-- **D** turns decay OFF (and back on) -- the switch for studying pure
-  unitary evolution. Decay is multi-channel quantum jumps over the whole
-  manifold: every downward pair gets its Einstein A from OUR
-  wavefunctions -- A(2s->1s) ~ 1e-42 (exact nodal planes), Delta-l rules
-  emerge numerically, and one common, honestly-labeled display
-  acceleration keeps relative lifetimes physical. Photon flash + counter
-  + last-jump label;
-- **L** resonant laser at w = E(2p) - E(1s): Z-polarization Rabi-pumps
-  1s -> 2p_z (live P(1s)/P(2pz) readout), X-polarization pumps 2p_x
-  instead so P(2pz) stays flat -- and its fluorescence clicks through the
-  2p_x decay channel. Laser + decay = repeated absorb/emit cycles;
+Controls:
+
+- **1** real time / **2** relax to 1s / **3** relax to 2p_z / **4** relax to 2s
+  (deflated imaginary time with live energy readout; relaxation AUTO-COMPLETES
+  on convergence so the prepared state visibly decays) / **R** reset;
+- **5** excite an n=3/4 state and watch the CASCADE: 3d → 2p (photon) → 1s
+  (photon), or the triple chain 4f → 3d → 2p → 1s — the Δl = ±1 ladder;
+- **M** soft Gaussian position measurement (a POVM whose width is chosen so the
+  Heisenberg back-action localizes the electron without routinely ionizing the
+  atom) / **E** projective energy measurement (collapse onto an eigenstate
+  sampled by |⟨n|ψ⟩|², or an honest "outside the tracked manifold" outcome);
+- **D** toggles decay — multi-channel quantum jumps competing as Poisson
+  processes over the whole manifold, with ONE common, honestly-labeled display
+  acceleration so relative lifetimes stay physical. Photon flash + counter +
+  last-jump label;
+- **L** resonant laser at ω = E(2p) − E(1s): Z-polarization Rabi-pumps
+  1s → 2p_z (live populations), X-polarization pumps 2p_x instead — and its
+  fluorescence clicks through the 2p_x decay channel. Laser + decay = repeated
+  absorb/emit cycles;
 - **static E-field (+z)** and **magnetic field (z/x/y)** sliders solve the
   field Hamiltonian PROPERLY: the E-field is a dipole term folded into the
   half-potential (Stark polarization / field ionization); the B-field is the
   paramagnetic (B/2)L Larmor rotation (exact unitary three-shear via the
-  Fourier shift theorem) plus the diamagnetic (B^2/8)rho_perp^2, so a p_x
-  cloud genuinely precesses into p_y. Crossed E-B works; a boundary absorbing
-  mask stops ionized flux wrapping the periodic FFT box; a live readout gives
-  the semiclassical Larmor radiated power of the oscillating dipole; an XYZ
-  gizmo (z labeled) shows the axes.
+  Fourier shift theorem) plus the diamagnetic (B²/8)ρ⊥² term, so a p_x cloud
+  genuinely precesses into p_y. Crossed E-B works; a boundary absorbing mask
+  stops ionized flux wrapping the periodic FFT box; a live readout gives the
+  semiclassical Larmor radiated power of the oscillating dipole;
+- **F** toggles probability-current flow particles (Bohmian tracers advected by
+  v = j/ρ, sampled from |ψ|²);
+- **Tab** switches to the marching-cubes isosurface view; drag orbits, wheel
+  zooms, space pauses, **[ ]** tunes cloud density.
 
-Tab switches to the marching-cubes isosurface view; drag orbits, wheel
-zooms, space pauses, [ ] tunes cloud density. All shader math is
-unit-tested in core and transcribed into GLSL; the demo arcs regress
-headlessly via `--selftest-decay` / `--selftest-rabi` / `--selftest-cascade`
-/ `--selftest-manifold` / `--selftest-energy` / `--selftest-efield` /
-`--selftest-magnetic`. See
-[docs/ROADMAP.md](docs/ROADMAP.md) and [docs/GPU_PLAN.md](docs/GPU_PLAN.md).
+The cloud itself is rendered with an HDR pipeline: phase-tinted front-to-back
+raymarch with interleaved-gradient-noise jitter and temporal accumulation,
+occupancy-based empty-space skipping, an extinction self-shadow volume, and
+dual-Kawase bloom under an ACES tonemap.
 
-> Toolchain note: build with the Qt-bundled MinGW kit
-> (`-DCMAKE_PREFIX_PATH=C:/Qt/6.8.1/mingw_64`, compilers from
-> `C:/Qt/Tools/mingw1310_64`); the repo is toolchain-agnostic but this is the
-> tested configuration on Windows.
+Verification: all shader math is transcribed from the unit-tested CPU double
+core. `sesolver_vkcheck` (zero Qt) drives every GPU kernel and engine path
+against CPU oracles and runs inside `ctest`; the demo arcs regress headlessly
+via `--selftest-decay` / `--selftest-rabi` / `--selftest-cascade` /
+`--selftest-manifold` / `--selftest-energy` / `--selftest-efield` /
+`--selftest-magnetic`, and `--dump-frame` / `--dump-frame-near` verify the
+render path end to end.
