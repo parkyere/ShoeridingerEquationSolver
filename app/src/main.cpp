@@ -73,30 +73,24 @@
 #include <core/vram_budget.hpp>
 
 #include "atom_model.hpp"
-#include "selftest_arcs.hpp"
 #include "manifold_spec.hpp"
-
-#include <cstring>  // std::strcmp for the VRAM extension probe
+#include "qt_blit.hpp"
+#include "selftest_arcs.hpp"
+#include "shell_ui.hpp"
+#include "vram_probe.hpp"
 
 #include <QApplication>
-#include <QFile>
-#include <QImage>
 #include <QKeyEvent>
 #include <QMainWindow>
-#include <QMatrix4x4>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QRhiWidget>
 #include <QString>
 #include <QTimer>
-#include <QLabel>
-#include <QSlider>
-#include <QToolBar>
-#include <QVulkanFunctions>
 #include <QVulkanInstance>
 #include <QWheelEvent>
 
-#include <rhi/qrhi_platform.h>  // QRhiVulkanNativeHandles (VRAM budget probe)
+#include <rhi/qrhi_platform.h>  // QRhiVulkanNativeHandles (device adopt)
 
 #include <algorithm>
 #include <array>
@@ -240,11 +234,7 @@ protected:
     // Simulation state on the GPU dies with it -- the fatal-on-rhi-change
     // guard in initialize() keeps the policy honest (no silent migration).
     void releaseResources() override {
-        blit_pipe_.reset();
-        blit_srb_.reset();
-        scene_wrap_.reset();
-        scene_wrapped_img_ = VK_NULL_HANDLE;
-        blit_sampler_.reset();
+        blit_.release();
         vk_renderer_.destroy();
         vk_renderer_ready_ = false;
         engine_.destroy();
@@ -270,14 +260,10 @@ protected:
         }
         rhi_ = rhi();
 
-        // The scene renders in ses_vk. Qt's whole render layer is one
-        // sampler + one fullscreen-blit pipeline (built lazily in render()
-        // once the scene image exists and can seed the SRB).
-        blit_sampler_.reset(rhi_->newSampler(
-            QRhiSampler::Nearest, QRhiSampler::Nearest, QRhiSampler::None,
-            QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge,
-            QRhiSampler::ClampToEdge));
-        if (!blit_sampler_->create()) {
+        // The scene renders in ses_vk. Qt's whole render layer is the
+        // BlitPresenter (one sampler + one fullscreen-blit pipeline, built
+        // lazily once the scene image exists to seed the SRB).
+        if (!blit_.init(rhi_)) {
             fatal_rhi_error("render resources",
                             QStringLiteral("blit sampler create failed"));
         }
@@ -334,8 +320,8 @@ protected:
                 static_cast<std::int64_t>(sizeof(float));
             bool atlas_fits = true;
             atom_.set_precision(ses::choose_state_precision(
-                query_free_vram_bytes(), kNumStates, bytes_per_state,
-                kVramHeadroomBytes, &atlas_fits));
+                ses_shell::query_free_vram_bytes(rhi()), kNumStates,
+                bytes_per_state, kVramHeadroomBytes, &atlas_fits));
             std::fprintf(stderr, "vram: atlas precision = %s%s\n",
                          atom_.precision() == ses::GpuPrecision::Fp16 ? "fp16 (half)"
                                                                      : "fp32",
@@ -717,82 +703,11 @@ protected:
         vk_renderer_.render(in);
     }
 
-    // Qt's entire remaining draw: one fullscreen triangle sampling the
-    // ses_vk scene image (imported via createFrom; re-imported when the
-    // offscreen target is recreated on resize).
+    // Qt's entire remaining draw lives in the BlitPresenter: one fullscreen
+    // triangle sampling the ses_vk scene image.
     void render(QRhiCommandBuffer* cb) override {
-        const VkImage scene_img = vk_renderer_.color_image();
-        if (scene_img == VK_NULL_HANDLE) {
-            // Nothing rendered yet: clear only.
-            cb->beginPass(renderTarget(), QColor(10, 13, 23),
-                          {1.0f, 0}, nullptr);
-            cb->endPass();
-            return;
-        }
-        if (scene_img != scene_wrapped_img_) {
-            scene_wrap_.reset(rhi_->newTexture(
-                QRhiTexture::RGBA8,
-                QSize(static_cast<int>(vk_renderer_.width()),
-                      static_cast<int>(vk_renderer_.height()))));
-            QRhiTexture::NativeTexture src;
-            src.object = quint64(reinterpret_cast<std::uintptr_t>(scene_img));
-            src.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            if (!scene_wrap_->createFrom(src)) {
-                std::fprintf(stderr, "blit: scene image import failed\n");
-                scene_wrap_.reset();
-                scene_wrapped_img_ = VK_NULL_HANDLE;
-                return;
-            }
-            scene_wrapped_img_ = scene_img;
-            blit_srb_.reset(rhi_->newShaderResourceBindings());
-            blit_srb_->setBindings({QRhiShaderResourceBinding::sampledTexture(
-                0, QRhiShaderResourceBinding::FragmentStage, scene_wrap_.data(),
-                blit_sampler_.data())});
-            if (!blit_srb_->create()) {
-                std::fprintf(stderr, "blit: SRB create failed\n");
-                blit_srb_.reset();
-                return;
-            }
-            if (blit_pipe_.isNull()) {
-                auto load_qsb = [](const char* path) {
-                    QFile f{QLatin1String(path)};
-                    if (!f.open(QIODevice::ReadOnly)) {
-                        return QShader();
-                    }
-                    return QShader::fromSerialized(f.readAll());
-                };
-                blit_pipe_.reset(rhi_->newGraphicsPipeline());
-                blit_pipe_->setShaderStages({
-                    {QRhiShaderStage::Vertex,
-                     load_qsb(":/shaders/blit.vert.qsb")},
-                    {QRhiShaderStage::Fragment,
-                     load_qsb(":/shaders/blit.frag.qsb")},
-                });
-                blit_pipe_->setVertexInputLayout({});
-                blit_pipe_->setShaderResourceBindings(blit_srb_.data());
-                blit_pipe_->setRenderPassDescriptor(
-                    renderTarget()->renderPassDescriptor());
-                blit_pipe_->setTopology(QRhiGraphicsPipeline::Triangles);
-                blit_pipe_->setDepthTest(false);
-                blit_pipe_->setDepthWrite(false);
-                if (!blit_pipe_->create()) {
-                    std::fprintf(stderr, "blit: pipeline create failed\n");
-                    blit_pipe_.reset();
-                    return;
-                }
-            }
-        }
-        if (blit_pipe_.isNull() || blit_srb_.isNull()) {
-            return;
-        }
-        cb->beginPass(renderTarget(), QColor(0, 0, 0), {1.0f, 0}, nullptr);
-        cb->setGraphicsPipeline(blit_pipe_.data());
-        const QSize px = renderTarget()->pixelSize();
-        cb->setViewport(QRhiViewport(0, 0, static_cast<float>(px.width()),
-                                     static_cast<float>(px.height())));
-        cb->setShaderResources(blit_srb_.data());
-        cb->draw(3);
-        cb->endPass();
+        blit_.present(cb, renderTarget(), vk_renderer_.color_image(),
+                      vk_renderer_.width(), vk_renderer_.height());
     }
 
     void mousePressEvent(QMouseEvent* e) override { last_pos_ = e->position(); }
@@ -1196,61 +1111,6 @@ protected:
         return seed;
     }
 
-    // Free VRAM in bytes via Vulkan's VK_EXT_memory_budget (heap budget minus
-    // current usage, summed over device-local heaps), or ses::kVramUnknown when
-    // the extension / entry points are absent. Physical-device property queries
-    // only need the extension SUPPORTED, not enabled on the logical device.
-    std::int64_t query_free_vram_bytes() {
-        const QRhiVulkanNativeHandles* h =
-            static_cast<const QRhiVulkanNativeHandles*>(rhi()->nativeHandles());
-        if (h == nullptr || h->inst == nullptr || h->physDev == VK_NULL_HANDLE) {
-            return ses::kVramUnknown;
-        }
-        QVulkanFunctions* f = h->inst->functions();
-        uint32_t n_ext = 0;
-        f->vkEnumerateDeviceExtensionProperties(h->physDev, nullptr, &n_ext, nullptr);
-        std::vector<VkExtensionProperties> exts(n_ext);
-        f->vkEnumerateDeviceExtensionProperties(h->physDev, nullptr, &n_ext, exts.data());
-        bool budget = false;
-        for (const VkExtensionProperties& e : exts) {
-            if (std::strcmp(e.extensionName, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) == 0) {
-                budget = true;
-                break;
-            }
-        }
-        if (!budget) {
-            return ses::kVramUnknown;
-        }
-        auto get_props2 = reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties2>(
-            h->inst->getInstanceProcAddr("vkGetPhysicalDeviceMemoryProperties2"));
-        if (get_props2 == nullptr) {
-            get_props2 = reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties2>(
-                h->inst->getInstanceProcAddr("vkGetPhysicalDeviceMemoryProperties2KHR"));
-        }
-        if (get_props2 == nullptr) {
-            return ses::kVramUnknown;
-        }
-        VkPhysicalDeviceMemoryBudgetPropertiesEXT bud{};
-        bud.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
-        VkPhysicalDeviceMemoryProperties2 props{};
-        props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
-        props.pNext = &bud;
-        get_props2(h->physDev, &props);
-        std::int64_t free_total = 0;
-        bool any = false;
-        for (uint32_t i = 0; i < props.memoryProperties.memoryHeapCount; ++i) {
-            if ((props.memoryProperties.memoryHeaps[i].flags &
-                 VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) == 0) {
-                continue;
-            }
-            if (bud.heapBudget[i] > bud.heapUsage[i]) {
-                free_total += static_cast<std::int64_t>(bud.heapBudget[i] - bud.heapUsage[i]);
-            }
-            any = true;
-        }
-        return any ? free_total : ses::kVramUnknown;
-    }
-
     // Free the OWNED transient deflation buffers (synthesized at relax-start).
     void free_deflation_buffers() {
         for (int b : relax_deflate_owned_) {
@@ -1596,11 +1456,7 @@ private:
     bool volume_written_ = false;  // bridge wrote psi this frame
     bool flow_on_ = false;  // Key F: probability-current flow particles
     // Qt's entire render surface: the imported scene image + one blit pass.
-    QScopedPointer<QRhiTexture> scene_wrap_;  // createFrom import (non-owning)
-    VkImage scene_wrapped_img_ = VK_NULL_HANDLE;
-    QScopedPointer<QRhiSampler> blit_sampler_;
-    QScopedPointer<QRhiShaderResourceBindings> blit_srb_;
-    QScopedPointer<QRhiGraphicsPipeline> blit_pipe_;
+    ses_shell::BlitPresenter blit_;
     QRhi* rhi_ = nullptr;             // the widget's QRhi, cached in initialize()
     bool rhi_ready_ = false;          // render resources built
     bool compute_init_done_ = false;  // engine + atom solve done (run_gpu_frame)
@@ -1700,104 +1556,9 @@ int main(int argc, char** argv) {
     auto* viewport = new Viewport();
     window.setCentralWidget(viewport);
 
-    // Discoverable controls: toolbar buttons mirroring the hotkeys (the
-    // buttons keep Qt::NoFocus by default, so the keys stay live).
-    QToolBar* controls = window.addToolBar(QStringLiteral("Controls"));
-    controls->setMovable(false);
-    controls->addAction(QStringLiteral("Measure (M)"), viewport,
-                        [viewport] { viewport->measure_now(); });
-    controls->addAction(QStringLiteral("Measure E (E)"), viewport,
-                        [viewport] { viewport->measure_energy_now(); });
-    controls->addSeparator();
-    controls->addAction(QStringLiteral("Real time (1)"), viewport,
-                        [viewport] { viewport->set_real_time(); });
-    controls->addAction(QStringLiteral("Relax to ground state (2)"), viewport,
-                        [viewport] { viewport->set_relaxing(); });
-    controls->addAction(QStringLiteral("Relax to 2p (3)"), viewport,
-                        [viewport] { viewport->relax_to_excited(); });
-    controls->addAction(QStringLiteral("Relax to 2s (4)"), viewport,
-                        [viewport] { viewport->relax_to_2s(); });
-    controls->addAction(QStringLiteral("Excite n=3/4 (5)"), viewport,
-                        [viewport] { viewport->excite_n3(); });
-    controls->addAction(QStringLiteral("Decay (D)"), viewport,
-                        [viewport] { viewport->toggle_decay(); });
-    controls->addAction(QStringLiteral("Laser (L)"), viewport,
-                        [viewport] { viewport->toggle_laser(); });
-    // Draggable static E-field (+z) magnitude: 0 = off, full-scale = 0.1 au
-    // (~5.1e10 V/m). The field is the dipole drive at omega = 0 (Stark). The 1s
-    // ground state is STIFF -- it barely polarizes (~0.2 Bohr) below ~0.03 au,
-    // then field-ionizes (cloud streams off +z). A live label shows the value.
-    controls->addWidget(new QLabel(QStringLiteral(" E-field +z ")));
-    {
-        constexpr double kMaxEfield = 0.1;  // au at full slider
-        auto* efield_val = new QLabel(QStringLiteral("off      "));
-        efield_val->setMinimumWidth(96);
-        auto* efield_slider = new QSlider(Qt::Horizontal);
-        efield_slider->setRange(0, 100);
-        efield_slider->setFixedWidth(140);
-        efield_slider->setFocusPolicy(Qt::NoFocus);  // keep the hotkeys live
-        efield_slider->setToolTip(QStringLiteral(
-            "Static uniform E-field along +z (Stark). 0 = off; full = 0.1 au "
-            "(~5.1e10 V/m).\nThe 1s ground state barely moves below ~0.03 au, "
-            "then field-ionizes."));
-        QObject::connect(
-            efield_slider, &QSlider::valueChanged, viewport,
-            [viewport, efield_val](int val) {
-                const double e0 = val / 100.0 * kMaxEfield;
-                viewport->set_efield_e0(e0);
-                efield_val->setText(
-                    e0 > 0.0 ? QStringLiteral("%1 au / %2 V/m")
-                                   .arg(e0, 0, 'f', 3)
-                                   .arg(e0 * 5.14220674e11, 0, 'e', 1)
-                             : QStringLiteral("off"));
-            });
-        controls->addWidget(efield_slider);
-        controls->addWidget(efield_val);
-    }
-    // Magnetic field: axis cycle (z -> x -> y) + strength slider. psi evolves
-    // under the proper minimal-coupling Hamiltonian (paramagnetic precession
-    // at omega = B/2 about the axis + diamagnetic contraction). States not
-    // symmetric about the axis visibly precess.
-    {
-        constexpr double kMaxB = 0.2;  // au at full slider
-        auto axis_text = [](int a) {
-            return a == 2 ? QStringLiteral(" B z ")
-                          : (a == 0 ? QStringLiteral(" B x ") : QStringLiteral(" B y "));
-        };
-        QLabel* b_axis_label = new QLabel(axis_text(2));
-        controls->addWidget(b_axis_label);
-        controls->addAction(QStringLiteral("axis"), viewport,
-                            [viewport, b_axis_label, axis_text] {
-                                viewport->toggle_bfield_axis();
-                                b_axis_label->setText(axis_text(viewport->bfield_axis()));
-                            });
-        auto* b_val = new QLabel(QStringLiteral("off"));
-        b_val->setMinimumWidth(60);
-        auto* b_slider = new QSlider(Qt::Horizontal);
-        b_slider->setRange(0, 100);
-        b_slider->setFixedWidth(140);
-        b_slider->setFocusPolicy(Qt::NoFocus);
-        b_slider->setToolTip(QStringLiteral(
-            "Magnetic field along the chosen axis (z or x). The cloud precesses "
-            "(Larmor) at omega = B/2. Prepare a p_x / d_xy state to see it rotate; "
-            "s and p_z do not precess about z."));
-        QObject::connect(b_slider, &QSlider::valueChanged, viewport,
-                         [viewport, b_val](int val) {
-                             const double b = val / 100.0 * kMaxB;
-                             viewport->set_bfield_b(b);
-                             b_val->setText(b > 0.0 ? QStringLiteral("%1 au").arg(b, 0, 'f', 3)
-                                                    : QStringLiteral("off"));
-                         });
-        controls->addWidget(b_slider);
-        controls->addWidget(b_val);
-    }
-    controls->addSeparator();
-    controls->addAction(QStringLiteral("Reset packet (R)"), viewport,
-                        [viewport] { viewport->reset_simulation(); });
-    controls->addAction(QStringLiteral("Cloud/Surface (Tab)"), viewport,
-                        [viewport] { viewport->toggle_view_mode(); });
-    controls->addAction(QStringLiteral("Pause (Space)"), viewport,
-                        [viewport] { viewport->toggle_pause(); });
+    // Discoverable controls (shell_ui.hpp): toolbar buttons mirroring the
+    // hotkeys + the two field sliders, all Qt::NoFocus so the keys stay live.
+    ses_shell::build_control_bar(window, viewport);
 
     window.resize(1024, 768);
     window.show();
