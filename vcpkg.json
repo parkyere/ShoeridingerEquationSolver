@@ -14,7 +14,7 @@
         {
             "name": "qtbase",
             "default-features": false,
-            "features": [ "gui", "widgets", "opengl", "vulkan" ]
+            "features": [ "gui", "widgets", "vulkan" ]
         },
         {
             "name": "qtbase",
