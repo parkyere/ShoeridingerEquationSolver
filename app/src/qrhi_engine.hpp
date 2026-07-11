@@ -38,6 +38,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <memory>
 #include <vector>
@@ -722,8 +723,8 @@ public:
     // Upload the static counting-sort geometry (ses::build_radial_bin_index) and
     // allocate g_lm[ncomp*nr]. Call once after the radial grid is fixed.
     // sorted_cell = cells grouped by radial bin, bin_off = CSR offsets.
-    bool set_projection_index(const std::vector<quint32>& sorted_cell,
-                              const std::vector<quint32>& bin_off, int n_radial,
+    bool set_projection_index(const std::vector<std::uint32_t>& sorted_cell,
+                              const std::vector<std::uint32_t>& bin_off, int n_radial,
                               double h_radial, int l_max) {
         proj_nr_ = n_radial;
         proj_ncomp_ = (l_max + 1) * (l_max + 1);
