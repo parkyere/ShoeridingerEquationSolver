@@ -1,27 +1,11 @@
 #pragma once
 
-// Orbital-free angular-decomposition projection of a wavefunction onto the
-// tracked eigenstate manifold -- computes every amplitude <n|psi> WITHOUT
-// holding a resident 3-D orbital atlas.
-//
-// Because the potential is central (V = V(r)), each eigenstate factorizes
-// exactly as |n> = (u_nl(r)/r) Y_lm(Omega). The direct grid inner product
-//     <n|psi> = sum_cells (u_interp(r)/r) Y_lm(cell) psi(cell) dV
-// is therefore just a reorganization: deposit the CELL-side factors
-// Y_lm(cell) psi(cell) dV into radial bins with a weight that folds in the 1/r
-// Jacobian and the SAME linear (cloud-in-cell) radial interpolation that
-// synthesize_orbital/fill_orbital use, giving
-//     g_lm[c][j] = sum_cells W_j(r_cell) Y_lm(cell) psi(cell) dV,
-// after which each amplitude is a cheap 1-D radial dot
-//     <n|psi> = sum_j u_nl[j] g_lm[lm(l,m)][j].
-// The grid pass is done ONCE for all (l,m) up to l_max and is INDEPENDENT of
-// the number of states -- so it needs no 3-D atlas and scales to a larger
-// basis / a 512^3 grid (where a resident atlas is physically impossible).
-//
-// This is the pure CPU-double reference (the oracle the GPU deposit kernel is
-// verified against). The deposit shape W_j(r) MUST mirror fill_orbital
-// (core/harmonics.hpp) exactly, so u_over_r(r) = sum_j u[j] W_j(r) and the
-// reorganized sum equals the direct inner product to rounding.
+// Orbital-free projection: every amplitude <n|psi> over the tracked manifold
+// with no resident 3-D orbital atlas. Central V factorizes |n> = (u_nl/r) Y_lm,
+// so ONE grid pass (independent of the state count) deposits
+// g_lm[c][j] = sum_cells W_j(r) Y_lm(cell) psi(cell) dV, then each amplitude
+// is a 1-D dot sum_j u_nl[j] g_lm[lm][j]. CPU-double oracle for the GPU deposit
+// kernel. CONTRACT: W_j(r) must mirror fill_orbital (core/harmonics.hpp) exactly.
 
 #include <core/complex.hpp>
 #include <core/field.hpp>
@@ -56,14 +40,11 @@ struct RadialAngularProjection {
     // the RAW amplitude (== the direct grid inner product) = amp[n] * sqrt(N_n).
 };
 
-// Static geometry for the GPU deposit: the map cell -> radial
-// bin depends ONLY on the grid, never on psi, so it is built ONCE. Cells are
-// counting-sorted by their primary bin i0 into sorted_cell[] with CSR offsets
-// bin_off[] -- the GPU then runs one workgroup per bin (a deterministic gather,
-// no atomics). The bin key i0 is computed in the IDENTICAL fp32 arithmetic the
-// shader uses (float coords box_min + i*cell_h, float r, float t = r/h - 1,
-// int(t)) so the build and the shader agree on the bin for every cell,
-// including the ~fp32-eps boundary straddlers.
+// Static geometry for the GPU deposit: cell -> radial bin depends only on the
+// grid, so it is built once. Cells are counting-sorted by primary bin i0 (CSR
+// offsets bin_off) so the GPU runs one workgroup per bin -- deterministic
+// gather, no atomics. i0 uses the IDENTICAL fp32 arithmetic as the shader so
+// both agree on every cell, including ~fp32-eps boundary straddlers.
 struct RadialBinIndex {
     std::vector<std::uint32_t> sorted_cell;  // in-sphere cell flat indices, grouped by i0
     std::vector<std::uint32_t> bin_off;      // CSR offsets, length n_radial+1
@@ -155,8 +136,7 @@ inline RadialAngularProjection project_radial_angular(
                     std::vector<Complex<double>>(static_cast<std::size_t>(nr),
                                                  Complex<double>{}));
 
-    // --- the deposit: Y_lm(cell) psi(cell) dV into radial bins, 1/r Jacobian
-    //     folded into the linear cloud-in-cell weight (mirrors fill_orbital) ---
+    // Deposit Y_lm(cell) psi(cell) dV into radial bins (weights mirror fill_orbital).
     for (int k = 0; k < nz; ++k) {
         const double z = g.z.coord(k);
         for (int j = 0; j < ny; ++j) {
@@ -167,9 +147,8 @@ inline RadialAngularProjection project_radial_angular(
                 if (r >= rmax) {
                     continue;  // outside the radial box -> no deposit (deficit)
                 }
-                // Deposit bins/weights, exactly the fill_orbital branches:
-                //   r < h        : bin 0, weight 1/h (the u[0]/h origin limit);
-                //   h <= r < rmax: linear tent /r into i0 and (if present) i0+1;
+                // Bins/weights, exactly the fill_orbital branches: r < h ->
+                // bin 0 weight 1/h; else linear tent /r into i0 and i0+1.
                 int b0 = 0;
                 int b1 = -1;
                 double w0 = 0.0;

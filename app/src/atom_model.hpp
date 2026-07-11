@@ -24,10 +24,9 @@ namespace ses_shell {
 
 class AtomModel {
 public:
-    // Solve the radial atom once (blocking, well under a second).
-    // In-box levels back the tracked manifold (u(R_box) = 0 is exactly what
-    // the periodic grid supports); the free-atom table to n = 10 is the
-    // full lifetime atlas, printed for the record.
+    // Solve the radial atom once (blocking, well under a second): in-box
+    // levels (u(R_box) = 0) back the tracked manifold; the free-atom table
+    // to n = 10 is printed for the record.
     void solve_radial_atom(double r_box) {
         radial_grid_ = ses::RadialGrid{r_box, 5119};
         std::vector<double> v(static_cast<std::size_t>(radial_grid_.n));
@@ -143,12 +142,8 @@ public:
     }
 
     // Synthesize eigenstate idx into a FRESH fp32 buffer (caller frees);
-    // captures its grid norm (for populations) and energy. ALL build/deflation
-    // work uses these transients -- no resident atlas -- so the startup
-    // montage holds ONE orbital at a time (not the whole manifold) and 512^3,
-    // where a resident atlas is physically impossible, becomes feasible.
-    // (fp16 is kept dormant for a future big-box preset; it only ever
-    // mattered for a RESIDENT atlas.)
+    // captures its grid norm (for populations) and energy. All
+    // build/deflation work uses these transients -- no resident atlas.
     int synth_transient(ses_vk::Engine& engine, int idx,
                         double* out_peak = nullptr) {
         const std::size_t s = static_cast<std::size_t>(idx);
@@ -172,12 +167,9 @@ public:
         return state_buf_[s] >= 0;
     }
 
-    // Downward pairs worth a dipole integral: gap > 1e-3 skips both the
-    // degenerate m-splittings (zero by construction here) and sub-mHa
-    // radio-frequency channels whose omega^3 rates are irrelevant; the
-    // |dl| = 1 filter applies the E1 selection rule analytically (the
-    // synthesis KNOWS each state's l; without the filter the manifold
-    // would cost thousands of forbidden integrals).
+    // Downward pairs worth a dipole integral: gap > 1e-3 skips degenerate
+    // m-splittings and sub-mHa channels; |dl| = 1 applies the E1 selection
+    // rule analytically (else thousands of forbidden integrals).
     void collect_channel_pairs() {
         pair_queue_.clear();
         for (int from = 0; from < kNumStates; ++from) {
@@ -202,10 +194,9 @@ public:
         const std::size_t from = static_cast<std::size_t>(p.first);
         const std::size_t to = static_cast<std::size_t>(p.second);
         const double gap = state_energy_[from] - state_energy_[to];
-        // Transient endpoints (no resident atlas): cache the 'from' orbital
-        // across its consecutive channels (pairs are grouped by 'from'), and
-        // synthesize each 'to' fresh -- peak residency is 2 orbitals, never
-        // the whole manifold.
+        // Transient endpoints: cache the 'from' orbital across its
+        // consecutive channels, synthesize each 'to' fresh -- peak residency
+        // is 2 orbitals.
         if (pair_from_idx_ != p.first) {
             if (pair_from_buf_ >= 0) {
                 engine.release_state(pair_from_buf_);
@@ -275,10 +266,9 @@ public:
         return a_sum > 0.0 ? 1.0 / a_sum : 0.0;
     }
 
-    // The blocking fallbacks are thin wrappers over synthesis: once the
-    // startup build has the channel table, prepare_manifold_cache is a no-op;
-    // otherwise they synthesize just what is needed. The engine drives its
-    // own offscreen frames, so they are legal any time between paints.
+    // Blocking fallbacks over synthesis: no-ops once the startup build has
+    // the channel table. The engine drives its own offscreen frames, so they
+    // are legal any time between paints.
     bool prepare_ground_cache(ses_vk::Engine& engine) {
         return ensure_state(engine, kS1);
     }
@@ -307,9 +297,8 @@ public:
         if (!channels_.empty()) {
             return true;
         }
-        // The whole blocking build: ensure_state synthesizes the resident
-        // buffers and evaluate_channel_pair reduces the dipoles on the GPU
-        // (the dipoles never touch the CPU); the engine owns its frames.
+        // The whole blocking build: dipoles reduce on the GPU and never
+        // touch the CPU; the engine owns its frames.
         bool ok = true;
         for (int idx = 0; idx < kNumStates && ok; ++idx) {
             ok = ensure_state(engine, idx);

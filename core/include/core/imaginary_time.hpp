@@ -1,12 +1,9 @@
 #pragma once
 
-// Imaginary-time relaxation to the ground state.
-//
-// t -> -i tau turns e^{-i H dt} into e^{-H dtau}: every eigencomponent decays
-// as e^{-E_n tau}, so with per-step renormalization the state converges to
-// the ground state. Same Strang splitting as the real-time propagator, but
-// the factors are REAL decay weights e^{-V dtau/2} and e^{-k^2 dtau/2}
-// (the flow is not unitary -- renormalization is mandatory, not cosmetic).
+// Imaginary-time relaxation to the ground state: e^{-H dtau} decays each
+// eigencomponent as e^{-E_n tau}. Same Strang splitting as the real-time
+// propagator but with REAL decay weights e^{-V dtau/2}, e^{-k^2 dtau/2};
+// the flow is not unitary -- per-step renormalization is mandatory.
 
 #include <core/fft.hpp>
 #include <core/field.hpp>

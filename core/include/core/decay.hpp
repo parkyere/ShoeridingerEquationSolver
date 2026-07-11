@@ -1,13 +1,10 @@
 #pragma once
 
-// Spontaneous decay via quantum jumps (the Monte-Carlo-wavefunction
-// picture). The Schrodinger equation carries no lifetimes; the
-// decay RATE follows from the computed spectrum through the Einstein A
-// coefficient (atomic units):
-//     A = (4/3) alpha^3 omega^3 |<f|r|i>|^2
-// so selection rules enter automatically (forbidden channel -> strength 0 ->
-// A = 0, e.g. the metastable 2s). Jumps are a Poisson process weighted by
-// the CURRENT excited population; randomness is injected by the caller.
+// Spontaneous decay via quantum jumps (Monte-Carlo wavefunction).
+// Einstein A = (4/3) alpha^3 omega^3 |<f|r|i>|^2 (atomic units); selection
+// rules enter automatically (forbidden channel -> A = 0, e.g. metastable 2s).
+// Jumps are Poisson, weighted by the CURRENT excited population; randomness
+// is injected by the caller.
 
 #include <core/complex.hpp>
 #include <core/field.hpp>
@@ -98,14 +95,10 @@ inline JumpResult quantum_jump(Field3D& psi, const Field3D& excited, const Field
 
 // ---- multi-channel jumps ----------------------------------------------------
 //
-// Every tracked orbital gets its lifetime: decay channels compete as
-// independent Poisson processes. Channel m fires at rate gamma_m * P_m with
-// P_m = |<from_m|psi>|^2; the total escape probability over dt is
-//     p = 1 - exp(-sum_m gamma_m P_m dt),
-// and WHICH channel fires is distributed proportionally to its rate. On a
-// jump the MCWF jump operator |to><from| collapses psi onto the channel's
-// destination eigenstate. The caller injects u1 (does a jump happen?) and
-// u2 (which channel?), keeping randomness out of core.
+// Channels compete as independent Poisson processes: channel m fires at rate
+// gamma_m * P_m, P_m = |<from_m|psi>|^2; total escape p = 1 - exp(-sum dt);
+// which channel fires is proportional to its rate. A jump collapses psi onto
+// the channel's |to>. Caller injects u1 (jump?) and u2 (which channel?).
 
 struct DecayChannel {
     const Field3D* from;  // excited eigenstate
@@ -123,12 +116,10 @@ struct ChannelPick {
     double p_total{};
 };
 
-// The pure selection arithmetic over precomputed rates r_m = gamma_m * P_m:
-// total escape p = 1 - exp(-sum r_m dt); if u1 < p, u2 picks the channel
-// against the cumulative rate fractions. Zero-rate channels occupy zero
-// measure and can never be picked; the final fallthrough guards u2 rounding
-// at the top of the last stratum. Factored out so the GPU shell can reuse
-// it on GPU-reduced populations without duplicating domain logic.
+// Pure selection arithmetic over precomputed rates r_m = gamma_m * P_m
+// (reused by the GPU shell on GPU-reduced populations). Zero-rate channels
+// occupy zero measure and can never be picked; the final fallthrough guards
+// u2 rounding at the top of the last stratum.
 inline ChannelPick pick_decay_channel(const std::vector<double>& rates, double dt,
                                       double u1, double u2) {
     double total = 0.0;

@@ -1,13 +1,10 @@
 #pragma once
 
-// Split-operator (Fourier) propagator for the 1D TDSE in atomic units:
-//     i d(psi)/dt = H psi,   H = -1/2 d^2/dx^2 + V(x)
-// One step of exp(-i H dt) via Strang splitting:
+// Split-operator (Fourier) propagator for the TDSE in atomic units. One
+// Strang step of exp(-i H dt), H = -1/2 laplacian + V:
 //     psi <- e^{-i V dt/2} . IFFT . e^{-i k^2 dt/2} . FFT . e^{-i V dt/2} psi
-// Unitary by construction (all factors are pure phases), O(dt^2) splitting
-// error for V != 0, and time-EXACT for the free particle.
-//
-// Phase factors are precomputed once per (grid, potential, dt).
+// Unitary by construction (pure phases), O(dt^2) splitting error.
+// Phase tables are precomputed once per (grid, potential, dt).
 
 #include <core/complex.hpp>
 #include <core/fft.hpp>

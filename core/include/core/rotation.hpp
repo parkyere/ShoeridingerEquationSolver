@@ -1,15 +1,11 @@
 #pragma once
 
-// Exact, unitary rotation of a 3D field about a coordinate axis.
-// The paramagnetic term (B/2)(B^ . L) of the magnetic Hamiltonian
-// generates rotations about the field axis, so evolving psi under it is a
-// rigid rotation of the ACTUAL wavefunction. Done by the three-shear (Paeth)
-// decomposition in the plane perpendicular to the axis,
+// Exact, unitary rotation of a 3D field about a coordinate axis via the
+// three-shear (Paeth) decomposition in the perpendicular plane,
 //     R(theta) = Bshear(-tan(theta/2)) . Cshear(sin theta) . Bshear(-tan(theta/2)),
-// where (b, c) are the two in-plane axes (b x c = axis, right-handed) and
-// each shear is a per-line SHIFT applied EXACTLY via the Fourier shift theorem
-// (X(k) *= e^{-i k d}). Information-preserving: exactly norm-conserving and
-// free of interpolation blur. Valid for |theta| < pi.
+// each shear a per-line shift applied exactly by the Fourier shift theorem
+// (X(k) *= e^{-i k d}). Norm-conserving, no interpolation blur; |theta| < pi.
+// Used for the paramagnetic (B/2) L_axis factor of the magnetic propagator.
 
 #include <core/complex.hpp>
 #include <core/fft.hpp>

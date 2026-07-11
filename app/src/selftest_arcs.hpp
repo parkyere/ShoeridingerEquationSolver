@@ -1,12 +1,10 @@
 #pragma once
 
-// Verification + selftest arcs: every --dump-frame* and --selftest-*
-// command-line arc, registered against the live viewport. Templated on the
-// viewport type so the shell class can stay
-// private to main.cpp; the arcs consume only its public control/probe API.
-// Each arc waits for the startup atlas build (run_when_manifold_ready) and
-// then CHAINS timers, so a slower GPU stretches the run instead of
-// false-failing a wall-clock verdict.
+// Verification + selftest arcs: every --dump-frame* and --selftest-* arc,
+// registered against the live viewport. Templated on the viewport type so
+// the shell class stays private to main.cpp. Each arc waits for the startup
+// atlas build (run_when_manifold_ready) and then CHAINS timers, so a slower
+// GPU stretches the run instead of false-failing a wall-clock verdict.
 
 #include "manifold_spec.hpp"
 
@@ -34,12 +32,9 @@ void run_when_manifold_ready(ViewportT* viewport, F fn) {
 
 template <typename ViewportT>
 void register_verification_arcs(QApplication& app, ViewportT* viewport) {
-    // Render verification hook: once the manifold is up (the cloud shows the
-    // resumed wavepacket), grab the composited frame to frame_dump.bmp and
-    // exit. grabFramebuffer renders offscreen + reads the color buffer back,
-    // so this verifies the whole render path (ses_vk scene + the Qt blit)
-    // end to end. BMP because the lean static Qt is built without the png
-    // feature (no libpng).
+    // Render verification: grab the composited frame to frame_dump.bmp and
+    // exit; grabFramebuffer verifies the whole path (ses_vk scene + Qt blit)
+    // end to end. BMP because the lean static Qt has no png feature.
     if (app.arguments().contains(QStringLiteral("--dump-frame"))) {
         run_when_manifold_ready(viewport, [viewport, &app] {
             QTimer::singleShot(2000, viewport, [viewport, &app] {
@@ -52,10 +47,8 @@ void register_verification_arcs(QApplication& app, ViewportT* viewport) {
             });
         });
     }
-    // Same, from INSIDE the box (distance 4 Bohr in the +-80 box): the volume
-    // pass rasterizes the proxy's back faces (front-face culled), which is
-    // only exercised by an interior eye -- if the culling/winding choice were
-    // wrong under Vulkan, this frame would lose the cloud entirely.
+    // Same, from INSIDE the box: the volume pass rasterizes the proxy's back
+    // faces (front-face culled), which only an interior eye exercises.
     if (app.arguments().contains(QStringLiteral("--dump-frame-near"))) {
         run_when_manifold_ready(viewport, [viewport, &app] {
             std::fprintf(stderr, "dump-frame-near: manifold ready, zooming in\n");
@@ -72,14 +65,9 @@ void register_verification_arcs(QApplication& app, ViewportT* viewport) {
         });
     }
 
-    // Headless-ish regression of the decay demo arc: prepare 2p, return to
-    // real time, enable decay, and require at least one quantum jump.
-    // (After the first jump the atom sits in 1s with P_e ~ 0, so exactly one
-    // photon is the physically expected outcome without a re-pump laser.)
-    // Selftest arcs wait for the startup atlas build (run_when_manifold_ready)
-    // and are then CHAINED, so a slower GPU stretches the run instead of
-    // false-failing a wall-clock verdict. Decay is ON by default;
-    // photon verdicts count from a baseline captured at the arc's start.
+    // Decay arc: prepare 2p, return to real time, require >= 1 quantum jump
+    // (after the jump the atom sits in 1s, so one photon is the expected
+    // outcome). Photon verdicts count from a baseline at the arc's start.
     if (app.arguments().contains(QStringLiteral("--selftest-decay"))) {
         run_when_manifold_ready(viewport, [viewport, &app] {
             viewport->relax_to_excited();  // caches ready: no block
@@ -96,9 +84,8 @@ void register_verification_arcs(QApplication& app, ViewportT* viewport) {
         });
     }
 
-    // Headless-ish regression of the energy-measurement feature: relax to 1s
-    // (decay OFF so the prepared state stays put), then a projective energy
-    // measurement must collapse onto -- and report -- the 1s eigenstate.
+    // Energy-measurement arc: relax to 1s (decay OFF so the state stays
+    // put); a projective energy measurement must report the 1s eigenstate.
     if (app.arguments().contains(QStringLiteral("--selftest-energy"))) {
         run_when_manifold_ready(viewport, [viewport, &app] {
             viewport->toggle_decay();  // OFF: keep the relaxed state stationary
@@ -119,10 +106,8 @@ void register_verification_arcs(QApplication& app, ViewportT* viewport) {
         });
     }
 
-    // Headless-ish regression of the static E-field: relax to 1s (symmetric,
-    // <z> ~ 0), switch on a sub-ionization +z field, and require the cloud to
-    // polarize -- <z> shifts measurably off center (Stark). Proves the field
-    // actually acts on the cloud.
+    // Static-E arc: relax to 1s (<z> ~ 0), switch on a sub-ionization +z
+    // field, require <z> to shift measurably (Stark polarization).
     if (app.arguments().contains(QStringLiteral("--selftest-efield"))) {
         run_when_manifold_ready(viewport, [viewport, &app] {
             viewport->toggle_decay();  // OFF: keep the state put
@@ -143,10 +128,9 @@ void register_verification_arcs(QApplication& app, ViewportT* viewport) {
         });
     }
 
-    // Headless-ish regression of the pump demo: relax to 1s, laser ON
-    // (Z-pol), require a Rabi peak P(2pz) >= 0.5; then decay ON as well and
-    // require >= 2 photons -- repeated absorb/emit cycles. A ground-start
-    // run WITHOUT the pump emits zero photons, so 2 is unambiguous.
+    // Pump arc: relax to 1s, laser ON (Z), require peak P(2pz) >= 0.5; then
+    // decay ON and require >= 2 photons (a ground-start run without the
+    // pump emits zero, so 2 is unambiguous).
     if (app.arguments().contains(QStringLiteral("--selftest-rabi"))) {
         run_when_manifold_ready(viewport, [viewport, &app] {
             viewport->toggle_decay();  // OFF: study the clean coherent flop
@@ -180,10 +164,8 @@ void register_verification_arcs(QApplication& app, ViewportT* viewport) {
         });
     }
 
-    // Cascade regression: excite 3d_z2 instantly (key-5 path) and
-    // require at least two photons: 3d cannot reach 1s directly (dl = 2),
-    // so two photons prove the chain 3d -> 2p -> 1s fired through the
-    // multi-level channel table.
+    // Cascade arc: excite 3d_z2 and require >= 2 photons -- 3d cannot reach
+    // 1s directly (dl = 2), so two photons prove 3d -> 2p -> 1s fired.
     if (app.arguments().contains(QStringLiteral("--selftest-cascade"))) {
         run_when_manifold_ready(viewport, [viewport, &app] {
             const long long baseline = viewport->photon_count();
@@ -197,20 +179,16 @@ void register_verification_arcs(QApplication& app, ViewportT* viewport) {
         });
     }
 
-    // Magnetic regression: a field along z rotates 2p_x -> 2p_y at
-    // omega_L = B/2. Prepare 2p_x (decay off, for pure precession), turn B on,
-    // and require P(2p_y) to rise past 0.3 -- proving psi ITSELF precesses (the
-    // old display trick left psi pristine, so P(2p_y) would stay 0). Probed
-    // periodically so the sin^2 oscillation phase cannot alias the verdict.
+    // Magnetic arc: prepare 2p_x (decay off), B along z, require P(2p_y) to
+    // rise past 0.3 -- proving psi ITSELF precesses. Probed periodically so
+    // the sin^2 oscillation phase cannot alias the verdict.
     if (app.arguments().contains(QStringLiteral("--selftest-magnetic"))) {
         run_when_manifold_ready(viewport, [viewport, &app] {
             viewport->toggle_decay();            // decay OFF: pure precession
             viewport->debug_prepare_state(kP2X);  // psi = 2p_x
-            // Modest field: omega_L = B/2 precession with only a MILD
-            // diamagnetic term, so 2p_x rotates substantially into 2p_y (a
-            // large B would diamagnetically deform the state and cap the
-            // overlap -- itself why the display trick was wrong). Real-time
-            // magnetic stepping is slow (~0.4 au/s), so the window is long.
+            // Modest field: a large B would diamagnetically deform the state
+            // and cap the overlap. Magnetic stepping is slow (~0.4 au/s), so
+            // the window is long.
             viewport->set_bfield_b(0.08);         // B along z (default axis)
             auto max_py = std::make_shared<double>(0.0);
             auto* probe = new QTimer(viewport);
@@ -227,14 +205,11 @@ void register_verification_arcs(QApplication& app, ViewportT* viewport) {
         });
     }
 
-    // Manifold regression: (a) deterministic physics of the computed channel
-    // table -- the selection rule A(2s->1s) ~ 0 and the 2p degeneracy --
-    // then (b) live wiring of the non-2p_z channels: an X-polarized pump
-    // from 1s can only fluoresce through 2p_x, so new photons prove the
-    // multi-channel trial fires through channels other than 2p_z -> 1s.
+    // Manifold arc: deterministic channel-table checks (selection rule, 2p
+    // degeneracy, ordering, cascade, dl rule), then an X-pol pump from 1s --
+    // its photons can only flow through 2p_x, proving non-2p_z channels fire.
     if (app.arguments().contains(QStringLiteral("--selftest-manifold"))) {
         run_when_manifold_ready(viewport, [viewport, &app] {
-            // Deterministic physics of the freshly built channel table.
             const double a_pz = viewport->channel_a(kP2Z, kS1);
             const double a_px = viewport->channel_a(kP2X, kS1);
             const double a_2s1s = viewport->channel_a(kS2, kS1);
@@ -277,14 +252,9 @@ void register_verification_arcs(QApplication& app, ViewportT* viewport) {
                 viewport->toggle_laser();  // Z (cached: no block)
                 viewport->toggle_laser();  // -> X
                 const long long baseline = viewport->photon_count();
-                // Two X-pol fluorescence photons need ~2 pump half-flops of
-                // SIM time: the pump starts from P_e = 0, the half-flop is
-                // pi/kRabiTargetOmega ~ 79 au, and the display-accelerated
-                // 2p lifetime adds ~8 au per cycle -- ~170 au to be safe. At
-                // the measured 256^3 sim rate (~1.5 au/s with VkFFT) that is
-                // ~115 s of wall clock, so a 60 s window was arithmetically
-                // unsatisfiable on this hardware regardless of correctness.
-                // 180 s carries the same physics verdict with real margin.
+                // Two X-pol photons need ~170 au of sim time (~2 half-flops
+                // + accelerated lifetimes); at ~1.5 au/s a 60 s window was
+                // arithmetically unsatisfiable -- 180 s has real margin.
                 QTimer::singleShot(180000, viewport, [viewport, &app, baseline] {
                     const long long fresh = viewport->photon_count() - baseline;
                     std::fprintf(stderr,

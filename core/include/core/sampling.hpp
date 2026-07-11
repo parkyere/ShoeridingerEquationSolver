@@ -1,11 +1,8 @@
 #pragma once
 
-// Trilinear sampling of the complex field at arbitrary positions, and the
-// per-vertex phase colors that paint momentum stripes onto an isosurface.
-//
-// Interpolating the COMPLEX value (re and im independently) and then taking
-// atan2 keeps constant-phase regions exactly constant: a real amplitude
-// scales both components equally and cancels in the ratio.
+// Trilinear sampling of the complex field, and per-vertex isosurface phase
+// colors. Interpolating the COMPLEX value and then taking atan2 keeps
+// constant-phase regions exactly constant (amplitude cancels in the ratio).
 
 #include <core/colormap.hpp>
 #include <core/complex.hpp>

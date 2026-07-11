@@ -1,10 +1,8 @@
 #pragma once
 
-// Real spherical harmonics (l <= 5) and 3D orbital synthesis: with the
-// radial engine's u_nl(r), the 3D eigenstate is EXACTLY psi = (u/r) Y_lm --
-// separation of variables replaces the imaginary-time ladder for building
-// the tracked manifold. Cartesian polynomial forms avoid trigonometry and
-// keep the nodal planes exact on the grid.
+// Real spherical harmonics (l <= 5) and 3D orbital synthesis:
+// psi = (u_nl(r)/r) Y_lm from the radial engine's u tables. Cartesian
+// polynomial forms keep the nodal planes exact on the grid.
 
 #include <core/complex.hpp>
 #include <core/field.hpp>
@@ -71,8 +69,7 @@ inline double real_spherical_harmonic(int l, int m, double x, double y, double z
         }
     }
     if (l == 4) {
-        // l == 4 (g): the n = 5 shell's highest angular momentum. Same
-        // Cartesian-polynomial / r^l convention; default case is m = +4.
+        // l == 4; default case is m = +4.
         const double r4 = r2 * r2;
         switch (m) {
             case -4: return 0.75 * std::sqrt(35.0 / kPi) * x * y * (x * x - y * y) / r4;
@@ -90,10 +87,7 @@ inline double real_spherical_harmonic(int l, int m, double x, double y, double z
                        (x * x * x * x - 6.0 * x * x * y * y + y * y * y * y) / r4;
         }
     }
-    // l == 5 (h): the n = 6 shell's highest angular momentum. Canonical
-    // (x+iy)^m real / imaginary parts over r^5; default case is m = +5. The
-    // constants and polynomials are verified harmonic and orthonormal over
-    // the sphere (see tests/harmonics_test.cpp).
+    // l == 5; default case is m = +5 (orthonormality pinned by tests).
     const double r5 = r2 * r2 * std::sqrt(r2);
     const double x2 = x * x;
     const double y2 = y * y;
@@ -134,13 +128,9 @@ inline double real_spherical_harmonic(int l, int m, double x, double y, double z
     }
 }
 
-// psi(x, y, z) = (u(r)/r) Y_lm, u linearly interpolated from the radial
-// grid (u(0) = 0 pins the inner segment, so u/r -> u_0/h as r -> 0, the
-// correct l = 0 limit; higher l vanish there through Y's r^l factor).
-// fill_orbital writes the UN-normalized field in place; synthesize_orbital
-// normalizes and returns. The un-normalized form is the single source of truth
-// the orbital-free projection (core/projection.hpp) reorganizes -- its radial
-// deposit shape must mirror this interpolation exactly.
+// psi = (u(r)/r) Y_lm with u linearly interpolated (u/r -> u[0]/h as r -> 0).
+// fill_orbital writes the UN-normalized field; synthesize_orbital normalizes.
+// CONTRACT: core/projection.hpp's deposit shape mirrors this interpolation.
 inline void fill_orbital(Field3D& psi, const Grid3D& g, const RadialGrid& rg,
                          const std::vector<double>& u, int l, int m) {
     const double h = rg.h();

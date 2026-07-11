@@ -81,13 +81,9 @@ inline void ifft(std::vector<Complex<double>>& a) {
     }
 }
 
-// 3D forward transform: 1D FFT along each axis. x-lines are contiguous in
-// the x-fastest layout and transform in place; y/z lines are gathered into a
-// per-thread scratch buffer, transformed, and scattered back.
-//
-// Parallelism note: every 1D line owns a disjoint slice of memory and is
-// transformed by exactly one thread, so the threaded result is BITWISE
-// IDENTICAL to the serial one (no reductions, no FP reordering).
+// 3D forward transform: 1D FFT per axis (x-lines contiguous in the x-fastest
+// layout; y/z lines gathered into per-thread scratch). Each line is owned by
+// exactly one thread, so the threaded result is BITWISE IDENTICAL to serial.
 inline void fft(Field3D& f) {
     std::vector<Complex<double>>& a = f.data();
     const Grid3D& g = f.grid();

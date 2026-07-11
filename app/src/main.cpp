@@ -1,16 +1,7 @@
-// Humble Object shell -- the Qt boundary. Qt provides the window, input,
-// the Vulkan device, and ONE fullscreen blit of the ses_vk renderer's scene
-// image. Everything the demo IS lives in ses_shell::SimDirector
-// (sim_director.hpp, Qt-free); the Viewport below translates events into
-// director calls, assembles the renderer's FrameInput from director
-// accessors, and formats the title.
-//
-// NO domain logic lives here (docs/ARCHITECTURE.md). The TDSE runs in core's
-// WavepacketSimulation; matrices, colormaps, marching cubes, and ALL the
-// volume-rendering math (ray_box, Beer-Lambert alpha, front-to-back
-// compositing, phase LUT) live in core and are unit-tested -- the Vulkan-GLSL
-// kernels under src/shaders/ are line-by-line transcriptions of those
-// verified formulas.
+// Humble Object shell -- the Qt boundary. Qt provides the window, input, the
+// Vulkan device, and ONE fullscreen blit of the ses_vk renderer's scene
+// image; everything the demo IS lives in ses_shell::SimDirector (Qt-free).
+// NO domain logic lives here (docs/ARCHITECTURE.md).
 //
 // Controls: drag = orbit, wheel = zoom, space = pause, Tab = cloud/surface,
 // 1 = real time, 2 = relax (imaginary time), 3 = relax to 2p, 4 = relax to
@@ -68,10 +59,9 @@ public:
     }
 
 protected:
-    // The compute half of a frame runs BEFORE the widget's own QRhi frame is
-    // recorded: the engine drives its own offscreen frames, which must not
-    // interleave with the widget frame's recording. Once per paint, even
-    // while paused (Key E works paused).
+    // The compute half runs BEFORE the widget's QRhi frame is recorded (the
+    // engine's offscreen frames must not interleave with it). Once per
+    // paint, even while paused (Key E works paused).
     void paintEvent(QPaintEvent* e) override {
         if (rhi_ready_) {
             if (!compute_init_done_) {
@@ -87,10 +77,9 @@ protected:
         QRhiWidget::paintEvent(e);
     }
 
-    // The widget's QRhi (and thus the adopted VkDevice) is about to go away:
-    // the core must tear down EVERYTHING it created on that device first.
-    // Simulation state on the GPU dies with it -- the fatal-on-rhi-change
-    // guard in initialize() keeps the policy honest (no silent migration).
+    // The adopted VkDevice is about to go away: tear down everything the
+    // core created on it first. GPU simulation state dies with it (the
+    // fatal-on-rhi-change guard in initialize() forbids silent migration).
     void releaseResources() override {
         blit_.release();
         vk_renderer_.destroy();
@@ -99,12 +88,9 @@ protected:
         vk_ctx_.destroy();
     }
 
-    // Build the RENDER-side Qt resources. Called by QRhiWidget once the
-    // backing QRhi exists, and again on every resize -- the guard makes
-    // re-entry a no-op (nothing here depends on the surface size; the
-    // projection is per-frame). COMPUTE setup is deferred to init_compute():
-    // the widget frame is ACTIVE during initialize(), and the engine drives
-    // its own offscreen frames, which are illegal while a frame is recorded.
+    // Build the RENDER-side Qt resources; re-entry (every resize) is a no-op.
+    // COMPUTE setup is deferred to init_compute(): the widget frame is ACTIVE
+    // during initialize(), and engine offscreen frames are illegal mid-frame.
     void initialize(QRhiCommandBuffer* cb) override {
         if (rhi_ready_) {
             if (rhi() != rhi_) {
@@ -116,9 +102,8 @@ protected:
         }
         rhi_ = rhi();
 
-        // The scene renders in ses_vk. Qt's whole render layer is the
-        // BlitPresenter (one sampler + one fullscreen-blit pipeline, built
-        // lazily once the scene image exists to seed the SRB).
+        // Qt's whole render layer is the BlitPresenter (one sampler + one
+        // fullscreen-blit pipeline, built lazily once the scene image exists).
         if (!blit_.init(rhi_)) {
             fatal_rhi_error("render resources",
                             QStringLiteral("blit sampler create failed"));
@@ -130,9 +115,7 @@ protected:
     }
 
     // Adopt the QRhiWidget's Vulkan device into the framework-free core:
-    // Khronos handles cross the boundary, nothing else. Qt stays the device
-    // provider + presentation layer; the physics runs in ses_vk via the
-    // director.
+    // Khronos handles cross the boundary, nothing else.
     void init_compute() {
         const auto* h =
             static_cast<const QRhiVulkanNativeHandles*>(rhi_->nativeHandles());
@@ -157,10 +140,8 @@ protected:
                 adopted ? vk_ctx_.phys_dev : VK_NULL_HANDLE));
     }
 
-    // The DRAW half of a frame, in ses_vk, outside any QRhi frame: assemble
-    // the per-frame inputs (camera, view mode, brightness, staged uploads)
-    // from the director, resize the offscreen target to the widget's pixel
-    // size, and let SceneRenderer record the passes.
+    // The DRAW half, in ses_vk, outside any QRhi frame: assemble FrameInput
+    // from the director, resize the offscreen target, record the passes.
     void render_scene_offscreen() {
         if (!vk_renderer_ready_) {
             return;
@@ -187,8 +168,7 @@ protected:
         in.flow = flow_on_ && in.cloud;
         in.flow_animate = !paused_;
         // Temporal accumulation: keep averaging only while NOTHING changed
-        // -- camera, display params, view mode, flash, the psi volume
-        // itself (any bridge write resets), and no animating particles.
+        // (camera, display params, flash, psi volume, animating particles).
         in.frame_index = static_cast<float>(frame_index_++ % 4096);
         const bool volume_written = director_.take_volume_written();
         const bool scene_static =
@@ -209,10 +189,9 @@ protected:
         in.psi_volume = director_.psi_volume_view();
         if (in.cloud) {
             if (director_.take_volume_dirty()) {
-                // CPU staging only -- the bridge owns the volume on the GPU
-                // path, and until compute init has been ATTEMPTED the 268 MB
-                // fallback texture must not be allocated (it would be orphaned
-                // one frame later and would deflate the VRAM-budget probe).
+                // CPU staging only: until compute init has been ATTEMPTED the
+                // 268 MB fallback texture must not be allocated (it would be
+                // orphaned and would deflate the VRAM-budget probe).
                 if (director_.compute_attempted() && !director_.gpu_ok()) {
                     in.volume_staging = &director_.psi_staging();
                 }
@@ -224,8 +203,7 @@ protected:
         vk_renderer_.render(in);
     }
 
-    // Qt's entire remaining draw lives in the BlitPresenter: one fullscreen
-    // triangle sampling the ses_vk scene image.
+    // Qt's entire remaining draw: one fullscreen triangle sampling the scene.
     void render(QRhiCommandBuffer* cb) override {
         blit_.present(cb, renderTarget(), vk_renderer_.color_image(),
                       vk_renderer_.width(), vk_renderer_.height());
@@ -333,9 +311,8 @@ public:
     }
     double probe_population(int idx) { return director_.probe_population(idx); }
 
-    // Verification hook (--dump-frame-near): place the camera at an explicit
-    // distance -- inside the box (< ~80) exercises the volume proxy's
-    // front-face culling, which only matters from an interior viewpoint.
+    // Verification hook (--dump-frame-near): an interior camera (< ~80)
+    // exercises the volume proxy's front-face culling.
     void debug_set_camera_distance(double d) {
         distance_ = std::clamp(d, 4.0, 300.0);
         update();
@@ -384,8 +361,7 @@ protected:
                 toggle_decay();
                 break;
             case Qt::Key_F:
-                // Probability-current flow particles (Bohmian tracers):
-                // still for real eigenstates, swirling under drive/B-field.
+                // Probability-current flow particles (Bohmian tracers).
                 flow_on_ = !flow_on_;
                 update();
                 break;
@@ -421,17 +397,15 @@ private:
         update();
     }
 
-    // Qt-side GPU plumbing: the adopted device context, the framework-free
-    // scene renderer, and the one-blit presenter. The context is declared
-    // FIRST: members destroy in reverse order, and everything below allocates
-    // from its VMA allocator, so the context must outlive them all.
+    // The context is declared FIRST: members destroy in reverse order, and
+    // everything below allocates from its VMA allocator, so the context must
+    // outlive them all.
     ses_vk::DeviceContext vk_ctx_;  // adopts the QRhiWidget's device
     ses_vk::SceneRenderer vk_renderer_;  // the whole scene, framework-free
     bool vk_renderer_ready_ = false;
 
-    // The whole demo, Qt-free (sim_director.hpp): CPU truth session, ses_vk
-    // engine, atom model, and the demo state machine. Declared after the
-    // device context (the engine's buffers die before the allocator).
+    // The whole demo, Qt-free (sim_director.hpp). Declared after the device
+    // context (the engine's buffers die before the allocator).
     ses_shell::SimDirector director_;
     ses_shell::BlitPresenter blit_;
     QRhi* rhi_ = nullptr;             // the widget's QRhi, cached in initialize()
@@ -450,14 +424,12 @@ private:
 
     QTimer timer_;
     bool paused_ = false;
-    double absorbance_ = 0.68;  // lightened from 1.5: the default cloud was
-                                // too opaque
+    double absorbance_ = 0.68;  // lightened from 1.5 (default was too opaque)
 
     double azimuth_ = 0.6;
     double elevation_ = 0.4;
-    double distance_ = 150.0;  // default frames ~+-62 Bohr (45 deg fovy): the
-                               // n<=6 manifold body, incl. the ~60 Bohr 6s/6p
-                               // (wheel in toward 4 for a close-up of small ones)
+    double distance_ = 150.0;  // frames ~+-62 Bohr at 45 deg fovy: the n<=6
+                               // manifold body
     QPointF last_pos_;
 };
 
@@ -467,11 +439,8 @@ int main(int argc, char** argv) {
     // GUI-subsystem stderr through a redirect is a fully buffered pipe; a
     // crash then eats every diagnostic. Unbuffered keeps them honest.
     std::setvbuf(stderr, nullptr, _IONBF, 0);
-    // QRhi on the Vulkan backend (Viewport::setApi). No MSAA: the volume ray
-    // marcher is a full-screen fragment pass where 4x multisampling only
-    // multiplies its cost (it smooths nothing but the cube edges) -- at 256^3
-    // that budget belongs to the physics. QRhiWidget's sampleCount default (1)
-    // already matches.
+    // No MSAA: the ray marcher is a full-screen fragment pass where 4x only
+    // smooths cube edges; QRhiWidget's sampleCount default (1) already fits.
     QApplication app(argc, argv);
 
     QMainWindow window;

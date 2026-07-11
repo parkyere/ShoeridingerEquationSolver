@@ -1,12 +1,9 @@
 #pragma once
 
-// Soft position measurement (Gaussian POVM): the electron is "observed" not
-// into a Dirac delta but into a sharp-with-Gaussian-spread packet that the
-// TDSE then re-evolves.
-//
-// Randomness stays OUT of core: callers supply a uniform draw u in [0,1) and
-// sample_collapse_index inverts the discrete CDF of |psi|^2 in flat-index
-// order (the cell-volume factor is uniform and cancels).
+// Soft position measurement (Gaussian POVM): collapse to a Gaussian packet,
+// not a delta. Randomness stays OUT of core: callers supply u in [0,1) and
+// the samplers invert the discrete CDF of |psi|^2 in flat-index order (the
+// uniform cell-volume factor cancels).
 
 #include <core/complex.hpp>
 #include <core/field.hpp>
@@ -19,13 +16,10 @@
 
 namespace ses {
 
-// Projective energy measurement over eigenstate populations P_n =
-// |<phi_n|psi>|^2. Because the tracked bound manifold is incomplete (no
-// continuum states), the P_n sum to <= 1; the deficit 1 - sum(P) is the
-// probability of an "outside the tracked manifold" outcome. Given a uniform
-// draw u in [0,1), returns the collapsed eigenstate index n (psi should then
-// be projected onto phi_n), or -1 for the outside outcome (leave psi as is).
-// CDF inversion in index order; randomness stays with the caller.
+// Projective energy measurement over populations P_n = |<phi_n|psi>|^2.
+// The tracked manifold is incomplete, so sum(P) <= 1: returns the collapsed
+// index n (project psi onto phi_n), or -1 for the 1 - sum(P) deficit
+// (continuum / untracked outcome: leave psi as is).
 inline int sample_energy_eigenstate(const std::vector<double>& populations, double u) {
     double cum = 0.0;
     for (std::size_t n = 0; n < populations.size(); ++n) {

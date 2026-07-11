@@ -1,13 +1,9 @@
 #pragma once
 
-// Time-dependent dipole drive: the laser term
-//     V_drive(r, t) = amplitude * (axis . r) * cos(omega t).
-//
-// Diagonal factors commute, so the drive enters the Strang step as
-// scalar-coefficient half-kicks AROUND the untouched static tables:
-//     psi <- kick(t0+dt) . halfV . IFFT . kinetic . FFT . halfV . kick(t0)
-// per step, which keeps global O(dt^2) accuracy (the two edge evaluations
-// are equivalent to the midpoint rule at this order).
+// Time-dependent dipole drive: V_drive = amplitude * (axis . r) * cos(omega t).
+// Enters the Strang step as half-kicks AROUND the untouched static tables,
+//     psi <- kick(t0+dt) . halfV . IFFT . kinetic . FFT . halfV . kick(t0),
+// which keeps global O(dt^2) accuracy.
 
 #include <core/complex.hpp>
 #include <core/fft.hpp>

@@ -1,7 +1,6 @@
 #pragma once
 
 // Hand-rolled renderer math (purist reinvention boundary: no GLM).
-//
 // Conventions (pinned by tests/camera_test.cpp):
 //  - Mat4 is COLUMN-MAJOR: element(row r, col c) = m[c*4 + r].
 //  - Right-handed view space, camera looks down -Z.

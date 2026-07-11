@@ -65,11 +65,9 @@ inline Mesh sphere_mesh(Vec3d center, double radius, int rings, int segments) {
     return m;
 }
 
-// A solid arrow -- cylinder shaft + cone head -- from the origin along `dir`,
-// total length `len`. Pure geometry (triangle soup, same Mesh format as
-// sphere_mesh; color is applied at upload), used by the app's XYZ orientation
-// gizmo. Normals are unit but not necessarily outward: the mesh shader lights
-// with abs(dot(n, view)), so the sign is irrelevant.
+// Solid arrow (cylinder shaft + cone head) from the origin along `dir`, total
+// length `len`; triangle soup for the XYZ gizmo. Normals are unit but not
+// necessarily outward: the mesh shader lights with abs(dot(n, view)).
 inline Mesh arrow_mesh(Vec3d dir, double len, double shaft_r, double head_r,
                        double head_frac, int segments) {
     const Vec3d d = normalized(dir);

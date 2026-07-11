@@ -37,10 +37,8 @@ void build_control_bar(QMainWindow& window, ViewportT* viewport) {
                         [viewport] { viewport->toggle_decay(); });
     controls->addAction(QStringLiteral("Laser (L)"), viewport,
                         [viewport] { viewport->toggle_laser(); });
-    // Draggable static E-field (+z) magnitude: 0 = off, full-scale = 0.1 au
-    // (~5.1e10 V/m). The field is the dipole drive at omega = 0 (Stark). The 1s
-    // ground state is STIFF -- it barely polarizes (~0.2 Bohr) below ~0.03 au,
-    // then field-ionizes (cloud streams off +z). A live label shows the value.
+    // Static E-field (+z) slider: 0 = off, full-scale = 0.1 au. A live label
+    // shows the value; the tooltip carries the physics.
     controls->addWidget(new QLabel(QStringLiteral(" E-field +z ")));
     {
         constexpr double kMaxEfield = 0.1;  // au at full slider
@@ -68,10 +66,8 @@ void build_control_bar(QMainWindow& window, ViewportT* viewport) {
         controls->addWidget(efield_slider);
         controls->addWidget(efield_val);
     }
-    // Magnetic field: axis cycle (z -> x -> y) + strength slider. psi evolves
-    // under the proper minimal-coupling Hamiltonian (paramagnetic precession
-    // at omega = B/2 about the axis + diamagnetic contraction). States not
-    // symmetric about the axis visibly precess.
+    // Magnetic field: axis cycle (z -> x -> y) + strength slider; psi
+    // evolves under the proper minimal-coupling Hamiltonian.
     {
         constexpr double kMaxB = 0.2;  // au at full slider
         auto axis_text = [](int a) {

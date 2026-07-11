@@ -1,20 +1,11 @@
 #pragma once
 
-// The magnetic split-operator propagator. For an
-// electron in a uniform field B along a coordinate axis (symmetric gauge,
-// atomic units) minimal coupling gives
-//     H = 1/2 p^2 + V(r) + (B/2) L_axis + (B^2/8) rho_perp^2,
-// where L_axis is the angular momentum about the field axis and rho_perp is
-// the distance from it (for axis = z: L_z and x^2+y^2). This solves it
-// PROPERLY -- psi genuinely evolves, not a display rotation:
-//   - the diamagnetic (B^2/8) rho_perp^2 is diagonal in position, so it folds
-//     into the potential of an internal SplitOperator3D;
-//   - the paramagnetic (B/2) L_axis generates rotations about the axis, so
-//     exp(-i (B/2) L_axis tau) is the exact three-shear rotate_axis, Strang-
-//     split around the core: R(a) . [halfV . kin . halfV] . R(a), a=(B/2)(dt/2).
-// [T, L_axis] = 0 and, for an axis-symmetric V, [V', L_axis] = 0, so the split
-// is exact there; for a general V it is the usual O(dt^2) Strang. Unitary
-// throughout (the core is unitary; rotate_axis is unitary).
+// Magnetic split-operator propagator: uniform B along a coordinate axis
+// (symmetric gauge, atomic units, minimal coupling),
+//     H = 1/2 p^2 + V(r) + (B/2) L_axis + (B^2/8) rho_perp^2.
+// Diamagnetic term folds into the internal SplitOperator3D's potential;
+// paramagnetic exp(-i (B/2) L_axis tau) is the exact three-shear rotate_axis,
+// Strang-split: R(a) . [halfV.kin.halfV] . R(a), a = (B/2)(dt/2). Unitary.
 
 #include <core/field.hpp>
 #include <core/grid.hpp>

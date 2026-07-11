@@ -1,27 +1,11 @@
 #pragma once
 
-// The radial engine: bound levels and E1 lifetimes for EVERY orbital up to
-// a requested principal quantum number. A 3D grid cannot
-// hold Rydberg states (n = 10 reaches hundreds of Bohr), but a spherically
-// symmetric potential reduces the eigenproblem EXACTLY to 1D per angular
-// momentum l:
-//     u''(r) = 2 (V(r) + l(l+1)/(2 r^2) - E) u(r),  u(0) = u(R) = 0,
-// with psi = (u(r)/r) Y_lm and normalization  integral u^2 dr = 1.
-//
-// Discretization: 3-point finite differences on a uniform grid r_i = i h,
-// i = 1..n (both boundary values pinned to zero), giving a symmetric
-// tridiagonal Hamiltonian. Eigenvalues come from Sturm-sequence bisection
-// (the classic sign-count of the LDL^T pivots), eigenvectors from shifted
-// inverse iteration (Thomas solves). The k-th state for a given l has k
-// radial nodes and principal quantum number n = l + 1 + k.
-//
-// Level-averaged E1 decay rate (atomic units), summed over final m and
-// photon polarizations, averaged over initial m:
-//     A(n l -> n' l') = (4/3) alpha^3 w^3 * max(l, l')/(2 l + 1) * Rint^2,
-//     Rint = integral u_nl(r) r u_n'l'(r) dr.
-// A level's lifetime is 1 / sum(A over all lower levels with |dl| = 1);
-// levels with no open channel (1s, and 2s in hydrogen-like atoms) report
-// lifetime 0 = stable (their real decay is beyond E1: two-photon QED).
+// Radial engine: bound levels and E1 lifetimes for every orbital with
+// n <= n_max. Central V(r) reduces the eigenproblem exactly to 1D per l:
+//     u'' = 2 (V + l(l+1)/(2 r^2) - E) u,  u(0) = u(R) = 0,  psi = (u/r) Y_lm.
+// 3-point FD on r_i = i h -> symmetric tridiagonal H; eigenvalues by Sturm
+// bisection, eigenvectors by shifted inverse iteration. The k-th state for a
+// given l has k radial nodes and n = l + 1 + k.
 
 #include <core/decay.hpp>
 
@@ -179,8 +163,8 @@ inline double radial_dipole_integral(const RadialGrid& g, const std::vector<doub
     return s * g.h();
 }
 
-// Level-averaged E1 rate for the transition upper (l) -> lower (l_final):
-// the max(l, l')/(2 l_upper + 1) angular factor times the einstein_a core.
+// Level-averaged E1 rate (summed over final m/polarizations, averaged over
+// initial m): A = einstein_a(omega, max(l,l')/(2 l_upper + 1) * Rint^2).
 inline double einstein_a_level(double omega, int l_upper, int l_lower,
                                double radial_integral) {
     const double lmax = static_cast<double>(std::max(l_upper, l_lower));
@@ -212,12 +196,9 @@ inline std::vector<LevelInfo> bound_level_table(const RadialGrid& g,
             solved.push_back(Solved{l + 1 + k, l, radial_eigenstate(g, ham, k)});
         }
     }
-    // Gaps below the discretization resolution are DEGENERATE physics (the
-    // FD errors of different-l Hamiltonians differ at the h^2 ~ 1e-5..1e-4
-    // level, e.g. hydrogen 2s/2p): such channels carry omega^3-suppressed
-    // rates (A < 1e-14 even with Rydberg-sized dipoles -- irrelevant against
-    // any real channel) and counting them would fake a decay path for
-    // levels that are E1-stable.
+    // Gaps below the FD resolution (h^2 ~ 1e-5..1e-4, e.g. hydrogen 2s/2p)
+    // are degenerate physics: their omega^3-suppressed rates (A < 1e-14)
+    // would fake a decay path for E1-stable levels.
     constexpr double kDegenerateGap = 1e-4;
     std::vector<LevelInfo> table;
     table.reserve(solved.size());
