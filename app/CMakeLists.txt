@@ -20,47 +20,33 @@ set(CMAKE_AUTOUIC ON)
 find_package(Qt6 REQUIRED COMPONENTS ShaderTools GuiPrivate)
 find_package(VulkanHeaders CONFIG REQUIRED)  # vcpkg port: Vulkan::Headers
 
-# VkFFT (M4): header-only FFT + its runtime shader compiler (glslang) + the
-# Vulkan loader import lib. Optional -- when absent the engine compiles
-# without SES_HAVE_VKFFT and stays on the hand-rolled line FFT. VkFFT
-# includes the bare 'glslang_c_interface.h'; vcpkg installs it under
-# glslang/Include/, so that directory must be on the include path.
-find_package(Vulkan QUIET)
+# VkFFT: header-only FFT + its runtime shader compiler (glslang). Optional --
+# when absent the engine compiles without SES_HAVE_VKFFT and stays on the
+# hand-rolled line FFT. VkFFT includes the bare 'glslang_c_interface.h';
+# vcpkg installs it under glslang/Include/, so that directory must be on the
+# include path. NOTE: every ses_vk target lives in the volk world
+# (VK_NO_PROTOTYPES + PFN globals) -- NEVER link the vulkan-1 IMPORT library
+# into one: its code thunks collide with volk's identically named function-
+# pointer variables and volkInitialize crashes on startup.
 find_package(glslang CONFIG QUIET)
 find_path(SES_GLSLANG_C_INCLUDE_DIR glslang_c_interface.h
           PATH_SUFFIXES glslang/Include)
-if(TARGET Vulkan::Vulkan AND TARGET glslang::glslang AND SES_GLSLANG_C_INCLUDE_DIR)
+if(TARGET glslang::glslang AND SES_GLSLANG_C_INCLUDE_DIR)
     set(SES_VKFFT_AVAILABLE ON)
     message(STATUS "VkFFT enabled (engine step-body 3D transforms).")
 else()
     set(SES_VKFFT_AVAILABLE OFF)
     message(STATUS "VkFFT unavailable -- engine keeps the hand-rolled FFT.")
 endif()
-# One helper applies the flags to any target embedding an engine header.
-# Pass "volk" as the second argument for targets whose Vulkan world is volk
-# (ses_vk: VK_NO_PROTOTYPES + PFN globals): linking the vulkan-1 IMPORT
-# library there is not just redundant, it is fatal -- the import lib's code
-# thunks collide with volk's identically named function-pointer VARIABLES,
-# and whichever the linker binds first corrupts the other's callers
-# (volkInitialize crashes on startup). The loader flavor stays for the
-# prototype-world QrhiEngine harness.
 function(ses_enable_vkfft target)
     if(SES_VKFFT_AVAILABLE)
         target_compile_definitions(${target} PRIVATE SES_HAVE_VKFFT=1 VKFFT_BACKEND=0)
         target_include_directories(${target} SYSTEM PRIVATE
             "${SES_GLSLANG_C_INCLUDE_DIR}")
-        if(ARGC GREATER 1 AND "${ARGV1}" STREQUAL "volk")
-            target_link_libraries(${target} PRIVATE
-                glslang::glslang
-                glslang::SPIRV
-                glslang::glslang-default-resource-limits)
-        else()
-            target_link_libraries(${target} PRIVATE
-                Vulkan::Vulkan
-                glslang::glslang
-                glslang::SPIRV
-                glslang::glslang-default-resource-limits)
-        endif()
+        target_link_libraries(${target} PRIVATE
+            glslang::glslang
+            glslang::SPIRV
+            glslang::glslang-default-resource-limits)
     endif()
 endfunction()
 
@@ -85,56 +71,20 @@ target_link_libraries(sesolver_app
         ses_warnings
 )
 target_compile_features(sesolver_app PRIVATE cxx_std_20)
-ses_enable_vkfft(sesolver_app volk)
+ses_enable_vkfft(sesolver_app)
 
-# Bake every compute kernel the QrhiEngine loads at 256^3 plus the mesh +
-# volume render shaders into the app's resources (SPIR-V only: the app is
-# Vulkan-backend, and the default ESSL targets reject compute shaders).
+# qsb bakes ONLY the render shaders now (SPIR-V only: the app is Vulkan-
+# backend). Every compute kernel reaches the ses_vk engine as offline-baked
+# SPIR-V headers instead (the ses_spv_headers rule below).
 qt6_add_shaders(sesolver_app "app_shaders"
     PREFIX "/shaders"
     NOGLSL NOHLSL NOMSL
     FILES
-        src/qrhi_shaders/phase_multiply.comp
-        src/qrhi_shaders/scale.comp
-        src/qrhi_shaders/norm_peak.comp
-        src/qrhi_shaders/inner_product.comp
-        src/qrhi_shaders/dipole_kick.comp
-        src/qrhi_shaders/mean_force.comp
-        src/qrhi_shaders/dipole.comp
-        src/qrhi_shaders/pack_half.comp
-        src/qrhi_shaders/unpack_half.comp
-        src/qrhi_shaders/conj_scale.comp
-        src/qrhi_shaders/axpy.comp
-        src/qrhi_shaders/copy_state.comp
-        src/qrhi_shaders/shear.comp
-        src/qrhi_shaders/synth.comp
-        src/qrhi_shaders/bridge_store.comp
-        src/qrhi_shaders/bridge_load.comp
-        src/qrhi_shaders/project_deposit.comp
-        src/qrhi_shaders/fft_line256.comp
         src/qrhi_shaders/mesh.vert
         src/qrhi_shaders/mesh.frag
         src/qrhi_shaders/volume.vert
         src/qrhi_shaders/volume.frag
     OUTPUTS
-        phase_multiply.comp.qsb
-        scale.comp.qsb
-        norm_peak.comp.qsb
-        inner_product.comp.qsb
-        dipole_kick.comp.qsb
-        mean_force.comp.qsb
-        dipole.comp.qsb
-        pack_half.comp.qsb
-        unpack_half.comp.qsb
-        conj_scale.comp.qsb
-        axpy.comp.qsb
-        copy_state.comp.qsb
-        shear.comp.qsb
-        synth.comp.qsb
-        bridge_store.comp.qsb
-        bridge_load.comp.qsb
-        project_deposit.comp.qsb
-        fft_line256.comp.qsb
         mesh.vert.qsb
         mesh.frag.qsb
         volume.vert.qsb
@@ -145,7 +95,7 @@ qt6_add_shaders(sesolver_app "app_shaders"
 # aborts with "no Qt platform plugin could be initialized". Collect the platform
 # plugin (qwindows on Windows, xcb on Linux/X11) and import it into every GUI
 # executable when Qt6 is a static build; a shared Qt loads plugins itself, so the
-# guard makes this a no-op there. Reused by the sesolver_qrhicheck block below.
+# guard makes this a no-op there.
 get_target_property(_ses_qt_core_type Qt6::Core TYPE)
 set(_ses_qt_platform_plugins "")
 if(_ses_qt_core_type STREQUAL "STATIC_LIBRARY")
@@ -165,107 +115,15 @@ get_target_property(_qt6_core_dll Qt6::Core LOCATION)
 get_filename_component(_qt6_bin_dir "${_qt6_core_dll}" DIRECTORY)
 
 # ---------------------------------------------------------------------------
-# sesolver_qrhicheck: QRhi (Vulkan backend) verification harness -- the seed of
-# the GL->QRhi migration (M1). Bakes the decorated Vulkan-GLSL kernels to SPIR-V
-# via qsb (qt6_add_shaders) and runs them through QRhi, comparing against the
-# same CPU double reference the core tests pin. Built only when the QRhi private
-# module (Qt6::GuiPrivate), the shader baker (Qt6::ShaderTools), and the vcpkg
-# vulkan-headers (Vulkan::Headers, needed to compile QVulkanInstance) are all
-# present; otherwise skipped with a status message so the normal build is
-# unaffected. Registered with ctest (label "gpu", exit 77 = SKIP when no device).
-# ---------------------------------------------------------------------------
-# ShaderTools and GuiPrivate are each requested explicitly (separate calls so a
-# missing one does not silently void the other). NOTE: with the vcpkg Qt,
-# find_package(Qt6 COMPONENTS Gui) alone does NOT create the Qt6::GuiPrivate
-# target -- it must be requested by name, or sesolver_qrhicheck silently skips.
-find_package(Qt6 QUIET COMPONENTS ShaderTools)
-find_package(Qt6 QUIET COMPONENTS GuiPrivate)
-find_package(VulkanHeaders CONFIG QUIET)  # vcpkg port: provides Vulkan::Headers
-if(TARGET Qt6::GuiPrivate AND TARGET Qt6::ShaderTools AND TARGET Vulkan::Headers)
-    add_executable(sesolver_qrhicheck src/qrhicheck_main.cpp)
-    # Vulkan::Headers (vcpkg vulkan-headers) puts vulkan.h on a SYSTEM include
-    # path so QVulkanInstance compiles (and -Wpedantic stays quiet inside it);
-    # the runtime uses the vulkan-1.dll loader Qt dlopens.
-    target_link_libraries(sesolver_qrhicheck
-        PRIVATE sesolver_core Qt6::Core Qt6::Gui Qt6::GuiPrivate Vulkan::Headers ses_warnings)
-    target_compile_features(sesolver_qrhicheck PRIVATE cxx_std_20)
-    # SPIR-V only: this harness targets the Vulkan backend, and the default
-    # GLSL cross-compile targets (ESSL 100/120) reject compute shaders. qsb
-    # always embeds SPIR-V, which is what QRhi's Vulkan backend consumes.
-    qt6_add_shaders(sesolver_qrhicheck "qrhicheck_shaders"
-        PREFIX "/shaders"
-        NOGLSL NOHLSL NOMSL
-        FILES
-            src/qrhi_shaders/phase_multiply.comp
-            src/qrhi_shaders/scale.comp
-            src/qrhi_shaders/norm_peak.comp
-            src/qrhi_shaders/inner_product.comp
-            src/qrhi_shaders/dipole_kick.comp
-            src/qrhi_shaders/mean_force.comp
-            src/qrhi_shaders/dipole.comp
-            src/qrhi_shaders/fft_line64.comp
-            src/qrhi_shaders/pack_half.comp
-            src/qrhi_shaders/unpack_half.comp
-            src/qrhi_shaders/fft_line8.comp
-            src/qrhi_shaders/fft_line256.comp
-            src/qrhi_shaders/conj_scale.comp
-            src/qrhi_shaders/axpy.comp
-            src/qrhi_shaders/copy_state.comp
-            src/qrhi_shaders/shear.comp
-            src/qrhi_shaders/synth.comp
-            src/qrhi_shaders/bridge_store.comp
-            src/qrhi_shaders/bridge_load.comp
-            src/qrhi_shaders/project_deposit.comp
-        OUTPUTS
-            phase_multiply.comp.qsb
-            scale.comp.qsb
-            norm_peak.comp.qsb
-            inner_product.comp.qsb
-            dipole_kick.comp.qsb
-            mean_force.comp.qsb
-            dipole.comp.qsb
-            fft_line64.comp.qsb
-            pack_half.comp.qsb
-            unpack_half.comp.qsb
-            fft_line8.comp.qsb
-            fft_line256.comp.qsb
-            conj_scale.comp.qsb
-            axpy.comp.qsb
-            copy_state.comp.qsb
-            shear.comp.qsb
-            synth.comp.qsb
-            bridge_store.comp.qsb
-            bridge_load.comp.qsb
-            project_deposit.comp.qsb)
-    # VkFFT: engine integration + the standalone spike check (see the shared
-    # helper above; the check self-skips when the ports are absent).
-    ses_enable_vkfft(sesolver_qrhicheck)
-    if(_ses_qt_platform_plugins)
-        qt6_import_plugins(sesolver_qrhicheck INCLUDE ${_ses_qt_platform_plugins})
-    endif()
-    add_test(NAME QrhiCheck COMMAND sesolver_qrhicheck)
-    set_tests_properties(QrhiCheck PROPERTIES
-        LABELS "gpu"
-        SKIP_RETURN_CODE 77
-        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_qt6_bin_dir}"
-    )
-    message(STATUS "QRhi migration harness 'sesolver_qrhicheck' enabled.")
-else()
-    message(STATUS "sesolver_qrhicheck skipped "
-        "(needs Qt6::GuiPrivate + Qt6::ShaderTools + Vulkan::Headers via vcpkg).")
-endif()
-
-# ---------------------------------------------------------------------------
-# sesolver_vkcheck: framework-free Vulkan verification harness (M5 Stage 0).
-# NO Qt anywhere in this binary: volk loads the loader, VMA allocates, and the
-# SAME Vulkan-GLSL kernel sources are baked to plain SPIR-V offline by
-# glslangValidator (the glslang port's "tools" feature) and embedded as C
-# arrays via tools/cmake/bin2h.cmake -- the qsb-independent shader path. Each
-# kernel is verified against the SAME CPU double reference as qrhicheck, so
-# the two harnesses cross-check as the M5 port proceeds. Skipped with a status
-# message when volk/VMA/glslangValidator are absent. ctest: label "gpu",
-# exit 77 = SKIP without a Vulkan device; SES_VK_VALIDATION=1 turns on the
-# validation layers (classic-mode vcpkg install or SDK) and fails on errors.
+# sesolver_vkcheck: THE GPU verification harness (successor to gpucheck/GL
+# and qrhicheck/QRhi, both retired). NO Qt anywhere in this binary: volk
+# loads the loader, VMA allocates, and the Vulkan-GLSL kernel sources are
+# baked to plain SPIR-V offline by glslangValidator (the glslang port's
+# "tools" feature) and embedded as C arrays via tools/cmake/bin2h.cmake.
+# Every check pins the same CPU double reference (and tolerance) the retired
+# harnesses pinned -- the recorded values match digit for digit. ctest:
+# label "gpu", exit 77 = SKIP without a Vulkan device; SES_VK_VALIDATION=1
+# turns on the validation layers and fails the run on any layer error.
 # ---------------------------------------------------------------------------
 find_package(volk CONFIG QUIET)
 find_package(VulkanMemoryAllocator CONFIG QUIET)
