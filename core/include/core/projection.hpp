@@ -4,7 +4,7 @@
 // tracked eigenstate manifold -- computes every amplitude <n|psi> WITHOUT
 // holding a resident 3-D orbital atlas.
 //
-// Because the soft-Coulomb potential is central, each eigenstate factorizes
+// Because the potential is central (V = V(r)), each eigenstate factorizes
 // exactly as |n> = (u_nl(r)/r) Y_lm(Omega). The direct grid inner product
 //     <n|psi> = sum_cells (u_interp(r)/r) Y_lm(cell) psi(cell) dV
 // is therefore just a reorganization: deposit the CELL-side factors
@@ -56,14 +56,14 @@ struct RadialAngularProjection {
     // the RAW amplitude (== the direct grid inner product) = amp[n] * sqrt(N_n).
 };
 
-// Static geometry for the GPU deposit (scoping Phase 2): the map cell -> radial
+// Static geometry for the GPU deposit: the map cell -> radial
 // bin depends ONLY on the grid, never on psi, so it is built ONCE. Cells are
 // counting-sorted by their primary bin i0 into sorted_cell[] with CSR offsets
 // bin_off[] -- the GPU then runs one workgroup per bin (a deterministic gather,
 // no atomics). The bin key i0 is computed in the IDENTICAL fp32 arithmetic the
 // shader uses (float coords box_min + i*cell_h, float r, float t = r/h - 1,
 // int(t)) so the build and the shader agree on the bin for every cell,
-// including the ~fp32-eps boundary straddlers (scoping risk 6.1).
+// including the ~fp32-eps boundary straddlers.
 struct RadialBinIndex {
     std::vector<std::uint32_t> sorted_cell;  // in-sphere cell flat indices, grouped by i0
     std::vector<std::uint32_t> bin_off;      // CSR offsets, length n_radial+1

@@ -1,13 +1,12 @@
 #pragma once
 
 // Tracked n<=6 eigenstate-manifold spec: state/level index tables (pure data).
-// Extracted verbatim from main.cpp (no logic change).
 
-// T5/T7/T8/T10: the tracked eigenstate manifold -- the full m-resolved n <= 6
-// shell (91 states). n = 6 is box-critical on the +-80 Bohr grid (the diffuse
-// 6s/6p tails approach the u(R_box) = 0 wall; the structured 6d/6f/6g/6h are
-// well held); the startup h-audit cross-checks 5s and 6s against <H>_grid.
-// First five indices frozen (selftests).
+// The tracked eigenstate manifold -- the full m-resolved n <= 6 shell
+// (kNumStates entries). n = 6 is box-critical on the +-80 Bohr grid (the
+// diffuse 6s/6p tails approach the u(R_box) = 0 wall; the structured
+// 6d/6f/6g/6h are well held); the startup h-audit cross-checks 5s and 6s
+// against <H>_grid. First five indices frozen (selftests).
 enum StateIndex : int {
     kS1 = 0, kP2X = 1, kP2Y = 2, kP2Z = 3, kS2 = 4,
     k3S = 5, k3PX = 6, k3PY = 7, k3PZ = 8,

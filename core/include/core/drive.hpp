@@ -1,6 +1,6 @@
 #pragma once
 
-// Time-dependent dipole drive (transitions arc T2): the laser term
+// Time-dependent dipole drive: the laser term
 //     V_drive(r, t) = amplitude * (axis . r) * cos(omega t).
 //
 // Diagonal factors commute, so the drive enters the Strang step as

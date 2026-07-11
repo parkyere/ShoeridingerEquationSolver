@@ -1,10 +1,9 @@
 #version 450
 
-// Decorated Vulkan-GLSL form of kMeanForceSrc (gpu_shaders.hpp): the Ehrenfest
-// force <grad V> = sum |psi|^2 grad V, a vec4 reduction folding psi (binding 0)
-// against a per-cell grad V field (binding 4, vec4 gx/gy/gz/0) into one vec4
-// partial per workgroup (binding 2); the host sums. Body byte-for-byte the GL
-// kernel's; std140 UBO for n (binding 1).
+// Ehrenfest force <grad V> = sum |psi|^2 grad V: a vec4 reduction folding psi
+// (binding 0) against a per-cell grad V field (binding 4, vec4 gx/gy/gz/0)
+// into one vec4 partial per workgroup (binding 2); the host sums.
+// std140 UBO n (binding 1).
 layout(local_size_x = 256) in;
 
 layout(std430, binding = 0) readonly buffer PsiBuf { vec2 psi[]; };

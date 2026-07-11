@@ -41,7 +41,7 @@ inline Complex<double> sample_trilinear(const Field3D& f, Vec3d p) {
     const auto [k, tz] = sampling_detail::cell_and_t(p.z, g.z);
 
     auto lerp = [](Complex<double> a, Complex<double> b, double t) {
-        return a + t * (b - a);  // component-wise: same math as before
+        return a + t * (b - a);  // component-wise on re and im
     };
 
     const Complex<double> c00 = lerp(f(i, j, k), f(i + 1, j, k), tx);
@@ -50,10 +50,6 @@ inline Complex<double> sample_trilinear(const Field3D& f, Vec3d p) {
     const Complex<double> c11 = lerp(f(i, j + 1, k + 1), f(i + 1, j + 1, k + 1), tx);
     return lerp(lerp(c00, c10, ty), lerp(c01, c11, ty), tz);
 }
-
-// (The trilinear rotate_field that used to live here -- a display-only Larmor
-// rotation -- was retired: the magnetic field is now solved properly, psi
-// evolving via the exact three-shear core/rotation.hpp rotate_axis.)
 
 // One cyclic phase color per mesh vertex: arg(psi) sampled at the vertex.
 inline std::vector<Rgb> phase_colors(const Mesh& mesh, const Field3D& psi) {

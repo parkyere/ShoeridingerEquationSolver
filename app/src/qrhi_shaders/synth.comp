@@ -1,10 +1,9 @@
 #version 450
 
-// Decorated Vulkan-GLSL form of kSynthSrc (gpu_shaders.hpp): synthesize
-// psi = (u(|r|)/|r|) * Y_lm(theta,phi) per cell, from a radial u_nl(r) table.
-// The real spherical harmonics (l = 0..5) are byte-for-byte the GL kernel's.
-// std140 UBO (binding 1) carries the grid + orbital params; vec3 geometry is
-// vec4-padded. psi out (binding 0), radial table u (binding 5).
+// Synthesize psi = (u(|r|)/|r|) * Y_lm(theta,phi) per cell, from a radial
+// u_nl(r) table, using the real spherical harmonics (l = 0..5). std140 UBO
+// (binding 1) carries the grid + orbital params; vec3 geometry is vec4-padded.
+// psi out (binding 0), radial table u (binding 5).
 layout(local_size_x = 256) in;
 
 layout(std430, binding = 0) writeonly buffer PsiBuf { vec2 psi[]; };

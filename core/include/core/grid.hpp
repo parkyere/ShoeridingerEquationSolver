@@ -20,7 +20,8 @@ struct Grid1D {
 
 // 3D periodic grid: three independent Grid1D axes.
 // Flat layout is X FASTEST -- flat(i,j,k) = i + nx*(j + ny*k) -- so x-lines
-// are contiguous (3D FFT) and the layout matches glTexImage3D upload later.
+// are contiguous (3D FFT) and the layout matches the tightly packed
+// row-major order GPU 3D-texture uploads expect.
 struct Grid3D {
     Grid1D x{};
     Grid1D y{};

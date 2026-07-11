@@ -1,7 +1,7 @@
 #pragma once
 
-// Exact, unitary rotation of a 3D field about a coordinate axis (magnetic-
-// field arc). The paramagnetic term (B/2)(B^ . L) of the magnetic Hamiltonian
+// Exact, unitary rotation of a 3D field about a coordinate axis.
+// The paramagnetic term (B/2)(B^ . L) of the magnetic Hamiltonian
 // generates rotations about the field axis, so evolving psi under it is a
 // rigid rotation of the ACTUAL wavefunction. Done by the three-shear (Paeth)
 // decomposition in the plane perpendicular to the axis,

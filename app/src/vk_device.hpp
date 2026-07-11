@@ -1,12 +1,11 @@
 #pragma once
 
-// ses_vk: framework-free Vulkan bootstrap (M5 Stage 0).
+// ses_vk: framework-free Vulkan bootstrap.
 //
-// The seed of the framework-free compute core: a DeviceContext that OWNS a
-// self-created VkInstance/VkDevice (headless path -- checks, future cluster
-// runs), designed so a later stage can also ADOPT externally supplied handles
-// (the QRhiWidget-provided device in the GUI, per the 2026-07-11 de-Qt
-// analysis). No Qt anywhere in this header or its includes:
+// A DeviceContext either OWNS a self-created VkInstance/VkDevice (headless
+// path -- checks, future cluster runs) or ADOPTS externally supplied handles
+// (the GUI shell's Qt-provided device). No Qt anywhere in this header or its
+// includes:
 //   - volk is the loader: it defines VK_NO_PROTOTYPES itself, dlopens
 //     vulkan-1, and declares canonically named global function pointers, so
 //     downstream code (and later VkFFT) compiles and links unmodified.
@@ -191,7 +190,7 @@ struct DeviceContext {
         }
 
         // Physical device: prefer the first discrete GPU, else the first
-        // anything (mirrors what QRhi lands on for this single-GPU box).
+        // anything.
         std::uint32_t dev_count = 0;
         vkEnumeratePhysicalDevices(instance, &dev_count, nullptr);
         if (dev_count == 0) {
@@ -212,8 +211,9 @@ struct DeviceContext {
         vkGetPhysicalDeviceProperties(phys_dev, &props);
         std::memcpy(device_name, props.deviceName, sizeof(device_name));
 
-        // Queue family: first with compute. (Graphics too, when available,
-        // to mirror the Qt-adopt path's combined family.)
+        // Queue family: first with compute, preferring one that also has
+        // graphics (the adopted GUI queue is a combined family, and the
+        // engine's image barriers use fragment stages).
         std::uint32_t qf_count = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(phys_dev, &qf_count, nullptr);
         std::vector<VkQueueFamilyProperties> qf(qf_count);
@@ -311,7 +311,7 @@ struct DeviceContext {
     }
 
     // A 3D storage image (+ its view). STORAGE for the compute bridge,
-    // SAMPLED so the render shell can import and sample the same image.
+    // SAMPLED so the renderer can sample the same image.
     struct Image {
         VkImage img = VK_NULL_HANDLE;
         VkImageView view = VK_NULL_HANDLE;

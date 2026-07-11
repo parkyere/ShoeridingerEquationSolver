@@ -1,11 +1,10 @@
 #pragma once
 
-// The tracked-atom model (Stage 5b extraction from main.cpp's Viewport): the
-// radial solve, the on-demand eigenstate synthesis bookkeeping (energies,
-// grid norms, resident handles, fp16 policy), and the E1 decay channel table.
-// Engine-backed operations take the QrhiEngine by reference; everything else
-// is pure data/logic. UI concerns (titles, timers, queues' frame pacing) stay
-// in the shell.
+// The tracked-atom model: the radial solve, the on-demand eigenstate
+// synthesis bookkeeping (energies, grid norms, resident handles, fp16
+// policy), and the E1 decay channel table. Engine-backed operations take
+// ses_vk::Engine by reference; everything else is pure data/logic. UI
+// concerns (titles, timers, queues' frame pacing) stay in the shell.
 
 #include "manifold_spec.hpp"
 #include "vk_engine.hpp"
@@ -25,7 +24,7 @@ namespace ses_shell {
 
 class AtomModel {
 public:
-    // T7: solve the radial atom once (blocking, well under a second).
+    // Solve the radial atom once (blocking, well under a second).
     // In-box levels back the tracked manifold (u(R_box) = 0 is exactly what
     // the periodic grid supports); the free-atom table to n = 10 is the
     // full lifetime atlas, printed for the record.
@@ -121,8 +120,8 @@ public:
     }
 
     // Population |<n|psi>|^2 from the last engine.project_psi() pass: the 1-D
-    // radial dot g_lm . u_nl, grid-normalized to be value-identical to the
-    // retired inner_with_psi(grid-normalized orbital) path.
+    // radial dot g_lm . u_nl, grid-normalized so the value equals a full 3D
+    // inner product against the grid-normalized orbital.
     double project_population(const ses_vk::Engine& engine, int idx) const {
         const StateSpec& sp = kStateSpec[static_cast<std::size_t>(idx)];
         const double n2 = state_norm2_[static_cast<std::size_t>(idx)];
@@ -146,10 +145,10 @@ public:
     // Synthesize eigenstate idx into a FRESH fp32 buffer (caller frees);
     // captures its grid norm (for populations) and energy. ALL build/deflation
     // work uses these transients -- no resident atlas -- so the startup
-    // montage holds ONE orbital at a time (not all 91) and 512^3, where a
-    // resident atlas is physically impossible, becomes feasible. (fp16 is kept
-    // dormant for a future big-box preset; it only ever mattered for a
-    // RESIDENT atlas.)
+    // montage holds ONE orbital at a time (not the whole manifold) and 512^3,
+    // where a resident atlas is physically impossible, becomes feasible.
+    // (fp16 is kept dormant for a future big-box preset; it only ever
+    // mattered for a RESIDENT atlas.)
     int synth_transient(ses_vk::Engine& engine, int idx,
                         double* out_peak = nullptr) {
         const std::size_t s = static_cast<std::size_t>(idx);
@@ -177,8 +176,8 @@ public:
     // degenerate m-splittings (zero by construction here) and sub-mHa
     // radio-frequency channels whose omega^3 rates are irrelevant; the
     // |dl| = 1 filter applies the E1 selection rule analytically (the
-    // synthesis KNOWS each state's l -- emergence was demonstrated in T5,
-    // and 30 states would otherwise cost ~450 forbidden integrals).
+    // synthesis KNOWS each state's l; without the filter the manifold
+    // would cost thousands of forbidden integrals).
     void collect_channel_pairs() {
         pair_queue_.clear();
         for (int from = 0; from < kNumStates; ++from) {
@@ -205,7 +204,8 @@ public:
         const double gap = state_energy_[from] - state_energy_[to];
         // Transient endpoints (no resident atlas): cache the 'from' orbital
         // across its consecutive channels (pairs are grouped by 'from'), and
-        // synthesize each 'to' fresh -- peak residency is 2 orbitals, never 91.
+        // synthesize each 'to' fresh -- peak residency is 2 orbitals, never
+        // the whole manifold.
         if (pair_from_idx_ != p.first) {
             if (pair_from_buf_ >= 0) {
                 engine.release_state(pair_from_buf_);
@@ -219,7 +219,7 @@ public:
         channels_.push_back(ShellChannel{
             p.first, p.second, ses::einstein_a(gap, ses::dipole_strength_sq(d)), 0.0});
         if (p.first == kP2Z && p.second == kS1) {
-            dipole_z_ = std::abs(d.z);  // T3 laser E0, ready for free
+            dipole_z_ = std::abs(d.z);  // laser E0 drive strength, ready for free
         }
     }
 
@@ -275,15 +275,15 @@ public:
         return a_sum > 0.0 ? 1.0 / a_sum : 0.0;
     }
 
-    // T7: the blocking fallbacks are thin wrappers over synthesis -- after
-    // the startup atlas everything is already cached, so these cost nothing;
-    // if called early they synthesize just what is needed. The engine drives
-    // its own offscreen frames, so they are legal any time between paints.
+    // The blocking fallbacks are thin wrappers over synthesis: once the
+    // startup build has the channel table, prepare_manifold_cache is a no-op;
+    // otherwise they synthesize just what is needed. The engine drives its
+    // own offscreen frames, so they are legal any time between paints.
     bool prepare_ground_cache(ses_vk::Engine& engine) {
         return ensure_state(engine, kS1);
     }
 
-    // The laser pair (1s + 2p_z); dipole_z_ (the T3 drive strength) comes
+    // The laser pair (1s + 2p_z); dipole_z_ (the drive strength) comes
     // from the channel table or is computed here if the table is not up.
     bool prepare_excited_cache(ses_vk::Engine& engine) {
         const bool ok = ensure_state(engine, kS1) && ensure_state(engine, kP2Z);
@@ -307,9 +307,9 @@ public:
         if (!channels_.empty()) {
             return true;
         }
-        // The whole blocking build: ensure_state uploads the buffers and
-        // evaluate_channel_pair reduces the dipoles on the GPU (the dipoles no
-        // longer touch the CPU); the engine owns its frames.
+        // The whole blocking build: ensure_state synthesizes the resident
+        // buffers and evaluate_channel_pair reduces the dipoles on the GPU
+        // (the dipoles never touch the CPU); the engine owns its frames.
         bool ok = true;
         for (int idx = 0; idx < kNumStates && ok; ++idx) {
             ok = ensure_state(engine, idx);
@@ -354,7 +354,7 @@ private:
     double accel_display_ = 0.0;  // common display acceleration factor
     int pair_from_idx_ = -1;      // channel-build 'from' cache (transient)
     int pair_from_buf_ = -1;
-    double dipole_z_ = 0.0;  // |<2p_z| z |1s>|, the T3 laser drive strength
+    double dipole_z_ = 0.0;  // |<2p_z| z |1s>|, the laser drive strength
 };
 
 }  // namespace ses_shell

@@ -1,6 +1,6 @@
 #pragma once
 
-// The magnetic split-operator propagator (magnetic-field arc). For an
+// The magnetic split-operator propagator. For an
 // electron in a uniform field B along a coordinate axis (symmetric gauge,
 // atomic units) minimal coupling gives
 //     H = 1/2 p^2 + V(r) + (B/2) L_axis + (B^2/8) rho_perp^2,

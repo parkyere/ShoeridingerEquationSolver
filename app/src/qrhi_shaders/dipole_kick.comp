@@ -1,10 +1,9 @@
 #version 450
 
-// Decorated Vulkan-GLSL form of kDipoleKickSrc (gpu_shaders.hpp): one dipole
-// half-kick psi <- exp(-i theta axis.r) psi, per grid cell. The grid geometry
-// (box_min/cell_h/axis) is passed as vec4 in the std140 UBO -- padding to 16
-// bytes sidesteps std140's vec3 alignment subtleties; only .xyz is used, so the
-// arithmetic is byte-for-byte the GL kernel's.
+// One dipole half-kick psi <- exp(-i theta axis.r) psi, per grid cell.
+// The grid geometry (box_min/cell_h/axis) is passed as vec4 in the std140
+// UBO -- padding to 16 bytes sidesteps std140's vec3 alignment subtleties;
+// only .xyz is used.
 layout(local_size_x = 256) in;
 
 layout(std430, binding = 0) buffer PsiBuf { vec2 psi[]; };

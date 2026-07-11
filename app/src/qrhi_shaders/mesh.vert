@@ -1,10 +1,10 @@
 #version 450
 
-// QRhi/Vulkan form of kMeshVertexShader (render_shaders.hpp): the mesh (proton
-// marker + axes gizmo) vertex stage. Default-block `uniform mat4 mvp` becomes a
-// std140 UBO shared with the fragment stage (binding 0); eye is vec4-padded.
-// The MVP already carries QRhi::clipSpaceCorrMatrix (applied host-side), so
-// gl_Position is authored exactly as the GL shader.
+// Mesh (proton marker + axes gizmo) vertex stage. The std140 UBO (binding 0)
+// is shared with the fragment stage; eye is vec4-padded. The MVP already
+// carries the GL->Vulkan clip correction (y flip, depth [-1,1] -> [0,1])
+// applied host-side, so gl_Position is authored in the camera's GL clip
+// conventions with no correction here.
 layout(location = 0) in vec3 pos;
 layout(location = 1) in vec3 normal;
 layout(location = 2) in vec3 color;

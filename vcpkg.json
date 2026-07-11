@@ -2,7 +2,7 @@
     "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg/master/scripts/vcpkg.schema.json",
     "name": "schroedinger-equation-solver",
     "version": "0.0.1",
-    "description": "Single-electron TDSE solver with hand-written OpenGL/QRhi visualization.",
+    "description": "Single-electron TDSE solver with framework-free Vulkan compute and rendering (volk+VMA+VkFFT) in a Qt window shell.",
     "builtin-baseline": "cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3",
     "dependencies": [
         "vulkan-headers",

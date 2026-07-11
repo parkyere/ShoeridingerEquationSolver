@@ -1,8 +1,8 @@
 #pragma once
 
-// Verification + selftest arcs (Stage 5a extraction from main()): every
-// --dump-frame* and --selftest-* command-line arc, registered against the
-// live viewport. Templated on the viewport type so the shell class can stay
+// Verification + selftest arcs: every --dump-frame* and --selftest-*
+// command-line arc, registered against the live viewport. Templated on the
+// viewport type so the shell class can stay
 // private to main.cpp; the arcs consume only its public control/probe API.
 // Each arc waits for the startup atlas build (run_when_manifold_ready) and
 // then CHAINS timers, so a slower GPU stretches the run instead of
@@ -37,8 +37,9 @@ void register_verification_arcs(QApplication& app, ViewportT* viewport) {
     // Render verification hook: once the manifold is up (the cloud shows the
     // resumed wavepacket), grab the composited frame to frame_dump.bmp and
     // exit. grabFramebuffer renders offscreen + reads the color buffer back,
-    // so this verifies the whole QRhi render path end to end. BMP because the
-    // lean static Qt is built without the png feature (no libpng).
+    // so this verifies the whole render path (ses_vk scene + the Qt blit)
+    // end to end. BMP because the lean static Qt is built without the png
+    // feature (no libpng).
     if (app.arguments().contains(QStringLiteral("--dump-frame"))) {
         run_when_manifold_ready(viewport, [viewport, &app] {
             QTimer::singleShot(2000, viewport, [viewport, &app] {
@@ -77,7 +78,7 @@ void register_verification_arcs(QApplication& app, ViewportT* viewport) {
     // photon is the physically expected outcome without a re-pump laser.)
     // Selftest arcs wait for the startup atlas build (run_when_manifold_ready)
     // and are then CHAINED, so a slower GPU stretches the run instead of
-    // false-failing a wall-clock verdict. Decay is ON by default (T6);
+    // false-failing a wall-clock verdict. Decay is ON by default;
     // photon verdicts count from a baseline captured at the arc's start.
     if (app.arguments().contains(QStringLiteral("--selftest-decay"))) {
         run_when_manifold_ready(viewport, [viewport, &app] {
@@ -142,7 +143,7 @@ void register_verification_arcs(QApplication& app, ViewportT* viewport) {
         });
     }
 
-    // Headless-ish regression of the T3 pump demo: relax to 1s, laser ON
+    // Headless-ish regression of the pump demo: relax to 1s, laser ON
     // (Z-pol), require a Rabi peak P(2pz) >= 0.5; then decay ON as well and
     // require >= 2 photons -- repeated absorb/emit cycles. A ground-start
     // run WITHOUT the pump emits zero photons, so 2 is unambiguous.
@@ -179,7 +180,7 @@ void register_verification_arcs(QApplication& app, ViewportT* viewport) {
         });
     }
 
-    // T7 regression: the CASCADE. Excite 3d_z2 instantly (key-5 path) and
+    // Cascade regression: excite 3d_z2 instantly (key-5 path) and
     // require at least two photons: 3d cannot reach 1s directly (dl = 2),
     // so two photons prove the chain 3d -> 2p -> 1s fired through the
     // multi-level channel table.
@@ -226,11 +227,11 @@ void register_verification_arcs(QApplication& app, ViewportT* viewport) {
         });
     }
 
-    // T5 regression: (a) deterministic physics of the computed channel
+    // Manifold regression: (a) deterministic physics of the computed channel
     // table -- the selection rule A(2s->1s) ~ 0 and the 2p degeneracy --
     // then (b) live wiring of the non-2p_z channels: an X-polarized pump
     // from 1s can only fluoresce through 2p_x, so new photons prove the
-    // multi-channel trial fires beyond the old single 2p_z channel.
+    // multi-channel trial fires through channels other than 2p_z -> 1s.
     if (app.arguments().contains(QStringLiteral("--selftest-manifold"))) {
         run_when_manifold_ready(viewport, [viewport, &app] {
             // Deterministic physics of the freshly built channel table.
@@ -247,7 +248,7 @@ void register_verification_arcs(QApplication& app, ViewportT* viewport) {
             const bool ordering =
                 viewport->state_energy(kS1) < viewport->state_energy(kP2Z) &&
                 viewport->state_energy(kS1) < viewport->state_energy(kS2);
-            // T7: the n = 3 shell -- cascade paths open, Delta-l selection
+            // The n = 3 shell: cascade paths open, Delta-l selection
             // rules hold (3s -> 1s and 3d -> 1s are E1-forbidden).
             const double a_3s2p = viewport->channel_a(k3S, kP2Z);
             const double a_3d2p = viewport->channel_a(k3DZ0, kP2Z);

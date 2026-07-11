@@ -1,11 +1,11 @@
 #version 450
 
-// Decorated Vulkan-GLSL form of kProjectDepositSrc (gpu_shaders.hpp): the
-// orbital-free angular projection deposit. One workgroup per radial bin gathers
-// that bin's cells (primary + secondary interpolation partners, from the
-// counting-sort CSR index) and accumulates Y_lm-weighted psi into 36 components
-// (l = 0..5), tree-reduced and written to g_lm[c*nr + bin]. No atomics ->
-// deterministic. std140 UBO (binding 1) for the grid + radial geometry.
+// Orbital-free angular projection deposit. One workgroup per radial bin
+// gathers that bin's cells (primary + secondary interpolation partners, from
+// the counting-sort CSR index) and accumulates Y_lm-weighted psi into 36
+// components (l = 0..5), tree-reduced and written to g_lm[c*nr + bin].
+// No atomics -> deterministic. std140 UBO (binding 1) for the grid + radial
+// geometry.
 layout(local_size_x = 128) in;
 
 layout(std430, binding = 0) readonly buffer PsiBuf { vec2 psi[]; };

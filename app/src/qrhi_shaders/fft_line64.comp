@@ -1,12 +1,13 @@
 #version 450
 
-// Decorated Vulkan-GLSL form of kLineFftTemplate (gpu_shaders.hpp) instantiated
-// at N=64 (NHALF=32, LOG2N=6): the shared-memory radix-2 line FFT. qsb bakes a
-// fixed-size shader, so the template tokens are resolved to concrete constants
-// here. Body byte-for-byte the GL kernel's -- bit-reversed load, log2(N)
-// barrier-separated butterfly stages, forward transform (no normalization).
-// The line-enumeration uniforms move into a std140 UBO. A standalone 1-D FFT
-// check drives it with n_lines=1, stride=1, base=0 (one contiguous line).
+// Shared-memory radix-2 line FFT at N=64 (NHALF=32, LOG2N=6): bit-reversed
+// load, log2(N) barrier-separated butterfly stages, forward transform (no
+// normalization). The SPIR-V is baked offline at a fixed size, so N is a
+// concrete constant here (fft_line8/fft_line256 are the sibling sizes).
+// One workgroup of NHALF threads handles one line; the std140 UBO's
+// mod_a/mul_b/mul_c/stride/n_lines enumerate the lines (axis selection).
+// A standalone 1-D FFT check drives it with n_lines=1, stride=1, base=0
+// (one contiguous line).
 layout(local_size_x = 32) in;
 
 layout(std430, binding = 0) buffer DataBuf { vec2 data[]; };

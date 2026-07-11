@@ -1,7 +1,7 @@
 #pragma once
 
-// The radial engine (transitions arc T7): bound levels and E1 lifetimes for
-// EVERY orbital up to a requested principal quantum number. A 3D grid cannot
+// The radial engine: bound levels and E1 lifetimes for EVERY orbital up to
+// a requested principal quantum number. A 3D grid cannot
 // hold Rydberg states (n = 10 reaches hundreds of Bohr), but a spherically
 // symmetric potential reduces the eigenproblem EXACTLY to 1D per angular
 // momentum l:

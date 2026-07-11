@@ -1,8 +1,8 @@
 #version 450
 
-// QRhi/Vulkan form of kVolumeVertexShader (render_shaders.hpp): the volume box
-// vertex stage -- pass the world-space cube corner to the fragment raymarcher.
-// Shares the volume std140 UBO (binding 0) with the fragment stage.
+// Volume box vertex stage: pass the world-space cube corner to the fragment
+// raymarcher. Shares the volume std140 UBO (binding 0) with the fragment
+// stage. The MVP carries the GL->Vulkan clip correction host-side.
 layout(location = 0) in vec3 pos;
 
 layout(std140, binding = 0) uniform Ubo {

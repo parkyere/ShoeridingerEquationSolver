@@ -1,12 +1,12 @@
 #pragma once
 
-// ses_vk::SceneRenderer (M5 Plan B): the whole scene -- isosurface mesh,
-// proton marker, axes gizmo, billboarded z label, and the front-to-back
-// |psi|^2 volume raymarch -- rendered by raw Vulkan into an OFFSCREEN color
-// image the presentation shell samples. No Qt anywhere: the same GLSL
-// sources the qsb path used are baked offline to SPIR-V, the clip-space
-// correction QRhi supplied per-backend is the fixed GL->Vulkan matrix here,
-// and the render pass hands the color image over in SHADER_READ_ONLY.
+// ses_vk::SceneRenderer: the whole scene -- isosurface mesh, proton marker,
+// axes gizmo, billboarded z label, and the front-to-back |psi|^2 volume
+// raymarch -- rendered by raw Vulkan into an OFFSCREEN color image the
+// presentation shell samples. No Qt anywhere: the GLSL sources are baked
+// offline to SPIR-V, the camera's GL clip conventions are corrected to
+// Vulkan by a fixed matrix (store_corrected_mvp), and every frame ends with
+// the composite image handed over in SHADER_READ_ONLY.
 //
 // The presentation contract (what any shell -- Qt today, GLFW/SDL tomorrow
 // -- must do): give render() the per-frame camera/staging inputs, then draw
@@ -423,8 +423,7 @@ private:
     };
 
     // GL clip conventions (the ses camera's output) -> Vulkan clip: y is
-    // flipped and depth maps [-1,1] -> [0,1]. This is exactly the matrix
-    // QRhi::clipSpaceCorrMatrix returns on the Vulkan backend.
+    // flipped and depth maps [-1,1] -> [0,1].
     static void store_corrected_mvp(const ses::Mat4& mvp, float* out16) {
         ses::Mat4 c{};  // column-major
         c.m[0] = 1.0;
@@ -1275,7 +1274,7 @@ private:
         }
     }
 
-    // ---- static geometry (identical builders to the QRhi renderer) -------
+    // ---- static geometry --------------------------------------------------
     static std::vector<float> interleave_mesh(
         const ses::Mesh& mesh, const float* solid_rgb,
         const std::vector<ses::Rgb>* colors) {
@@ -1573,7 +1572,7 @@ private:
                            VK_WHOLE_SIZE);
     }
 
-    // Per-frame camera math: identical to the QRhi renderer.
+    // Per-frame camera math.
     void update_ubos(const FrameInput& in) {
         const double aspect = static_cast<double>(width_) /
                               std::max(1u, height_);
@@ -1655,7 +1654,7 @@ private:
                            VK_WHOLE_SIZE);
     }
 
-    // Billboarded "z" glyph just past the +Z arrow tip (identical builder).
+    // Billboarded "z" glyph just past the +Z arrow tip.
     static std::vector<float> build_z_label_verts(const ses::Mat4& view,
                                                   const ses::Vec3d& eye) {
         const ses::Vec3d right{view.m[0], view.m[4], view.m[8]};

@@ -1,8 +1,8 @@
 #version 450
 
-// Fullscreen-triangle blit (M5 Plan B): the ONLY geometry Qt still draws.
-// The scene itself is rendered by ses_vk into an offscreen image; this pass
-// samples it 1:1 into the QRhiWidget's backing texture.
+// Fullscreen-triangle blit: the ONLY geometry Qt still draws. The scene
+// itself is rendered by ses_vk into an offscreen image; this pass samples it
+// 1:1 into the QRhiWidget's backing texture.
 layout(location = 0) out vec2 v_uv;
 
 void main() {

@@ -1,12 +1,8 @@
 #version 450
 
-// Decorated Vulkan-GLSL form of kPhaseMultiplySrc (gpu_shaders.hpp) for the
-// QRhi migration. Two mechanical changes from the GL 4.3 kernel, nothing else:
-//   - the default-block `uniform uint n;` becomes a std140 UBO block (Vulkan
-//     GLSL / SPIR-V forbids default-block uniforms), and
-//   - every resource carries an explicit binding (QRhi maps its shader-resource
-//     binding indices onto these).
-// The complex-multiply math is byte-for-byte the GL kernel's.
+// psi <- phase * psi: element-wise complex multiply against a precomputed
+// phase table (split-step phase factor). One thread per element.
+// Bindings: psi(0) read-write, phase(1) readonly, std140 UBO n(2).
 layout(local_size_x = 256) in;
 
 layout(std430, binding = 0) buffer PsiBuf { vec2 psi[]; };

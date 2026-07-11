@@ -5,10 +5,9 @@
 // hand-rolled (user decision; see docs/ARCHITECTURE.md).
 //
 // The build adds -fcx-limited-range on GCC/Clang so complex multiply/divide
-// compile to the naive formulas (no C99 Annex G NaN/inf fixup calls):
-// bitwise identical to the previously hand-rolled arithmetic that the test
-// oracles were pinned against, and free of __muldc3 branches in the FFT
-// hot loop.
+// compile to the naive formulas (no C99 Annex G NaN/inf fixup calls): the
+// exact arithmetic the test oracles are pinned against, and free of
+// __muldc3 branches in the FFT hot loop.
 
 #include <complex>
 

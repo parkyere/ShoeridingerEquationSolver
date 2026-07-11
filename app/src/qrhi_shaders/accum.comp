@@ -1,10 +1,10 @@
 #version 450
 
-// Temporal accumulation (render polish): running average of the HDR scene
-// while nothing changes (camera, params, psi all static), snap-reset on any
-// change. The sample count rides in .a (the scene alpha is not needed
-// downstream). Jittered raymarch + accumulation = hundreds of effective
-// samples on a still frame; banding and noise melt away.
+// Temporal accumulation: running average of the HDR scene while nothing
+// changes (camera, params, psi all static), snap-reset on any change. The
+// sample count rides in .a (the scene alpha is not needed downstream).
+// Jittered raymarch + accumulation = hundreds of effective samples on a
+// still frame; banding and noise melt away.
 layout(local_size_x = 16, local_size_y = 16) in;
 
 layout(binding = 0, rgba16f) uniform readonly image2D scene;

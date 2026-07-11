@@ -1,10 +1,10 @@
 #pragma once
 
-// The app's embedded SPIR-V kernel blobs (M5 Stage 9): every compute kernel
-// the ses_vk engine runs, baked offline by glslangValidator from the SAME
-// Vulkan-GLSL sources qsb bakes for the render shaders -- the engine has no
-// resource system, so main() hands it this table. The line-FFT kernel is
-// baked at concrete sizes; pick the one matching the (cubic) grid.
+// The app's embedded SPIR-V blobs: every compute kernel and render shader
+// the ses_vk engine/renderer runs, baked offline by glslangValidator from
+// the Vulkan-GLSL sources in src/qrhi_shaders/ -- the engine has no resource
+// system, so main() hands it this table. The line-FFT kernel is baked at
+// concrete sizes; pick the one matching the (cubic) grid.
 
 #include "vk_engine.hpp"
 #include "vk_render.hpp"

@@ -1,6 +1,6 @@
 #pragma once
 
-// WavepacketSimulation: the tested orchestration layer the GL shell drives.
+// WavepacketSimulation: the tested orchestration layer the app shell drives.
 // Owns grid + potential + propagator + psi; advance() steps real time.
 // Exactly equivalent to gaussian_wavepacket followed by SplitOperator3D
 // steps (pinned by tests) -- no hidden physics lives here.

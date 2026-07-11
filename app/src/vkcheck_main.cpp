@@ -1,17 +1,16 @@
-// sesolver_vkcheck: framework-free Vulkan verification harness (M5).
+// sesolver_vkcheck: framework-free Vulkan verification harness.
 //
-// The raw-Vulkan analog of sesolver_qrhicheck and the seed of the eventual
-// framework-free compute core: NO Qt anywhere in this binary. volk loads the
-// loader, VMA allocates, the kernels are the SAME Vulkan-GLSL sources the
-// QRhi engine bakes with qsb -- here compiled offline by glslangValidator to
-// plain SPIR-V and embedded as C arrays (tools/cmake/bin2h.cmake). Every
-// check reproduces its qrhicheck twin: same oracle data, same tolerance, so
-// the two harnesses cross-check each other kernel by kernel as the M5 port
-// proceeds. Stage 1 covers the full individual-kernel set: element-wise ops,
-// the four reductions, the fp16 codec (a compute-to-compute hazard), the
-// line FFT at N=64/256, and the 3-axis fft3 orchestration (three dispatches
-// aliasing one buffer -- the barrier pattern at the heart of the Strang
-// step, here hand-authored and policed by the validation layer).
+// NO Qt anywhere in this binary: volk loads the loader, VMA allocates, and
+// the kernels are the production Vulkan-GLSL sources compiled offline by
+// glslangValidator to plain SPIR-V and embedded as C arrays
+// (tools/cmake/bin2h.cmake). Every check runs a GPU kernel or an
+// ses_vk::Engine path against a CPU double-precision oracle (core/ code or
+// an inline double reference) with a tolerance sized to the fp32 (or fp16)
+// arithmetic involved. Coverage: element-wise ops, the reductions, the fp16
+// codec (a compute-to-compute hazard), the line FFT at N=64/256, the 3-axis
+// fft3 orchestration (three dispatches aliasing one buffer -- the barrier
+// pattern at the heart of the Strang step, hand-authored and policed by the
+// validation layer), and the engine step/relax/measure paths.
 //
 // Validation layers: set SES_VK_VALIDATION=1 (and have the layer discoverable
 // via VK_ADD_LAYER_PATH or the SDK registry). Any validation ERROR fails the
@@ -74,8 +73,8 @@ namespace {
 constexpr VkDescriptorType kStorage = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 constexpr VkDescriptorType kUniform = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 
-// Complex<double> -> interleaved rg32f, byte-identical to the qrhicheck /
-// engine upload format so all harnesses see the same fp32 inputs.
+// Complex<double> -> interleaved rg32f, the engine's upload format: the GPU
+// sees exactly the fp32 narrowing of the oracle's double inputs.
 std::vector<float> to_rg32f(const std::vector<ses::Complex<double>>& src) {
     std::vector<float> out(2 * src.size());
     for (std::size_t i = 0; i < src.size(); ++i) {
@@ -145,8 +144,8 @@ void invalidate(ses_vk::DeviceContext& ctx, const ses_vk::Buffer& b) {
     vmaInvalidateAllocation(ctx.allocator, b.alloc, 0, VK_WHOLE_SIZE);
 }
 
-// psi <- psi (complex-*) phase: same data and tolerance (1e-5) as
-// qrhicheck's check_phase_multiply.
+// psi <- psi (complex-*) phase, vs a CPU double reference; 1e-5 absolute
+// covers fp32 rounding on these O(1) values.
 bool check_phase_multiply(ses_vk::DeviceContext& ctx) {
     const std::size_t n = 4096;
     std::vector<ses::Complex<double>> psi_d(n);
@@ -223,7 +222,8 @@ bool check_phase_multiply(ses_vk::DeviceContext& ctx) {
     return pass;
 }
 
-// data <- s * data, same data/tolerance as qrhicheck's check_scale.
+// data <- s * data, vs a CPU double reference (1e-5 absolute: fp32 on O(1)
+// values).
 bool check_scale(ses_vk::DeviceContext& ctx) {
     const std::size_t n = 4096;
     const float sc = 0.5f;
@@ -297,7 +297,9 @@ bool check_scale(ses_vk::DeviceContext& ctx) {
 }
 
 // Fixed-order tree reduction of |psi|^2 into per-workgroup (sum, max)
-// partials, finished on the host. Same data/tolerances as qrhicheck.
+// partials, finished on the host, vs a CPU double sum/max. Rel tolerance is
+// looser for the sum (1e-5) than the peak (1e-6): the sum accumulates fp32
+// rounding across the whole field, the peak is one squared value.
 bool check_norm_peak(ses_vk::DeviceContext& ctx) {
     const std::size_t n = 20000;
     std::vector<ses::Complex<double>> psi_d(n);
@@ -378,7 +380,8 @@ bool check_norm_peak(ses_vk::DeviceContext& ctx) {
     return pass;
 }
 
-// <phi|psi> complex two-input reduction. Same data/tolerance as qrhicheck.
+// <phi|psi> complex two-input reduction, vs a CPU double reference
+// (rel 1e-5).
 bool check_inner_product(ses_vk::DeviceContext& ctx) {
     const std::size_t n = 20000;
     std::vector<ses::Complex<double>> psi_d(n);
@@ -471,8 +474,9 @@ bool check_inner_product(ses_vk::DeviceContext& ctx) {
     return pass;
 }
 
-// One dipole half-kick psi <- exp(-i theta axis.r) psi per grid cell.
-// Same data/tolerance as qrhicheck (vec4-padded vec3 geometry UBO).
+// One dipole half-kick psi <- exp(-i theta axis.r) psi per grid cell, vs a
+// CPU double reference; 1e-4 absolute covers fp32 trig on the phase angle.
+// The geometry UBO carries vec4-padded vec3s (std140).
 bool check_dipole_kick(ses_vk::DeviceContext& ctx) {
     const int nx = 8;
     const int ny = 8;
@@ -578,8 +582,8 @@ bool check_dipole_kick(ses_vk::DeviceContext& ctx) {
     return pass;
 }
 
-// <grad V> = sum |psi|^2 grad V: vec4 field-input reduction. Same
-// data/tolerance as qrhicheck (grad V at binding 4).
+// <grad V> = sum |psi|^2 grad V: vec4 field-input reduction (grad V at
+// binding 4), vs a CPU double reference (rel 1e-4).
 bool check_mean_force(ses_vk::DeviceContext& ctx) {
     const std::size_t n = 20000;
     std::vector<ses::Complex<double>> psi_d(n);
@@ -677,7 +681,7 @@ bool check_mean_force(ses_vk::DeviceContext& ctx) {
 }
 
 // <to| r |from>: three complex reductions with grid coordinates, 6 floats
-// per workgroup. Same data/tolerance as qrhicheck.
+// per workgroup, vs a CPU double reference (rel 1e-4).
 bool check_dipole(ses_vk::DeviceContext& ctx) {
     const int nx = 8;
     const int ny = 8;
@@ -802,8 +806,7 @@ bool check_dipole(ses_vk::DeviceContext& ctx) {
 
 // fp16 storage codec roundtrip: pack fp32 -> half, unpack half -> fp32. Two
 // dispatches with an EXPLICIT compute-to-compute barrier on the half buffer
-// -- the read-after-write edge QRhi ordered automatically. Tolerance is fp16
-// precision, same as qrhicheck.
+// (read-after-write hazard). Tolerance is fp16 storage precision.
 bool check_fp16_roundtrip(ses_vk::DeviceContext& ctx) {
     const std::size_t n = 4096;
     std::vector<ses::Complex<double>> src_d(n);
@@ -889,7 +892,8 @@ bool check_fp16_roundtrip(ses_vk::DeviceContext& ctx) {
 }
 
 // Radix-2 shared-memory line FFT at a baked N: forward unnormalized DFT of
-// one contiguous line vs ses::fft. Same data/tolerance as qrhicheck.
+// one contiguous line vs ses::fft (CPU double); 1e-3 absolute because the
+// unnormalized spectrum magnitudes grow with N, scaling up fp32 rounding.
 bool check_line_fft(ses_vk::DeviceContext& ctx, int N, const unsigned char* spv,
                     std::size_t spv_size) {
     std::vector<ses::Complex<double>> line(static_cast<std::size_t>(N));
@@ -970,8 +974,8 @@ bool check_line_fft(ses_vk::DeviceContext& ctx, int N, const unsigned char* spv,
 // 3-D forward FFT of an 8x8x8 cube: the line FFT once per axis, three
 // dispatches aliasing ONE buffer with explicit compute-to-compute barriers
 // between axes -- the multi-axis orchestration at the heart of the engine's
-// Strang step, exactly where QRhi's automatic tracking used to sit. Three
-// descriptor sets share one kernel; per-axis uniforms in three tiny UBOs.
+// Strang step. Three descriptor sets share one kernel; per-axis uniforms in
+// three tiny UBOs.
 bool check_fft3(ses_vk::DeviceContext& ctx) {
     const int nx = 8;
     const int ny = 8;
@@ -994,7 +998,9 @@ bool check_fft3(ses_vk::DeviceContext& ctx) {
     struct alignas(16) AxisParams {
         std::int32_t mod_a, mul_b, mul_c, stride, n_lines, p0, p1, p2;
     };
-    // {mod_a, mul_b, mul_c, stride, n_lines} per axis (ses_gpu::axis_passes).
+    // {mod_a, mul_b, mul_c, stride, n_lines} per axis: the fft_line*.comp
+    // line addressing, base = (l % mod_a)*mul_b + (l / mod_a)*mul_c with
+    // element step = stride.
     const AxisParams axp[3] = {
         {ny * nz, nx, 0, 1, ny * nz, 0, 0, 0},       // x-lines (contiguous)
         {nx, 1, nx * ny, nx, nx * nz, 0, 0, 0},      // y-lines
@@ -1115,8 +1121,8 @@ ses_vk::EngineKernels engine_blobs_8() {
 }
 
 // The production Strang step through ses_vk::Engine, 20 steps on an 8x8x8
-// soft-Coulomb grid vs SplitOperator3D::step -- the raw-Vulkan analog of
-// qrhicheck's check_engine_step (hand-rolled line-FFT path; same oracle).
+// soft-Coulomb grid vs SplitOperator3D::step (CPU double oracle), covering
+// both the native-VkFFT and hand-rolled line-FFT paths.
 bool check_engine_step(ses_vk::DeviceContext& ctx) {
     const ses::Grid1D axis{-4.0, 4.0, 8};
     const ses::Grid3D g{axis, axis, axis};
@@ -1224,8 +1230,8 @@ bool check_native_vkfft_perf(ses_vk::DeviceContext& ctx) {
 #endif  // SES_HAVE_VKFFT
 
 // Imaginary-time relaxation through ses_vk::Engine, 50 steps on an 8x8x8
-// harmonic grid vs ImaginaryTimePropagator3D::relax -- the raw-Vulkan analog
-// of qrhicheck's check_relax (per-step renormalize: reduce -> host -> scale).
+// harmonic grid vs ImaginaryTimePropagator3D::relax (per-step renormalize:
+// reduce -> host -> scale).
 bool check_engine_relax(ses_vk::DeviceContext& ctx) {
     const ses::Grid1D axis{-4.0, 4.0, 8};
     const ses::Grid3D g{axis, axis, axis};
@@ -1280,8 +1286,7 @@ bool check_engine_relax(ses_vk::DeviceContext& ctx) {
 // Deflated imaginary-time relax vs ImaginaryTimePropagator3D::relax_deflated
 // -- Gram-Schmidt projecting the ground state out each step so the flow
 // climbs to the first excited level. Exercises create_state_buffer, the
-// inner-product reduction, the axpy projection, and copy_into_psi. Same
-// oracles/tolerances as qrhicheck's check_deflation.
+// inner-product reduction, the axpy projection, and copy_into_psi.
 bool check_engine_deflation(ses_vk::DeviceContext& ctx) {
     const ses::Grid1D axis{-4.0, 4.0, 8};
     const ses::Grid3D g{axis, axis, axis};
@@ -1379,10 +1384,10 @@ bool check_engine_deflation(ses_vk::DeviceContext& ctx) {
 }
 
 // The driven Strang step (dipole half-kicks around the static tables) vs
-// core/drive.hpp driven_step -- same adversarial drive as qrhicheck: skew
-// (non-unit) polarization axis, nonzero omega, nonzero start time, so every
-// kick uniform (axis/box_min/cell_h/theta) is exercised, per-kick through
-// the dynamic-offset UBO slots.
+// core/drive.hpp driven_step, with an adversarial drive: skew (non-unit)
+// polarization axis, nonzero omega, nonzero start time, so every kick
+// uniform (axis/box_min/cell_h/theta) is exercised, per-kick through the
+// dynamic-offset UBO slots.
 bool check_engine_driven(ses_vk::DeviceContext& ctx) {
     const ses::Grid1D axis{-4.0, 4.0, 8};
     const ses::Grid3D g{axis, axis, axis};
@@ -1433,7 +1438,6 @@ bool check_engine_driven(ses_vk::DeviceContext& ctx) {
 // Magnetic minimal coupling: the exact three-shear rotate_z vs core
 // ses::rotate_z, and the full magnetic Strang step (paramagnetic rotation +
 // diamagnetic potential) vs MagneticPropagator3D for a field along z and x.
-// Same oracles/tolerances as qrhicheck's check_magnetic.
 bool check_engine_magnetic(ses_vk::DeviceContext& ctx) {
     const ses::Grid1D axis{-4.0, 4.0, 8};
     const ses::Grid3D g{axis, axis, axis};
@@ -1516,8 +1520,7 @@ bool check_engine_magnetic(ses_vk::DeviceContext& ctx) {
 }
 
 // Orbital synthesis: psi = (u(|r|)/|r|) Y_lm built on the GPU from a radial
-// table, vs core synthesize_orbital, across l = 0..5 and several m -- same
-// cases/tolerance as qrhicheck's check_synth.
+// table, vs core synthesize_orbital, across l = 0..5 and several m.
 bool check_engine_synth(ses_vk::DeviceContext& ctx) {
     const ses::Grid1D axis{-4.0, 4.0, 8};
     const ses::Grid3D g{axis, axis, axis};
@@ -1645,8 +1648,7 @@ bool check_engine_force(ses_vk::DeviceContext& ctx) {
 
 // Orbital-free angular projection: GPU deposit (sorted-gather per radial
 // bin) + CPU-double radial dot vs project_radial_angular, plus determinism
-// (second deposit reproduces the amplitude bit-for-bit). Same oracle as
-// qrhicheck's check_project.
+// (a second deposit must reproduce the amplitude bit-for-bit).
 bool check_engine_project(ses_vk::DeviceContext& ctx) {
     const ses::Grid1D axis{-4.0, 4.0, 8};
     const ses::Grid3D g{axis, axis, axis};
@@ -1806,7 +1808,7 @@ bool check_engine_dipole_between(ses_vk::DeviceContext& ctx) {
 // fp16 atlas consumers: the same eigenstate synthesized fp32-resident and
 // fp16-packed must agree through the tested fp32 consumers (inner_with_psi
 // and dipole_between decode fp16 to scratch on demand). Tolerance is fp16
-// storage precision, matching qrhicheck's fp16-consumers contract (3e-3).
+// storage precision.
 bool check_engine_fp16_consumers(ses_vk::DeviceContext& ctx) {
     const ses::Grid1D axis{-4.0, 4.0, 8};
     const ses::Grid3D g{axis, axis, axis};
@@ -1868,8 +1870,8 @@ bool check_engine_fp16_consumers(ses_vk::DeviceContext& ctx) {
 // SSBO -> 3D volume image bridge: copy psi into the RGBA32F volume via
 // imageStore, read it back through an SSBO (imageLoad). A store->load
 // round-trip that reproduces psi bit-for-bit proves imageStore wrote exactly
-// the SSBO contents. Same construction as qrhicheck's check_bridge, now on a
-// raw VkImage the render shell can import.
+// the SSBO contents. The volume is a raw VkImage the render shell can
+// import.
 bool check_engine_bridge(ses_vk::DeviceContext& ctx) {
     const ses::Grid1D axis{-4.0, 4.0, 8};
     const ses::Grid3D g{axis, axis, axis};

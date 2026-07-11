@@ -1,22 +1,24 @@
 # ---------------------------------------------------------------------------
-# sesolver_app : the Qt + QRhi (Vulkan) GUI shell ("Humble Object").
+# sesolver_app : the Qt GUI shell ("Humble Object").
 #
 # This layer holds NO domain logic. It links sesolver_core, owns the window /
-# QRhiWidget (Qt) and the hand-written QRhi rendering + compute engine, and is
-# verified manually rather than by unit tests (the chosen Humble Object
-# pattern) -- plus the --selftest-* arcs.
+# QRhiWidget (Qt provides the Vulkan device and ONE fullscreen blit of the
+# ses_vk scene image), and is verified manually rather than by unit tests
+# (the chosen Humble Object pattern) -- plus the --selftest-* arcs.
 #
-# Reuse boundary (purist): Qt provides ONLY the window, the QRhi device layer,
-# and UI. All math, FFT, physics, and rendering logic are hand-written.
+# Reuse boundary (purist): Qt provides ONLY the window, the Vulkan device
+# layer, and UI. All math, FFT, physics, and rendering logic are hand-written
+# (ses_vk: volk + VMA + offline-baked SPIR-V).
 # ---------------------------------------------------------------------------
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-# The app itself now runs on QRhi/Vulkan: the private QRhi module, the qsb
-# shader baker, and the Vulkan headers are REQUIRED (vcpkg manifest provides
-# all three). NOTE: with the vcpkg Qt, Qt6::GuiPrivate must be requested by
-# name -- find_package(Qt6 COMPONENTS Gui) alone does not create the target.
+# The shell runs on QRhi/Vulkan (QRhiWidget + the blit): the private QRhi
+# module, the qsb shader baker, and the Vulkan headers are REQUIRED (vcpkg
+# manifest provides all three). NOTE: with the vcpkg Qt, Qt6::GuiPrivate must
+# be requested by name -- find_package(Qt6 COMPONENTS Gui) alone does not
+# create the target.
 find_package(Qt6 REQUIRED COMPONENTS ShaderTools GuiPrivate)
 find_package(VulkanHeaders CONFIG REQUIRED)  # vcpkg port: Vulkan::Headers
 
@@ -73,8 +75,8 @@ target_link_libraries(sesolver_app
 target_compile_features(sesolver_app PRIVATE cxx_std_20)
 ses_enable_vkfft(sesolver_app)
 
-# qsb bakes ONLY the blit pair now (Plan B): the scene renders in ses_vk;
-# Qt's whole remaining draw is one fullscreen textured triangle.
+# qsb bakes ONLY the blit pair: the scene renders in ses_vk; Qt's whole
+# remaining draw is one fullscreen textured triangle.
 qt6_add_shaders(sesolver_app "app_shaders"
     PREFIX "/shaders"
     NOGLSL NOHLSL NOMSL
@@ -110,15 +112,14 @@ get_target_property(_qt6_core_dll Qt6::Core LOCATION)
 get_filename_component(_qt6_bin_dir "${_qt6_core_dll}" DIRECTORY)
 
 # ---------------------------------------------------------------------------
-# sesolver_vkcheck: THE GPU verification harness (successor to gpucheck/GL
-# and qrhicheck/QRhi, both retired). NO Qt anywhere in this binary: volk
-# loads the loader, VMA allocates, and the Vulkan-GLSL kernel sources are
-# baked to plain SPIR-V offline by glslangValidator (the glslang port's
-# "tools" feature) and embedded as C arrays via tools/cmake/bin2h.cmake.
-# Every check pins the same CPU double reference (and tolerance) the retired
-# harnesses pinned -- the recorded values match digit for digit. ctest:
-# label "gpu", exit 77 = SKIP without a Vulkan device; SES_VK_VALIDATION=1
-# turns on the validation layers and fails the run on any layer error.
+# sesolver_vkcheck: THE GPU verification harness. NO Qt anywhere in this
+# binary: volk loads the loader, VMA allocates, and the Vulkan-GLSL kernel
+# sources are baked to plain SPIR-V offline by glslangValidator (the glslang
+# port's "tools" feature) and embedded as C arrays via
+# tools/cmake/bin2h.cmake. Every check pins a CPU double-precision reference
+# value and tolerance. ctest: label "gpu", exit 77 = SKIP without a Vulkan
+# device; SES_VK_VALIDATION=1 turns on the validation layers and fails the
+# run on any layer error.
 # ---------------------------------------------------------------------------
 find_package(volk CONFIG QUIET)
 find_package(VulkanMemoryAllocator CONFIG QUIET)
@@ -152,7 +153,7 @@ if(TARGET volk::volk AND TARGET GPUOpen::VulkanMemoryAllocator
             VERBATIM)
         list(APPEND _ses_vk_headers "${_hdr}")
     endforeach()
-    # Render shader pairs for the raw-Vulkan scene renderer (Plan B). Dots in
+    # Render shader pairs for the raw-Vulkan scene renderer. Dots in
     # the stage extension are sanitized out of the symbol name.
     foreach(_k IN ITEMS mesh.vert mesh.frag volume.vert volume.frag
             flow.vert flow.frag)
@@ -177,7 +178,7 @@ if(TARGET volk::volk AND TARGET GPUOpen::VulkanMemoryAllocator
     # and the vkcheck harness) -- targets depend on this, not on the files.
     add_custom_target(ses_spv_headers DEPENDS ${_ses_vk_headers})
 
-    # The app's compute engine is ses_vk (M5 Stage 9): raw Vulkan on the
+    # The app's compute engine is ses_vk: raw Vulkan on the
     # QRhiWidget-adopted device, kernels from the offline-baked SPIR-V.
     add_dependencies(sesolver_app ses_spv_headers)
     target_include_directories(sesolver_app PRIVATE "${_ses_vk_spv_dir}")
@@ -203,8 +204,8 @@ if(TARGET volk::volk AND TARGET GPUOpen::VulkanMemoryAllocator
     target_compile_features(sesolver_vkcheck PRIVATE cxx_std_20)
     # Native VkFFT: the plan runs on the engine's own device/queue, recorded
     # straight into its primary command buffers (volk's canonical-name
-    # pointers satisfy header-only VkFFT; no QRhi external blocks, and no
-    # vulkan-1 import lib -- see ses_enable_vkfft's volk flavor).
+    # pointers satisfy header-only VkFFT; no vulkan-1 import lib -- see the
+    # volk NOTE above ses_enable_vkfft).
     ses_enable_vkfft(sesolver_vkcheck volk)
     add_test(NAME VkCheck COMMAND sesolver_vkcheck)
     set_tests_properties(VkCheck PROPERTIES
@@ -212,7 +213,7 @@ if(TARGET volk::volk AND TARGET GPUOpen::VulkanMemoryAllocator
         SKIP_RETURN_CODE 77)
     message(STATUS "Framework-free harness 'sesolver_vkcheck' enabled.")
 else()
-    # The app's compute engine is ses_vk -- these are hard requirements now
+    # The app's compute engine is ses_vk -- these are hard requirements
     # (the vcpkg manifest provides all three on every platform).
     message(FATAL_ERROR "sesolver_app needs volk + vulkan-memory-allocator "
         "+ glslangValidator (vcpkg manifest deps; is glslang[tools] on?).")

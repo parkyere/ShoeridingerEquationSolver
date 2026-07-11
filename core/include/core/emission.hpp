@@ -1,6 +1,6 @@
 #pragma once
 
-// Semiclassical emission from the oscillating dipole (radiation arc). A
+// Semiclassical emission from the oscillating dipole. A
 // superposition of energy eigenstates has a charge density |psi(r,t)|^2 that
 // oscillates at the Bohr frequencies, so its dipole d = -<r> is time-varying
 // and radiates. By Ehrenfest the dipole acceleration is the mean force,

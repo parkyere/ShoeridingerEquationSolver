@@ -3,10 +3,10 @@
 // Hand-rolled renderer math (purist reinvention boundary: no GLM).
 //
 // Conventions (pinned by tests/camera_test.cpp):
-//  - Mat4 is COLUMN-MAJOR: element(row r, col c) = m[c*4 + r]. Uploads to
-//    glUniformMatrix4fv with transpose = GL_FALSE.
+//  - Mat4 is COLUMN-MAJOR: element(row r, col c) = m[c*4 + r].
 //  - Right-handed view space, camera looks down -Z.
-//  - NDC depth [-1, +1] (standard OpenGL clip conventions).
+//  - NDC depth [-1, +1] (standard OpenGL clip conventions). The Vulkan
+//    renderer applies its own y-flip/depth-remap clip correction.
 
 #include <core/vec.hpp>
 

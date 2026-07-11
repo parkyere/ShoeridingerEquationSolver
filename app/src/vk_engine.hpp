@@ -1,21 +1,18 @@
 #pragma once
 
-// ses_vk::Engine (M5 Stage 2): the framework-free analog of
-// ses_qrhi::QrhiEngine's core propagation -- the split-operator Strang step
-// and imaginary-time relaxation, on raw Vulkan via the vk_compute.hpp layer.
-// No Qt anywhere. SPIR-V blobs are dependency-injected (EngineKernels), so
-// the engine has no resource system; the DeviceContext is passed in, so the
-// same engine runs on a self-created device (headless: checks, clusters) or,
-// later, on handles adopted from the GUI's QRhi.
+// ses_vk::Engine: the split-operator Strang step and imaginary-time
+// relaxation, on raw Vulkan via the vk_compute.hpp layer. No Qt anywhere.
+// SPIR-V blobs are dependency-injected (EngineKernels), so the engine has
+// no resource system; the DeviceContext is passed in, so the same engine
+// runs on a self-created device (headless: checks, clusters) or on handles
+// adopted from the GUI shell.
 //
-// Numerical contract: byte-identical to the QRhi engine's hand-rolled path.
-// Same kernels (the qsb-decorated Vulkan-GLSL sources, baked offline), same
-// dispatch chain (halfV . IFFT . kin . FFT . halfV; the inverse FFT = conj .
-// FFT . conj/N), same std140 parameter blocks, same host-double reduction
-// finishes. What QRhi did implicitly and this engine does explicitly: a
-// compute-to-compute memory barrier before every dispatch that aliases psi
-// (all of them), transfer barriers around uploads/readbacks, and a fence
-// wait per submission (the analog of endOffscreenFrame's synchronization).
+// Numerical contract: Vulkan-GLSL kernels baked offline to SPIR-V, the
+// dispatch chain halfV . IFFT . kin . FFT . halfV (the inverse FFT = conj .
+// FFT . conj/N), std140 parameter blocks, host-double reduction finishes.
+// Synchronization is fully explicit: a compute-to-compute memory barrier
+// before every dispatch that aliases psi (all of them), transfer barriers
+// around uploads/readbacks, and a fence wait per submission.
 
 #include "vk_compute.hpp"
 
@@ -94,7 +91,7 @@ struct EngineKernels {
 class Engine {
 public:
     // Free-energy estimate + normalized peak density from the per-step
-    // renormalization (QRhi/GL RelaxStats parity).
+    // renormalization.
     struct RelaxStats {
         double energy = 0.0;
         double peak = 0.0;
@@ -111,7 +108,7 @@ public:
     ~Engine() { destroy(); }
 
     // half_v / kinetic are SplitOperator3D's phase tables; psi0 the initial
-    // field. Cubic grids only (one baked fft_line<n>), like the QRhi engine.
+    // field. Cubic grids only (one baked fft_line<n>).
     bool initialize(DeviceContext& ctx, const ses::Grid3D& grid,
                     const EngineKernels& blobs,
                     const std::vector<ses::Complex<double>>& half_v,
@@ -278,8 +275,9 @@ public:
             return false;
         }
 
-        // Descriptor sets: 16 base + 3 any-target + 2 relax + 4 per resident
-        // state (harness-scale pool; the GUI stage brings a growable arena).
+        // Descriptor pool shape: base sets + any-target sets + relax sets +
+        // per-resident-state sets; the arena chains more pools of the same
+        // shape when one runs dry.
         if (!arena_.create(ctx_ ? *ctx_ : ctx, 96, 192, 96, 2, 4)) {
             return false;
         }
@@ -367,7 +365,7 @@ public:
     // Driven Strang steps: kick(t) . step . kick(t+dt), theta = amplitude
     // cos(omega t) dt/2. Per-kick thetas differ within the batch, so the kick
     // parameters live in dynamic-offset slots of ONE host-mapped UBO and the
-    // whole batch records as a single submission (QRhi single-frame parity).
+    // whole batch records as a single submission.
     void driven_step(const ses::DipoleDrive& d, double t0, double dt,
                      int nsteps) {
         const int kicks = 2 * nsteps;
@@ -510,7 +508,7 @@ public:
         return upload_field(psi_, psi);
     }
 
-    // ---- resident states (one int handle space, QRhi/GL parity) ----------
+    // ---- resident states (one int handle space) ---------------------------
 
     // Upload a CPU state into its own resident fp32 buffer; returns a handle
     // usable with every per-state op, or -1 on failure.
@@ -665,9 +663,8 @@ public:
     }
 
     // ---- SSBO -> 3D volume texture bridge (the renderer feed) -----------
-    // The RGBA32F volume the render shell samples (psi in .xy). Created
-    // lazily; the image lives in GENERAL layout for compute writes -- the
-    // GUI import wraps it via QRhiTexture::createFrom + setNativeLayout.
+    // The RGBA32F volume the renderer samples (psi in .xy). Created lazily;
+    // the renderer consumes volume_view() directly (FrameInput::psi_volume).
     VkImage volume_image() {
         return ensure_volume() ? volume_.img : VK_NULL_HANDLE;
     }
@@ -677,9 +674,9 @@ public:
 
     // Copy psi into the volume (imageStore, one texel per cell). The engine
     // OWNS the layout round-trip: the store runs in GENERAL, then the image
-    // is handed to SHADER_READ_ONLY_OPTIMAL for the render shell's sampling
-    // (the imported QRhiTexture keeps a READ tracked state, so QRhi records
-    // no barriers of its own -- the verified interop contract).
+    // is handed to SHADER_READ_ONLY_OPTIMAL -- the layout the renderer's
+    // sampled-image descriptors declare for it. Nobody else may transition
+    // this image.
     bool write_psi_to_volume() {
         if (!ensure_volume()) {
             return false;
@@ -1541,8 +1538,9 @@ private:
     }
 
     // Lazily create the RGBA32F volume + the store side of the bridge: one
-    // submission transitions UNDEFINED -> GENERAL (compute writes/reads and
-    // the imported render sampling all run against GENERAL for now).
+    // submission transitions UNDEFINED -> GENERAL for the compute stores
+    // (write_psi_to_volume owns the GENERAL <-> SHADER_READ_ONLY round-trip
+    // from then on).
     bool ensure_volume() {
         if (store_set_ != VK_NULL_HANDLE) {
             return true;

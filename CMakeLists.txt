@@ -37,7 +37,7 @@ endif()
 
 project(ShoeridingerEquationSolver
     VERSION 0.0.1
-    DESCRIPTION "From-scratch FDM/TDSE single-electron Schrodinger solver with hand-written QRhi/Vulkan visualization"
+    DESCRIPTION "From-scratch FDM/TDSE single-electron Schrodinger solver with framework-free Vulkan compute and rendering in a Qt window shell"
     LANGUAGES CXX)
 
 # ---------------------------------------------------------------------------

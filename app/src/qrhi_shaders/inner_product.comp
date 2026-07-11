@@ -1,10 +1,8 @@
 #version 450
 
-// Decorated Vulkan-GLSL form of kInnerProductSrc (gpu_shaders.hpp): the complex
-// inner product <phi|psi> = sum conj(phi)*psi, tree-reduced into one complex
-// (vec2) partial per workgroup; the host sums the partials. Second reduction
-// kernel ported to QRhi -- like norm/peak but complex-valued and two-input.
-// Bindings mirror the GL kernel: psi (0), partials (2), phi (3), std140 n (1).
+// Complex inner product <phi|psi> = sum conj(phi)*psi, tree-reduced into one
+// complex (vec2) partial per workgroup; the host sums the partials.
+// Bindings: psi (0), partials (2), phi (3), std140 UBO n (1).
 layout(local_size_x = 256) in;
 
 layout(std430, binding = 0) readonly buffer PsiBuf { vec2 psi[]; };

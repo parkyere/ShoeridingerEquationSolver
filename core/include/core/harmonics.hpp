@@ -1,6 +1,6 @@
 #pragma once
 
-// Real spherical harmonics (l <= 5) and 3D orbital synthesis (T7): with the
+// Real spherical harmonics (l <= 5) and 3D orbital synthesis: with the
 // radial engine's u_nl(r), the 3D eigenstate is EXACTLY psi = (u/r) Y_lm --
 // separation of variables replaces the imaginary-time ladder for building
 // the tracked manifold. Cartesian polynomial forms avoid trigonometry and
@@ -90,7 +90,7 @@ inline double real_spherical_harmonic(int l, int m, double x, double y, double z
                        (x * x * x * x - 6.0 * x * x * y * y + y * y * y * y) / r4;
         }
     }
-    // l == 5 (h): the six n = 6 shell's highest angular momentum. Canonical
+    // l == 5 (h): the n = 6 shell's highest angular momentum. Canonical
     // (x+iy)^m real / imaginary parts over r^5; default case is m = +5. The
     // constants and polynomials are verified harmonic and orthonormal over
     // the sphere (see tests/harmonics_test.cpp).

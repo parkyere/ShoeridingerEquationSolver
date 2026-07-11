@@ -1,8 +1,7 @@
 #version 450
 
-// Decorated Vulkan-GLSL form of kConjScaleSrc (gpu_shaders.hpp): psi <- scale *
-// conj(psi). With a forward FFT this composes the inverse transform
-// (conj -> FFT -> conj/N). std140 UBO for n + scale (binding 1).
+// psi <- scale * conj(psi). With a forward FFT this composes the inverse
+// transform (conj -> FFT -> conj/N). std140 UBO n + scale (binding 1).
 layout(local_size_x = 256) in;
 
 layout(std430, binding = 0) buffer DataBuf { vec2 data[]; };

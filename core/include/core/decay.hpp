@@ -1,7 +1,7 @@
 #pragma once
 
-// Spontaneous decay via quantum jumps (transitions arc T4, the Monte-Carlo-
-// wavefunction picture). The Schrodinger equation carries no lifetimes; the
+// Spontaneous decay via quantum jumps (the Monte-Carlo-wavefunction
+// picture). The Schrodinger equation carries no lifetimes; the
 // decay RATE follows from the computed spectrum through the Einstein A
 // coefficient (atomic units):
 //     A = (4/3) alpha^3 omega^3 |<f|r|i>|^2
@@ -96,7 +96,7 @@ inline JumpResult quantum_jump(Field3D& psi, const Field3D& excited, const Field
     return JumpResult{false, p};
 }
 
-// ---- multi-channel jumps (transitions arc T5) ------------------------------
+// ---- multi-channel jumps ----------------------------------------------------
 //
 // Every tracked orbital gets its lifetime: decay channels compete as
 // independent Poisson processes. Channel m fires at rate gamma_m * P_m with

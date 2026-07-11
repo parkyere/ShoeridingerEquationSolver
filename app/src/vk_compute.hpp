@@ -1,20 +1,18 @@
 #pragma once
 
-// ses_vk compute infrastructure (M5 Stage 1): the thin, owned layer between
-// raw Vulkan and the kernels -- exactly the services QRhi supplied implicitly
-// (descriptor/pipeline-layout construction, one-shot frame lifecycle, barrier
-// placement), rewritten as ~200 explicit lines the project controls. No Qt.
+// ses_vk compute infrastructure: the thin, owned layer between raw Vulkan
+// and the kernels -- descriptor/pipeline-layout construction, one-shot frame
+// lifecycle, barrier placement. No Qt.
 //
 //   Kernel          shader module + set layout + pipeline layout + pipeline,
 //                   built from an embedded SPIR-V blob and a binding spec.
 //   DescriptorArena a per-run descriptor pool; allocates sets against a
 //                   Kernel's layout and points bindings at buffers.
 //   OneShot         command pool + primary command buffer + fence: record,
-//                   submit, fence-wait -- the raw analog of QRhi's
-//                   beginOffscreenFrame/endOffscreenFrame.
-//   barrier_*       the explicit hazard edges between recorded commands.
-//                   QRhi tracked these automatically; here every one is
-//                   spelled out and the validation layer polices them.
+//                   submit, fence-wait.
+//   barrier_*       the explicit hazard edges between recorded commands;
+//                   every one is spelled out and the validation layer
+//                   polices them.
 
 #include "vk_device.hpp"
 
@@ -135,8 +133,9 @@ private:
 };
 
 // A GROWABLE descriptor arena: allocation from the newest pool, and when it
-// runs dry another pool of the same shape is chained (a 91-state atlas needs
-// hundreds of sets). Sets are freed wholesale with the pools.
+// runs dry another pool of the same shape is chained (the resident-state
+// atlas alone needs hundreds of sets). Sets are freed wholesale with the
+// pools.
 class DescriptorArena {
 public:
     DescriptorArena() = default;
@@ -271,7 +270,7 @@ private:
     std::uint32_t samplers_ = 0;
 };
 
-// One-shot record/submit/wait: the raw analog of a QRhi offscreen frame.
+// One-shot record/submit/wait: command pool + primary command buffer + fence.
 class OneShot {
 public:
     OneShot() = default;
@@ -348,8 +347,7 @@ private:
 };
 
 // The hazard edges. Global memory barriers (not per-buffer) -- correct and
-// simple at harness scale; the engine stage revisits granularity if profiling
-// ever demands it.
+// simple; granularity can be revisited if profiling ever demands it.
 inline void memory_barrier(VkCommandBuffer cb, VkPipelineStageFlags src_stage,
                            VkAccessFlags src_access,
                            VkPipelineStageFlags dst_stage,
@@ -369,8 +367,8 @@ inline void barrier_transfer_to_compute(VkCommandBuffer cb) {
                    VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
 }
 
-// Read-after-write between dispatches sharing a buffer -- the edge QRhi
-// inserted for free between every aliasing dispatch of the step body.
+// Read-after-write between dispatches sharing a buffer -- required between
+// every aliasing dispatch of the step body.
 inline void barrier_compute_to_compute(VkCommandBuffer cb) {
     memory_barrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                    VK_ACCESS_SHADER_WRITE_BIT,

@@ -1,8 +1,7 @@
 #version 450
 
-// QRhi/Vulkan form of kMeshFragmentShader (render_shaders.hpp): the headlight
-// shading of the proton marker + axes gizmo. Shares the vertex stage's std140
-// UBO (binding 0) for eye. Body byte-for-byte the GL shader's.
+// Headlight shading of the proton marker + axes gizmo. Shares the vertex
+// stage's std140 UBO (binding 0) for eye.
 layout(location = 0) in vec3 v_normal;
 layout(location = 1) in vec3 v_pos;
 layout(location = 2) in vec3 v_color;

@@ -1,53 +1,52 @@
-// Humble Object shell -- the Qt + hand-written OpenGL boundary.
+// Humble Object shell -- the Qt boundary. Qt provides the window, input,
+// the Vulkan device, and ONE fullscreen blit of the ses_vk renderer's scene
+// image; the shell also schedules the simulation (tick batching, title
+// readouts, demo arcs).
 //
 // NO domain logic lives here (docs/ARCHITECTURE.md). The TDSE runs in core's
 // WavepacketSimulation; matrices, colormaps, marching cubes, and ALL the
 // volume-rendering math (ray_box, Beer-Lambert alpha, front-to-back
-// compositing, phase LUT) live in core and are unit-tested -- the GLSL below
-// is a line-by-line transcription of those verified formulas.
+// compositing, phase LUT) live in core and are unit-tested -- the Vulkan-GLSL
+// kernels under src/qrhi_shaders/ are line-by-line transcriptions of those
+// verified formulas.
 //
-// v5 deliverable: THE STATIONARY-STATE DEMO ARC on top of the volume-
-// rendered cloud. Key 2 switches stepping to imaginary time: you WATCH the
-// packet cool into the 1s ground state (energy readout converging). Key 1
-// returns to real time: the density freezes -- only the hue cycles at
-// e^{-i E0 t} -- the definition of a stationary state, on screen. Key R
-// releases a fresh wavepacket.
+// The demo arcs (all first-principles from our own wavefunctions):
+//  - Stationary states: key 2 steps in imaginary time -- watch the packet
+//    cool into the 1s ground state (energy readout converging). Key 1
+//    returns to real time: the density freezes, only the hue cycles at
+//    e^{-i E0 t} -- the definition of a stationary state, on screen.
+//  - Laser: a resonant dipole drive at w = E(2p) - E(1s) pumps 1s -> 2p_z
+//    and Rabi-flops the populations (title readout); with decay ON the
+//    photon counter clicks through repeated absorb/emit cycles --
+//    fluorescence. The X-polarized flavor pumps the ORTHOGONAL 2p_x, so the
+//    monitored P(2pz) stays flat: the selection rule, live on screen.
+//  - Multi-channel decay: EVERY tracked orbital gets its lifetime. Every
+//    downward pair gets its Einstein A from our own wavefunctions and the
+//    channels compete as Poisson processes (core-tested pick_decay_channel).
+//    Selection rules emerge: A(2s->1s) ~ 0, so 2s (key 4) just sits there --
+//    metastable -- while any 2p decays in a ~4.5 ns-scale lifetime
+//    (display-accelerated by ONE common factor, so RELATIVE lifetimes stay
+//    honest).
+//  - Decay by default: spontaneous emission is not opt-in in nature, so it
+//    is not opt-in here. At startup the app SOLVES the atom first (chunked
+//    across frames -- watch each state appear, progress in the title), then
+//    the wavepacket demo starts with decay armed. D turns decay OFF for
+//    studying pure unitary evolution.
+//  - Lifetimes: the potential is spherical, so the radial engine
+//    (core/radial.hpp) solves EVERY bound level to n = 10 in 1D -- energies
+//    and E1 lifetimes printed at startup. The 3D tracked manifold is what
+//    the +-80 Bohr box can hold: n <= 6 (6s/6p box-critical), each state
+//    synthesized ON THE GPU as (u/r) Y_lm (the synth kernel mirrors the
+//    unit-tested core/harmonics.hpp) -- no imaginary-time ladder, no CPU
+//    field. Key 5 excites an n = 3 state to watch the CASCADE (e.g.
+//    3d -> 2p -> 1s, two photons). Relaxation demos auto-complete: when the
+//    ITP energy plateaus, the app returns to real time so lifetimes act.
+//
 // Controls: drag = orbit, wheel = zoom, space = pause, Tab = cloud/surface,
 // 1 = real time, 2 = relax (imaginary time), 3 = relax to 2p, 4 = relax to
-// 2s, 5 = excite an n=3 state (cascade demo), R = reset, M = measure,
-// D = decay off/on, L = laser (off -> Z -> X -> off),
-// [ ] = thinner/denser cloud.
-//
-// T3 (laser): a resonant dipole drive at w = E(2p) - E(1s) pumps 1s -> 2p_z
-// and Rabi-flops the populations (title readout); with decay ON the photon
-// counter clicks through repeated absorb/emit cycles -- fluorescence. The
-// X-polarized flavor pumps the ORTHOGONAL 2p_x, so the monitored P(2pz)
-// stays flat: the selection rule, live on screen.
-//
-// T5 (multi-channel decay): EVERY tracked orbital gets its lifetime. The
-// whole n<=2 manifold (1s, 2p_x, 2p_y, 2p_z, 2s) is cached; every downward
-// pair gets its Einstein A from our own wavefunctions and the channels
-// compete as Poisson processes (core-tested pick_decay_channel). Selection
-// rules emerge: A(2s->1s) ~ 0, so 2s (key 4) just sits there -- metastable
-// -- while any 2p decays in a ~4.5 ns-scale lifetime (display-accelerated
-// by ONE common factor, so RELATIVE lifetimes stay honest).
-//
-// T6 (decay by default): spontaneous emission is not opt-in in nature, so
-// it is not opt-in here. At startup the app SOLVES the atom first -- the
-// eigenstate atlas builds chunked across frames (watch each state converge,
-// progress in the title) -- then the wavepacket demo starts with decay
-// armed. D turns decay OFF for studying pure unitary evolution.
-//
-// T7 (lifetimes to n = 10): the potential is spherical, so the radial
-// engine (core/radial.hpp) solves EVERY bound level to n = 10 in 1D --
-// energies and E1 lifetimes for all 55 levels, printed at startup. The 3D
-// tracked manifold is what the +-80 Bohr box can hold: n <= 6 (91 states,
-// 6s/6p box-critical), each synthesized ON THE GPU as (u/r) Y_lm straight
-// into its resident buffer (gpu_engine kSynthSrc, mirroring the unit-tested
-// core/harmonics.hpp) -- no imaginary-time ladder, no CPU field. Key 5 excites
-// an n = 3 state to watch the CASCADE (e.g.
-// 3d -> 2p -> 1s, two photons). Relaxation demos auto-complete: when the
-// ITP energy plateaus, the app returns to real time so lifetimes act.
+// 2s, 5 = excite an n=3 state (cascade demo), R = reset, M = measure
+// position, E = measure energy, D = decay off/on, L = laser (off -> Z -> X
+// -> off), F = flow particles, [ ] = thinner/denser cloud.
 
 // ses_vk first: volk (inside) defines VK_NO_PROTOTYPES and must own the
 // vulkan.h inclusion before any Qt header pulls its own Vulkan integration.
@@ -135,9 +134,9 @@ namespace {
 // its exact l-degeneracy (2s = 2p).
 
 ses::WavepacketSimulation make_simulation() {
-    // 128^3: real-time stepping runs on the GPU engine (docs/GPU_PLAN.md G5);
-    // the CPU session stays the double-precision truth for relax / measure /
-    // surface meshing, synced on demand.
+    // Stepping runs on the GPU engine; the CPU session stays the
+    // double-precision truth for measurement, surface meshing, and the
+    // no-GPU fallback, synced on demand (the cpu_is_truth_ invariant).
     //
     // Box +-80 Bohr at 256^3 (h = 0.625): holds the n <= 6 shell, box-critical
     // at n = 6 (the diffuse 6s is ~92% enclosed, its tail kissing the
@@ -145,11 +144,11 @@ ses::WavepacketSimulation make_simulation() {
     // at 256^3 because the split-operator FFT demands a power-of-two size (512
     // would be 8x the work), so reaching n = 6 spends grid spacing: h grows
     // 0.5 -> 0.625. The startup atlas cross-check E_radial vs <H>_grid audits h
-    // on every launch. The full m-resolved n <= 6 manifold is 91 state buffers
-    // (~12 GB VRAM -- also box-critical). No host mirror: each orbital's double
-    // field is transient (synthesized, uploaded fp32, freed), and the atlas
-    // dipole integrals reduce on the GPU straight from the resident buffers, so
-    // host RAM stays flat through the build instead of holding 91 copies.
+    // on every launch. The full m-resolved n <= 6 manifold is tracked WITHOUT
+    // a resident atlas: each orbital is synthesized on the GPU into a
+    // transient buffer (shown, audited, freed) and the dipole integrals
+    // reduce on the GPU, so neither VRAM nor host RAM ever holds the whole
+    // manifold at once.
     const ses::Grid1D axis{-80.0, 80.0, 256};
     const ses::Grid3D grid{axis, axis, axis};
     return ses::WavepacketSimulation{ses::WavepacketSimulation::Config{
@@ -164,12 +163,11 @@ ses::WavepacketSimulation make_simulation() {
 
 constexpr int kStepsPerTick = 1;
 // Backlog cap: a stalled paint cannot spiral (time is credited at execution,
-// dropped ticks drop cleanly). Throughput note (measured on the P5000): the
-// laser path saturates the GPU at ~26 steps/s (~38 ms/step at 256^3 -- the
-// hand-rolled FFT's uncoalesced y/z passes), so raising this cap does NOT
-// raise the sim rate (verified 8 vs 32: 1.02 vs 1.04 au/s); it only lengthens
-// the per-paint block. 8 keeps paints ~300 ms. The real lever is the M4
-// VkFFT swap (coalesced transposes).
+// dropped ticks drop cleanly). Throughput note (measured on the P5000 with
+// the hand-rolled FFT): the laser path saturates the GPU at ~26 steps/s
+// (~38 ms/step at 256^3), so raising this cap does NOT raise the sim rate
+// (verified 8 vs 32: 1.02 vs 1.04 au/s); it only lengthens the per-paint
+// block. 8 keeps paints ~300 ms.
 constexpr int kMaxPendingGpuSteps = 8;
 constexpr int kRelaxStepsPerTick = 1;
 constexpr double kRelaxDtau = 0.05;
@@ -191,7 +189,7 @@ constexpr double kHaToEv = 27.211386;  // 1 Hartree in eV (physicist-facing disp
 constexpr double kAbsorbWidth = 10.0;  // Bohr: boundary absorber layer thickness
                                        // (interior +-70 Bohr stays untouched --
                                        // clears the n<=6 states; real-time only)
-// T3 laser: E0 is derived from a TARGET Rabi frequency over the computed
+// Laser: E0 is derived from a TARGET Rabi frequency over the computed
 // dipole matrix element (Omega = E0 |<2p|z|1s>|). Omega = 0.04 keeps the drive
 // well under the ~0.35 Ha 1s->2p gap (bare Coulomb on the grid; RWA-ish
 // two-level flopping) while a full flop (2 pi / Omega ~ 157 au) takes seconds at
@@ -199,9 +197,6 @@ constexpr double kAbsorbWidth = 10.0;  // Bohr: boundary absorber layer thicknes
 // 1s <H>, ~0.35 above 2p, not the textbook 0.375 label -- see toggle_laser.
 constexpr double kRabiTargetOmega = 0.04;
 constexpr int kLaserStepsPerTick = 6;  // the pump demo runs hotter than 1x
-
-// ---- isosurface (mesh) shaders ----
-
 
 enum class ViewMode { Cloud, Surface };
 enum class Stepping { RealTime, Relaxing, RelaxingExcited };
@@ -223,16 +218,15 @@ public:
     }
 
 protected:
-    // GPU stepping covers the Cloud view in BOTH real and imaginary time
-    // (G7); measure and surface meshing run on the CPU double session,
-    // synced through the single cpu_is_truth_ invariant.
+    // GPU stepping covers the Cloud view in BOTH real and imaginary time;
+    // measure and surface meshing run on the CPU double session, synced
+    // through the single cpu_is_truth_ invariant.
     bool use_gpu_path() const { return gpu_ok_ && mode_ == ViewMode::Cloud; }
 
     // The compute half of a frame runs BEFORE the widget's own QRhi frame is
-    // recorded: the engine drives its own offscreen frames (beginOffscreenFrame
-    // is illegal while the widget frame is active). This override is the QRhi
-    // analog of "GPU stepping happens in paintGL where the context is current"
-    // -- once per paint, even while paused (Key E works paused).
+    // recorded: the engine drives its own offscreen frames, which must not
+    // interleave with the widget frame's recording. Once per paint, even
+    // while paused (Key E works paused).
     void paintEvent(QPaintEvent* e) override {
         if (rhi_ready_) {
             run_gpu_frame();
@@ -276,9 +270,9 @@ protected:
         }
         rhi_ = rhi();
 
-        // Plan B: the scene renders in ses_vk. Qt's whole render layer is
-        // one sampler + one fullscreen-blit pipeline (built lazily in
-        // render() once the scene image exists and can seed the SRB).
+        // The scene renders in ses_vk. Qt's whole render layer is one
+        // sampler + one fullscreen-blit pipeline (built lazily in render()
+        // once the scene image exists and can seed the SRB).
         blit_sampler_.reset(rhi_->newSampler(
             QRhiSampler::Nearest, QRhiSampler::Nearest, QRhiSampler::None,
             QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge,
@@ -327,9 +321,10 @@ protected:
                                sim_.propagator().kinetic_phase(),
                                sim_.psi().data());
         if (gpu_ok_) {
-            // Pick the atlas storage precision from free VRAM. The fp32 n<=6
-            // manifold (91 x 256^3 complex-fp32 ~= 12 GB) oversubscribes a small
-            // card, and WDDM then pages it into system RAM -- host RAM balloons
+            // Pick the atlas storage precision from free VRAM. A resident fp32
+            // n<=6 manifold (kNumStates complex-fp32 buffers, ~12 GB at 256^3)
+            // oversubscribes a small card, and WDDM then pages it into system
+            // RAM -- host RAM balloons
             // and the frame rate collapses. fp16 halves it (~6 GB). Headroom
             // covers the live working set + textures + the unpack scratch +
             // driver; an unmeasurable budget keeps fp32 (the big-VRAM default).
@@ -347,11 +342,11 @@ protected:
                          atlas_fits ? ""
                                     : "  [WARNING: even fp16 is tight -- consider a "
                                       "smaller box or manifold]");
-            // Imaginary-time weights from the tested CPU relaxer (G7).
-            // These QRhi ports are FALLIBLE (buffer/pipeline create can fail
-            // under VRAM pressure, unlike the void GL uploads); a failed relax
-            // table would silently run REAL-TIME phase tables in imaginary
-            // time, so failure demotes to the CPU fallback path wholesale.
+            // Imaginary-time weights from the tested CPU relaxer. These
+            // engine uploads are FALLIBLE (buffer/pipeline create can fail
+            // under VRAM pressure); a failed relax table would silently run
+            // REAL-TIME phase tables in imaginary time, so failure demotes
+            // to the CPU fallback path wholesale.
             const ses::ImaginaryTimePropagator3D relaxer{sim_.grid(), sim_.potential(),
                                                          kRelaxDtau};
             if (!engine_.set_relax_tables(relaxer.half_potential_weight(),
@@ -365,13 +360,13 @@ protected:
                 atlas_done_ = true;
                 return;
             }
-            // T6/T7: solve the atom up front. The radial engine gets every
+            // Solve the atom up front. The radial engine gets every
             // bound level to n = 10 (the full lifetime table, printed
             // below); the 3D tracked manifold (n <= 6, what the box holds)
             // is then synthesized chunked across frames so decay is armed
             // BY DEFAULT and every demo entry point is instant afterwards.
             atom_.solve_radial_atom(sim_.grid().x.xmax);
-            // Orbital-free projection index (Phase 5): the static counting-sort
+            // Orbital-free projection index: the static counting-sort
             // geometry, uploaded once. Populations then come from ONE project_psi
             // deposit pass (state-count independent) instead of a per-state
             // inner_with_psi over the resident atlas.
@@ -415,7 +410,7 @@ protected:
         }
     }
 
-    // The COMPUTE half of the old paintGL: engine stepping, atlas build,
+    // The COMPUTE half of a frame: engine stepping, atlas build,
     // measurement service, decay/laser trials. Runs once per paint, BEFORE the
     // widget frame (engine offscreen frames are illegal mid-frame).
     void run_gpu_frame() {
@@ -423,7 +418,7 @@ protected:
             init_compute();
             compute_init_done_ = true;
         }
-        // T6/T7: the startup atlas build advances regardless of the view
+        // The startup atlas build advances regardless of the view
         // mode -- a Tab to Surface during the startup window must not wedge
         // solving() forever (the build owns the psi buffer either way; the
         // Surface view simply does not display it while it runs).
@@ -451,8 +446,9 @@ protected:
                 cpu_is_truth_ = false;
                 volume_dirty_ = false;  // texture comes from the bridge now
                 // Bridge immediately: with an empty step queue (paused R/M,
-                // first frame) the block below would never refresh psi_tex_
-                // and the screen would keep the stale (or undefined) cloud.
+                // first frame) the block below would never refresh the
+                // display volume and the screen would keep the stale (or
+                // undefined) cloud.
                 write_display_texture();
             }
             // Projective ENERGY measurement (Key E): sample an eigenstate n
@@ -460,7 +456,7 @@ protected:
             // psi onto it. The incomplete-manifold deficit 1 - sum(P_n) is the
             // continuum outcome (n = -1): leave psi and say so. Reuses the same
             // GPU inner-product / collapse primitives as the decay jump; works
-            // even while paused (it writes psi_tex_ itself).
+            // even while paused (it bridges the display volume itself).
             if (pending_energy_measure_) {
                 pending_energy_measure_ = false;
                 engine_.project_psi();
@@ -508,7 +504,7 @@ protected:
                         radiated_power_ = ses::larmor_power(engine_.mean_force());
                     }
                     if (laser_pol_ != LaserPol::Off) {
-                        // T3: resonant dipole drive. t0 is the same clock
+                        // Resonant dipole drive: t0 is the same clock
                         // that credits gpu_time_, so the carrier phase
                         // cos(w t) stays continuous across batches/pauses.
                         const ses::DipoleDrive d{laser_axis(), laser_e0_, laser_omega_};
@@ -544,7 +540,7 @@ protected:
                         engine_.apply_mask(mask_buf_);
                     }
 
-                    // Orbital-free populations (Phase 5): ONE deposit pass on the
+                    // Orbital-free populations: ONE deposit pass on the
                     // post-step psi, shared by the decay and laser readouts this
                     // title tick (state-count independent) -- replaces the
                     // per-state inner_with_psi over the resident atlas.
@@ -554,7 +550,7 @@ protected:
                         engine_.project_psi();
                     }
 
-                    // T4/T5/T7: competing-channels Poisson trials over the
+                    // Competing-channels Poisson trials over the
                     // whole tracked manifold. The exponential is memoryless,
                     // so trials run on the TITLE cadence with the sim time
                     // accumulated since the last trial (identical statistics,
@@ -592,7 +588,7 @@ protected:
                         }
                     }
 
-                    // T3: live populations for the title readout (and the
+                    // Live populations for the title readout (and the
                     // Rabi peak the selftest asserts on), on the title
                     // cadence -- two 2 KB reductions every ~10 ticks.
                     if (laser_pol_ != LaserPol::Off && gpu_title_due_ &&
@@ -602,7 +598,7 @@ protected:
                         rabi_peak_ = std::max(rabi_peak_, pop_excited_);
                     }
                 } else {
-                    // GPU imaginary time (G7/T1): renormalized every step;
+                    // GPU imaginary time: renormalized every step;
                     // the ITP estimator gives the convergence readout free.
                     // The excited flavor deflates the cached ground state.
                     const ses_vk::Engine::RelaxStats stats =
@@ -617,7 +613,7 @@ protected:
                     }
                     norm_display_ = 1.0;  // pinned by per-step renormalization
 
-                    // T7: relaxation auto-completes. When the ITP energy
+                    // Relaxation auto-completes: when the ITP energy
                     // readout plateaus the state has converged; return to
                     // real time so the lifetimes ACT (a prepared 2p should
                     // decay, not sit in imaginary time forever).
@@ -646,12 +642,10 @@ protected:
         }
     }
 
-    // The DRAW half of a frame: the shell computes the per-frame inputs
-    // (camera, view mode, brightness, staged uploads) and SceneRenderer
-    // records the resource updates + the one render pass.
-    // Render the whole scene in ses_vk (called at the END of run_gpu_frame,
-    // outside any QRhi frame): resize the offscreen target to the widget's
-    // pixel size, assemble the per-frame inputs, submit.
+    // The DRAW half of a frame, in ses_vk, outside any QRhi frame: the shell
+    // assembles the per-frame inputs (camera, view mode, brightness, staged
+    // uploads), resizes the offscreen target to the widget's pixel size, and
+    // SceneRenderer records the resource updates + the render passes.
     void render_scene_offscreen() {
         if (!vk_renderer_ready_) {
             return;
@@ -871,8 +865,9 @@ public:
 
     // Projective ENERGY measurement (the energy-basis analogue of M): request
     // a collapse onto an energy eigenstate sampled by |<phi_n|psi>|^2. The GPU
-    // reductions + collapse-copy need a current context, so the actual work is
-    // deferred to paintGL (see pending_energy_measure_). Needs the manifold.
+    // reductions + collapse-copy run in the frame's compute half, so the work
+    // is deferred to run_gpu_frame (see pending_energy_measure_). Needs the
+    // manifold.
     void measure_energy_now() {
         if (solving() || !use_gpu_path() || !manifold_ready()) {
             return;
@@ -892,7 +887,7 @@ public:
         if (mode_ == ViewMode::Surface) {
             ensure_cpu_current();  // meshing reads the CPU field
             if (stepping_ == Stepping::RelaxingExcited) {
-                stepping_ = Stepping::Relaxing;  // deflation is GPU-only (v1)
+                stepping_ = Stepping::Relaxing;  // deflation is GPU-only
             }
             laser_pol_ = LaserPol::Off;  // the drive is GPU-only too
             decay_on_ = false;  // so are the jump trials: OFF beats a lying title
@@ -901,7 +896,7 @@ public:
         after_control();
     }
 
-    // Transitions arc T1: relax into the z-aligned first excited state.
+    // Relax into the z-aligned first excited state.
     // The ground state is computed and cached on first use (a few seconds,
     // one-time); the z-odd seed keeps the whole flow in the odd-parity
     // sector, so it converges to the 2p_z-like state deterministically.
@@ -909,7 +904,7 @@ public:
         start_excited_relax(make_axis_odd_seed(2), QStringLiteral("2p"), false);
     }
 
-    // T5: relax into 2s -- the radial node appears live. With decay ON it
+    // Relax into 2s -- the radial node appears live. With decay ON it
     // then just SITS there: A(2s -> 1s) ~ 0 makes it metastable, from our
     // own matrix elements. The 2p triplet is cached and deflated too (2s
     // sits ABOVE it), see start_excited_relax.
@@ -920,7 +915,7 @@ public:
             QStringLiteral("2s"), true);
     }
 
-    // Transitions arc T4/T5: toggle spontaneous decay (quantum jumps) over
+    // Toggle spontaneous decay (quantum jumps) over
     // the whole tracked manifold. Every channel rate is einstein_a(gap,
     // |<f|r|i>|^2) from our own eigenstates; true lifetimes are ~1e8 a.u.,
     // so the display accelerates ALL channels by one common factor (title
@@ -957,7 +952,7 @@ public:
     // incrementally during the pair phase -- do not race it).
     bool manifold_ready() const { return atlas_done_ && !atom_.channels().empty(); }
 
-    // T7: instantly excite an n = 3 state (cycles through a small set) and
+    // Instantly excite an n = 3 state (cycles through a small set) and
     // watch the CASCADE: e.g. 3d -> 2p (photon) -> 1s (photon).
     void excite_n3() {
         if (!gpu_ok_ || solving()) {
@@ -978,7 +973,7 @@ public:
     }
     double state_energy(int idx) const { return atom_.state_energy(idx); }
 
-    // Transitions arc T3: cycle the laser off -> Z-pol -> X-pol -> off. The
+    // Cycle the laser off -> Z-pol -> X-pol -> off. The
     // carrier w comes from OUR spectrum (the cached ITP energies) and E0
     // from a target Rabi frequency over OUR dipole matrix element, so the
     // pump is first-principles end to end. Z pumps 1s -> 2p_z (watch P(2pz)
@@ -1156,7 +1151,7 @@ protected:
     void start_excited_relax(const ses::Field3D& seed, const QString& label,
                              bool deflate_p_triplet) {
         if (!gpu_ok_ || solving()) {
-            return;  // deflation runs on the GPU path only (v1)
+            return;  // deflation runs on the GPU path only
         }
         if (mode_ != ViewMode::Cloud) {
             mode_ = ViewMode::Cloud;
@@ -1265,8 +1260,8 @@ protected:
         relax_deflate_.clear();
     }
 
-    // T7: advance the startup atlas build by one chunk (current context:
-    // called from paintGL). Phase 1 synthesizes one orbital per visit and
+    // Advance the startup atlas build by one chunk (called from
+    // run_gpu_frame). Phase 1 synthesizes one orbital per visit and
     // SHOWS it (the montage); phase 2 evaluates dipole channel pairs; the
     // finale assembles the channel table and resumes the wavepacket.
     void run_atlas_chunk() {
@@ -1284,8 +1279,8 @@ protected:
             // Synthesize into a TRANSIENT fp32 buffer: the model captures its
             // grid norm (for populations), SHOW it (montage), audit, then FREE.
             // The orbital-free projection keeps no atlas, so the montage holds
-            // ONE orbital at a time instead of accumulating all 91 (the old
-            // startup VRAM ramp).
+            // ONE orbital at a time instead of accumulating the whole
+            // manifold.
             double pk = 0.0;
             const int buf = atom_.synth_transient(engine_, idx, &pk);
             if (buf < 0) {
@@ -1295,7 +1290,7 @@ protected:
             engine_.copy_into_psi(buf);  // show (fp32)
             // The h-audit: cross-check the 1D radial energy against the full 3D
             // spectral <H> for the resolution-critical 1s and the box-critical
-            // 4s/5s/6s -- the ONLY states read back to the CPU (4 of 91).
+            // 4s/5s/6s -- the ONLY states read back to the CPU.
             if (idx == kS1 || idx == k4S || idx == k5S || idx == k6S) {
                 engine_.readback(readback_buf_);
                 ses::Field3D f{sim_.grid()};
@@ -1409,8 +1404,8 @@ private:
             return;
         }
         if (use_gpu_path()) {
-            // Steps run in paintGL (context current there). Cap the backlog
-            // so a stalled paint cannot spiral; time is credited at
+            // Steps execute in run_gpu_frame (once per paint). Cap the
+            // backlog so a stalled paint cannot spiral; time is credited at
             // execution, so dropped ticks drop cleanly. The laser demo steps
             // hotter so a Rabi flop fits in seconds of wall time.
             const int per_tick =
@@ -1460,7 +1455,7 @@ private:
     void stage_active_view() {
         if (mode_ == ViewMode::Cloud) {
             if (use_gpu_path()) {
-                return;  // paintGL uploads the state and bridges the texture
+                return;  // run_gpu_frame uploads the state and bridges the texture
             }
             stage_volume();
             volume_dirty_ = true;
@@ -1470,7 +1465,7 @@ private:
         }
     }
 
-    // ---- CPU staging (no GL context needed) ----
+    // ---- CPU staging ----
 
     void remesh() {
         mesh_ = ses::marching_cubes_at_fraction(sim_.density(), sim_.grid(), kIsoFraction);
@@ -1570,7 +1565,7 @@ private:
                  : QStringLiteral("  measured %1").arg(last_measure_)));
     }
 
-    // Bridge psi to the display texture. The magnetic field now evolves psi
+    // Bridge psi to the display texture. The magnetic field evolves psi
     // itself (MagneticPropagator on the GPU: diamagnetic in the potential +
     // exact three-shear paramagnetic rotation), so the display is just the
     // real wavefunction -- no display-only rotation trick.
@@ -1583,14 +1578,14 @@ private:
     ViewMode mode_ = ViewMode::Cloud;
     Stepping stepping_ = Stepping::RealTime;
 
-    // GPU stepping state (docs/GPU_PLAN.md G5). cpu_is_truth_ is the single
+    // GPU stepping state. cpu_is_truth_ is the single
     // sync invariant: true -> sim_.psi() is current, false -> the engine's
     // psi buffer is ahead and must be read back before any CPU-side operation.
     ses_vk::DeviceContext vk_ctx_;  // adopts the QRhiWidget's device
     ses_vk::Engine engine_;
     ses_vk::SceneRenderer vk_renderer_;  // the whole scene, framework-free
     bool vk_renderer_ready_ = false;
-    // Temporal-accumulation bookkeeping (render polish).
+    // Temporal-accumulation bookkeeping.
     struct AccumPrev {
         double azimuth = 1e9, elevation = 0, distance = 0, peak = 0,
                absorbance = 0;
@@ -1620,23 +1615,23 @@ private:
     double radiated_power_ = 0.0;  // semiclassical Larmor power (au)
     std::vector<float> readback_buf_;
 
-    // The tracked atom (Stage 5b): radial solve, eigenstate synthesis
+    // The tracked atom: radial solve, eigenstate synthesis
     // bookkeeping, and the E1 decay channel table live in AtomModel;
     // engine-backed calls pass engine_ explicitly.
     ses_shell::AtomModel atom_;
     bool proj_ready_ = false;  // static projection index uploaded
 
-    // Transitions arc T1/T4/T5: jump bookkeeping.
+    // Quantum-jump bookkeeping.
     QString last_jump_;
     QString last_measure_;  // last energy-measurement readout (Key E)
     int last_measured_index_ = -2;  // last energy-measurement outcome (selftest)
     QString relax_label_ = QStringLiteral("2p");
     std::vector<int> relax_deflate_;        // live RelaxingExcited deflation set
     std::vector<int> relax_deflate_owned_;  // owned transient states to release
-    double relax_prev_energy_ = 0.0;     // T7 auto-complete plateau tracking
+    double relax_prev_energy_ = 0.0;     // relax auto-complete plateau tracking
     int relax_plateau_ = 0;
 
-    // T7: startup atlas build (radial solve + synthesis, chunked in paint).
+    // Startup atlas build (radial solve + synthesis, chunked in paint).
     std::vector<int> synth_queue_;
     int montage_hold_ = 0;
     bool atlas_done_ = false;
@@ -1648,7 +1643,7 @@ private:
     int flash_ticks_ = 0;
     long long photon_count_ = 0;
 
-    // Transitions arc T3: laser (resonant dipole drive) bookkeeping.
+    // Laser (resonant dipole drive) bookkeeping.
     LaserPol laser_pol_ = LaserPol::Off;
     double laser_omega_ = 0.0;
     double laser_e0_ = 0.0;
@@ -1667,8 +1662,8 @@ private:
     std::vector<ses::Rgb> colors_;
     std::vector<float> psi_staging_;
     double peak_ = 0.0;
-    double absorbance_ = 0.68;  // was 1.5; lightened ~3 '[' steps (/1.3^3) --
-                                // the default cloud was too opaque
+    double absorbance_ = 0.68;  // lightened from 1.5: the default cloud was
+                                // too opaque
 
     QTimer timer_;
     bool paused_ = false;

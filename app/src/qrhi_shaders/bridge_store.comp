@@ -1,9 +1,7 @@
 #version 450
 
-// Decorated Vulkan-GLSL form of kBridgeSrc (gpu_shaders.hpp): copy the psi SSBO
-// into a 3D volume texture the renderer samples, one texel per grid cell. QRhi
-// has no RG32F, so the texture is RGBA32F and psi lands in .xy (.zw = 0) --
-// imageStore already wrote a vec4, so this is byte-for-byte the GL bridge.
+// Copy the psi SSBO into the 3D volume texture the renderer samples, one
+// texel per grid cell. The volume is RGBA32F; psi lands in .xy (.zw = 0).
 // psi in (binding 0), image3D out (binding 1), grid dims UBO (binding 2).
 layout(local_size_x = 256) in;
 

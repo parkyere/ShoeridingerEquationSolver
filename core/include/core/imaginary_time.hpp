@@ -95,7 +95,7 @@ public:
     }
 
     // Read access to the weight tables so the GPU relax path consumes the
-    // TESTED tables instead of re-deriving them (docs/GPU_PLAN.md G7).
+    // TESTED tables instead of re-deriving them.
     const std::vector<double>& half_potential_weight() const { return half_v_; }
     const std::vector<double>& kinetic_weight() const { return kinetic_; }
 

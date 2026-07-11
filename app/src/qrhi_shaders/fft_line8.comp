@@ -1,9 +1,9 @@
 #version 450
 
-// kLineFftTemplate instantiated at N=8 (NHALF=4, LOG2N=3), for the 3D fft3
-// check: the same shared-memory radix-2 line FFT run once per axis. The line-
-// enumeration uniforms (mod_a/mul_b/mul_c/stride/n_lines) come from a std140 UBO
-// and select the axis (x/y/z) of an 8x8x8 cube. Body byte-for-byte the GL kernel.
+// Shared-memory radix-2 line FFT at N=8 (NHALF=4, LOG2N=3), the small size
+// used by the 3D fft3 check: run once per axis of an 8x8x8 cube. The line-
+// enumeration uniforms (mod_a/mul_b/mul_c/stride/n_lines) come from a std140
+// UBO and select the axis (x/y/z). See fft_line64.comp for the stage layout.
 layout(local_size_x = 4) in;
 
 layout(std430, binding = 0) buffer DataBuf { vec2 data[]; };

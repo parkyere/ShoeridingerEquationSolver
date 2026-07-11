@@ -1,10 +1,9 @@
 #version 450
 
-// Decorated Vulkan-GLSL form of kDipoleSrc (gpu_shaders.hpp): the dipole matrix
-// element <to| r |from> = sum conj(to)*from * (x,y,z), three complex reductions
-// (one per axis) folded in parallel and written as 6 floats per workgroup. to(0)
-// / from(3) readonly, partials(2) writeonly, std140 UBO(1) with vec4-padded grid
-// geometry. Body byte-for-byte the GL kernel's.
+// Dipole matrix element <to| r |from> = sum conj(to)*from * (x,y,z): three
+// complex reductions (one per axis) folded in parallel and written as 6 floats
+// per workgroup. Bindings: to(0) / from(3) readonly, partials(2) writeonly,
+// std140 UBO(1) with vec4-padded grid geometry.
 layout(local_size_x = 256) in;
 
 layout(std430, binding = 0) readonly buffer ToBuf { vec2 fto[]; };

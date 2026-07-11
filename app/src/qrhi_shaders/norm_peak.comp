@@ -1,12 +1,10 @@
 #version 450
 
-// Decorated Vulkan-GLSL form of kNormPeakSrc (gpu_shaders.hpp): a fixed-order
-// tree reduction of |psi|^2 into one (sum, max) partial per workgroup; the host
-// finishes the 256 partial pairs in double. This is the first REDUCTION kernel
-// ported to QRhi -- it validates the shared-memory + partials-buffer pattern on
-// the Vulkan backend. Bindings: psi (readonly, 0), partials (writeonly, 2),
-// and the std140 UBO for n (1). Body is byte-for-byte the GL kernel's; no
-// atomics, so the fixed-order fold stays deterministic (bit-exactness checks).
+// Fixed-order tree reduction of |psi|^2 into one (sum, max) partial per
+// workgroup; the host finishes the per-workgroup partials in double.
+// Bindings: psi (readonly, 0), partials (writeonly, 2), std140 UBO n (1).
+// No atomics, so the fixed-order fold stays deterministic (bit-exactness
+// checks rely on this).
 layout(local_size_x = 256) in;
 
 layout(std430, binding = 0) readonly buffer PsiBuf { vec2 psi[]; };

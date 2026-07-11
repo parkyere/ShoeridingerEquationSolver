@@ -1,10 +1,9 @@
 #version 450
 
-// psi <- src, a per-cell bitwise copy of an auxiliary state buffer into psi.
-// QRhi has no buffer-to-buffer copy in its resource-update batch (unlike GL's
-// glCopyBufferSubData in copy_into_psi), so a trivial assignment shader stands
-// in; plain vec2 assignment is bitwise-exact (no arithmetic). Used by the
-// quantum-jump collapse path. Bindings: psi(0) write, src(3) read, n(1).
+// psi <- src, a per-cell copy of an auxiliary state buffer into psi. Plain
+// vec2 assignment is bitwise-exact (no arithmetic touches the values). Used
+// by the quantum-jump collapse path. Bindings: psi(0) write, src(3) read,
+// std140 UBO n(1).
 layout(local_size_x = 256) in;
 
 layout(std430, binding = 0) writeonly buffer PsiBuf { vec2 psi[]; };
