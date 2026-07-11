@@ -1,4 +1,18 @@
-# GPU compute plan (OpenGL 4.3 compute shaders)
+# GPU compute plan — HISTORICAL RECORD (OpenGL 4.3 era)
+
+> **This document is a historical planning record, not the current state.**
+> It is the original OpenGL-compute plan and its delivered milestones, kept
+> for the design rationale. The GPU stack has since been migrated twice:
+> OpenGL → Qt QRhi/Vulkan → the current **framework-free raw-Vulkan core
+> `ses_vk`** (volk + VMA + VkFFT, shaders offline-baked to SPIR-V by
+> glslangValidator; Qt reduced to window/input/one blit). The verification
+> harness followed the same path: `sesolver_gpucheck` (GL) and
+> `sesolver_qrhicheck` (QRhi) were retired after **`sesolver_vkcheck`**
+> reproduced every recorded value digit-identically; it is now the sole GPU
+> oracle. The doctrine below survived every migration unchanged: fp32 GPU
+> for display speed, the CPU double core as THE tested truth, and every
+> kernel landing together with its harness comparison. See
+> [ARCHITECTURE.md](ARCHITECTURE.md) for the current architecture.
 
 Decision (user, after AVX2 work): the GPU backend is **OpenGL compute** --
 already our context version, no new dependency, keeps the Windows/Linux

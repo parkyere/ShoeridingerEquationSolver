@@ -62,7 +62,14 @@ canonical example.
 
 ## Humble Object exception
 
-The Qt/OpenGL shell in `app/` is **not** unit-tested — that is the deliberate
+The Qt shell in `app/` (window, input, UI, the one-blit presentation, and the
+demo scheduling in `main.cpp`) is **not** unit-tested — that is the deliberate
 Humble Object boundary. It must stay logic-free; any logic worth testing is
 pushed down into `core/` and driven test-first there. The shell is verified by
-running it and looking.
+running it — and by the headless `--selftest-*` and `--dump-frame*` arcs.
+
+The GPU side of `app/` is **not** exempt: every `ses_vk` kernel and engine
+path is verified against the unit-tested CPU double core by
+`sesolver_vkcheck` (a zero-Qt oracle binary), which runs inside ctest. A GPU
+kernel lands together with its vkcheck comparison — the GPU analogue of
+red/green.

@@ -6,7 +6,10 @@ then 3D; physics first, rendering last.
 
 Legend: each phase lists the *first* red tests that gate it.
 
-> **Status:** Phases 0-7 are all complete. The project has since grown several
+> **Status:** Phases 0-7 are all complete; the ladder below is the historical
+> record of the original build order (Phase 7's OpenGL renderer has since been
+> rewritten twice and is now framework-free Vulkan — see
+> [ARCHITECTURE.md](ARCHITECTURE.md)). The project has since grown several
 > arcs well beyond this original ladder -- see **Beyond the ladder** at the end.
 
 ## Phase 0 — Scaffolding ✅
@@ -75,16 +78,22 @@ Pure, testable geometry/color math in `core/`; thin GL drawing in `app/`.
 ### Beyond the ladder (delivered since)
 
 The project grew well past Phase 7. Each later arc is TDD'd against analytic /
-CPU oracles and (for GPU kernels) verified in `sesolver_gpucheck`:
+CPU oracles and (for GPU kernels) verified in `sesolver_vkcheck`:
 
 - **Transitions:** radial engine (all bound levels to n = 10 + E1 lifetimes),
   Einstein-A multi-channel quantum-jump decay, resonant laser / Rabi, position
   **and** energy-basis measurement, radiative cascades.
-- **GPU compute** (see [GPU_PLAN.md](GPU_PLAN.md)): all real- and
-  imaginary-time evolution, orbital synthesis, and dipole / mean-force
-  reductions run on OpenGL 4.3 compute.
+- **GPU compute** (design history in [GPU_PLAN.md](GPU_PLAN.md)): all real-
+  and imaginary-time evolution, orbital synthesis, projection, and dipole /
+  mean-force reductions run on GPU compute — first OpenGL 4.3, then Qt
+  QRhi/Vulkan, now the framework-free raw-Vulkan `ses_vk` core
+  (volk + VMA + VkFFT, offline SPIR-V), with every kernel verified by the
+  zero-Qt `sesolver_vkcheck` inside ctest.
 - **Manifold:** the tracked m-resolved bound shell raised to the largest n the
-  box holds, with real Yₗₘ synthesized to the matching l.
+  box holds, with real Yₗₘ synthesized to the matching l; populations come
+  from an orbital-free angular-decomposition projection (one grid pass, no
+  resident atlas — design record in
+  [ANGULAR_PROJECTION_SCOPING.md](ANGULAR_PROJECTION_SCOPING.md)).
 - **Static fields, solved as a proper Hamiltonian:** E-field (Stark, a dipole
   term in the half-potential) and magnetic field **z/x/y** (paramagnetic Larmor
   via an exact three-shear rotation, `core/rotation.hpp`; diamagnetic folded
@@ -92,3 +101,7 @@ CPU oracles and (for GPU kernels) verified in `sesolver_gpucheck`:
   mask for the periodic FFT box.
 - **Radiation:** semiclassical Larmor power from the oscillating dipole
   (Ehrenfest ⟨∇V⟩, `core/emission.hpp`).
+- **Rendering:** raymarched electron cloud on an HDR pipeline — phase-tinted
+  front-to-back march with IGN jitter and temporal accumulation, occupancy
+  empty-space skipping, an extinction self-shadow volume, probability-current
+  flow particles, and dual-Kawase bloom under an ACES tonemap.

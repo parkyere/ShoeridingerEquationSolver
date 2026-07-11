@@ -1,7 +1,12 @@
 <!-- POINT-IN-TIME SCOPING RECORD (2026-07-08). A design snapshot, NOT an
-evergreen doc: line numbers and figures WILL go stale as the code changes,
-and this is superseded once/if the projection is implemented. Kept as the
-design rationale for the orbital-free angular-decomposition projection. -->
+evergreen doc — and now SUPERSEDED: the orbital-free projection designed here
+WAS implemented (core/include/core/projection.hpp is the unit-tested CPU
+oracle; the ses_vk engine's project_psi/project_amplitude is the GPU path,
+verified in sesolver_vkcheck; the resident atlas is gone — startup uses
+transient synthesis). Kept only as the design rationale. Every file path,
+line number, and figure below references the pre-implementation, pre-Vulkan
+tree (gpu_engine.hpp, gpucheck, the D:\HydrogenAtom checkout) and is stale
+by design — do not navigate by it. -->
 
 All anchors confirmed. Two corrections to fold in: tests live in the top-level `tests/` dir (not `core/tests/`), and `scratchpad/` is empty — the referenced PoC is genuinely absent. Here is the brief.
 
