@@ -59,6 +59,7 @@
 #include <fft_line256_spv.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -1123,33 +1124,94 @@ bool check_engine_step(ses_vk::DeviceContext& ctx) {
         std::printf("engine 20 steps (raw Vulkan): engine init FAIL\n");
         return false;
     }
-    engine.step(20);
-    std::vector<float> gpu_out;
-    if (!engine.readback(gpu_out)) {
-        std::printf("engine 20 steps (raw Vulkan): readback FAIL\n");
-        return false;
-    }
 
     ses::Field3D cpu = psi0;
     cpu_prop.step(cpu, 20);
 
-    double max_err = 0.0;
-    double max_mag = 0.0;
-    for (std::size_t i = 0; i < cpu.data().size(); ++i) {
-        max_err = std::max(max_err, std::abs(gpu_out[2 * i] - cpu.data()[i].real()));
-        max_err =
-            std::max(max_err, std::abs(gpu_out[2 * i + 1] - cpu.data()[i].imag()));
-        max_mag = std::max(max_mag, std::abs(cpu.data()[i].real()));
-        max_mag = std::max(max_mag, std::abs(cpu.data()[i].imag()));
+    // Verify the default step path (native VkFFT when the plan built), THEN
+    // force the hand-rolled line-FFT path so both keep coverage.
+    bool all_pass = true;
+    for (int mode = 0; mode < 2; ++mode) {
+        const bool want_vkfft = (mode == 0);
+        engine.set_use_vkfft(want_vkfft);
+        if (want_vkfft && !engine.vkfft_active()) {
+            continue;  // plan unavailable: the hand-rolled pass covers it
+        }
+        engine.upload_state(psi0.data());
+        engine.step(20);
+        std::vector<float> gpu_out;
+        if (!engine.readback(gpu_out)) {
+            std::printf("engine 20 steps (raw Vulkan): readback FAIL\n");
+            return false;
+        }
+        double max_err = 0.0;
+        double max_mag = 0.0;
+        for (std::size_t i = 0; i < cpu.data().size(); ++i) {
+            max_err =
+                std::max(max_err, std::abs(gpu_out[2 * i] - cpu.data()[i].real()));
+            max_err = std::max(max_err,
+                               std::abs(gpu_out[2 * i + 1] - cpu.data()[i].imag()));
+            max_mag = std::max(max_mag, std::abs(cpu.data()[i].real()));
+            max_mag = std::max(max_mag, std::abs(cpu.data()[i].imag()));
+        }
+        const double tol = 1e-4 + 1e-5 * max_mag;
+        const bool pass = max_err < tol;
+        std::printf(
+            "engine 20 steps (%s): max |gpu - cpu| = %.3e (tol %.3e)  [%s]\n",
+            engine.vkfft_active() ? "raw Vulkan, native VkFFT"
+                                  : "raw Vulkan, line FFT",
+            max_err, tol, pass ? "PASS" : "FAIL");
+        all_pass = all_pass && pass;
     }
-    const double tol = 1e-4 + 1e-5 * max_mag;
-    const bool pass = max_err < tol;
-    std::printf(
-        "engine 20 steps (raw Vulkan, line FFT): max |gpu - cpu| = %.3e "
-        "(tol %.3e)  [%s]\n",
-        max_err, tol, pass ? "PASS" : "FAIL");
-    return pass;
+    engine.set_use_vkfft(true);
+    return all_pass;
 }
+
+#ifdef SES_HAVE_VKFFT
+// Informational A/B: wall time of step(30) at 64^3, hand-rolled vs native
+// VkFFT (every submission fence-waits, so wall time is honest throughput).
+// No assert -- numeric parity is check_engine_step's.
+bool check_native_vkfft_perf(ses_vk::DeviceContext& ctx) {
+    const ses::Grid1D axis{-8.0, 8.0, 64};
+    const ses::Grid3D g{axis, axis, axis};
+    const std::vector<double> v =
+        ses::soft_coulomb_potential(g, 1.0, 1.0, ses::Vec3d{});
+    const ses::SplitOperator3D prop{g, v, 0.02};
+    ses::Field3D psi0 = ses::gaussian_wavepacket(g, ses::Vec3d{2.0, 0.0, 0.0},
+                                                 ses::Vec3d{1.5, 1.5, 1.5},
+                                                 ses::Vec3d{0.0, 0.3, 0.0});
+    ses_vk::EngineKernels b = engine_blobs_8();
+    b.fft = k_fft_line64_spv;
+    b.fft_size = k_fft_line64_spv_size;
+    ses_vk::Engine engine;
+    if (!engine.initialize(ctx, g, b, prop.half_potential_phase(),
+                           prop.kinetic_phase(), psi0.data())) {
+        std::printf("native vkfft perf: engine init FAIL\n");
+        return false;
+    }
+    if (!engine.vkfft_active()) {
+        std::printf("native vkfft perf: plan unavailable -- skipped\n");
+        return true;
+    }
+    auto time_steps = [&engine, &psi0](bool vkfft) {
+        engine.set_use_vkfft(vkfft);
+        engine.upload_state(psi0.data());
+        engine.step(5);  // warm-up (pipelines, driver JIT)
+        const auto beg = std::chrono::steady_clock::now();
+        engine.step(30);
+        const auto end = std::chrono::steady_clock::now();
+        return std::chrono::duration<double, std::milli>(end - beg).count() /
+               30.0;
+    };
+    const double ms_line = time_steps(false);
+    const double ms_vkfft = time_steps(true);
+    std::printf(
+        "native vkfft perf 64^3: line FFT %.2f ms/step, VkFFT %.2f ms/step "
+        "(x%.2f)  [PASS]\n",
+        ms_line, ms_vkfft, ms_vkfft > 0.0 ? ms_line / ms_vkfft : 0.0);
+    return true;
+}
+#endif  // SES_HAVE_VKFFT
 
 // Imaginary-time relaxation through ses_vk::Engine, 50 steps on an 8x8x8
 // harmonic grid vs ImaginaryTimePropagator3D::relax -- the raw-Vulkan analog
@@ -1776,6 +1838,9 @@ int main() {
     failures += check_engine_force(ctx) ? 0 : 1;
     failures += check_engine_project(ctx) ? 0 : 1;
     failures += check_engine_dipole_between(ctx) ? 0 : 1;
+#ifdef SES_HAVE_VKFFT
+    failures += check_native_vkfft_perf(ctx) ? 0 : 1;
+#endif
 
     const int verrs = ses_vk::g_validation_errors.load();
     if (ctx.validation_active && verrs != 0) {

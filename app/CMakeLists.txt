@@ -298,6 +298,10 @@ if(TARGET volk::volk AND TARGET GPUOpen::VulkanMemoryAllocator
         GPUOpen::VulkanMemoryAllocator
         ses_warnings)
     target_compile_features(sesolver_vkcheck PRIVATE cxx_std_20)
+    # Native VkFFT: the plan runs on the engine's own device/queue, recorded
+    # straight into its primary command buffers (volk's canonical-name
+    # pointers satisfy header-only VkFFT; no QRhi external blocks).
+    ses_enable_vkfft(sesolver_vkcheck)
     add_test(NAME VkCheck COMMAND sesolver_vkcheck)
     set_tests_properties(VkCheck PROPERTIES
         LABELS "gpu"

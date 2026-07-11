@@ -19,6 +19,22 @@
 
 #include "vk_compute.hpp"
 
+#ifdef SES_HAVE_VKFFT
+// volk (via vk_device.hpp) already defined VK_NO_PROTOTYPES and declared the
+// canonical vk* names as global function pointers, so header-only VkFFT
+// compiles and links against volk's dispatch unmodified -- no include-order
+// hack, no external command-buffer blocks: the engine owns the device and
+// records VkFFTAppend straight into its own primary command buffers.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4702)  // unreachable code inside vkFFT.h at /O2
+#endif
+#include <VkFFT/vkFFT.h>
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+#endif
+
 #include <core/complex.hpp>
 #include <core/decay.hpp>
 #include <core/drive.hpp>
@@ -287,8 +303,25 @@ public:
             return false;
         }
 
-        return upload_field(half_, half_v) && upload_field(kin_, kinetic) &&
-               upload_field(psi_, psi0);
+        if (!upload_field(half_, half_v) || !upload_field(kin_, kinetic) ||
+            !upload_field(psi_, psi0)) {
+            return false;
+        }
+        // Plan the VkFFT 3D transform directly on psi_'s VkBuffer (plan
+        // creation compiles shaders via glslang). Failure leaves the engine
+        // on the hand-rolled line FFT.
+        ensure_vkfft();
+        return true;
+    }
+
+    // Force the hand-rolled line-FFT path (A/B coverage); no-op without a plan.
+    void set_use_vkfft(bool on) { use_vkfft_ = on; }
+    bool vkfft_active() const {
+#ifdef SES_HAVE_VKFFT
+        return use_vkfft_ && vkfft_ready_;
+#else
+        return false;
+#endif
     }
 
     // psi <- (halfV . IFFT . kin . FFT . halfV)^nsteps psi. One submission;
@@ -925,6 +958,7 @@ public:
         if (ctx_->device != VK_NULL_HANDLE) {
             vkDeviceWaitIdle(ctx_->device);
         }
+        release_vkfft();
         for (State& st : states_) {
             ctx_->destroy_buffer(&st.buf);
         }
@@ -1518,10 +1552,23 @@ private:
         record_shear(r, 0, b);
     }
 
-    // halfV . IFFT . kin . FFT . halfV (the inverse FFT = conj . FFT .
-    // conj/N) -- the QRhi engine's hand-rolled chain, barriers explicit.
+    // halfV . IFFT . kin . FFT . halfV. With VkFFT active the two whole-3D
+    // transforms are single VkFFTAppend blocks (coalesced transposes; the
+    // inverse carries the 1/N normalize), replacing six line-FFT dispatches
+    // and both conj-scale dispatches. Else the hand-rolled chain (the
+    // inverse FFT = conj . FFT . conj/N), barriers explicit either way.
     void run_step_body(Recorder& r, VkDescriptorSet half_set,
                        VkDescriptorSet kin_set) {
+#ifdef SES_HAVE_VKFFT
+        if (vkfft_active()) {
+            r.dispatch(mul_, half_set, mul_groups_);
+            record_vkfft(r, -1);  // forward
+            r.dispatch(mul_, kin_set, mul_groups_);
+            record_vkfft(r, 1);   // inverse, normalized 1/N by the plan
+            r.dispatch(mul_, half_set, mul_groups_);
+            return;
+        }
+#endif
         r.dispatch(mul_, half_set, mul_groups_);
         fft3(r);
         r.dispatch(mul_, kin_set, mul_groups_);
@@ -1530,6 +1577,99 @@ private:
         r.dispatch(conj_, conjN_set_, mul_groups_);
         r.dispatch(mul_, half_set, mul_groups_);
     }
+
+#ifdef SES_HAVE_VKFFT
+    // Plan a 3D C2C fp32 transform IN PLACE on psi_'s VkBuffer. The
+    // configuration stores POINTERS; the pointees are members (or live in
+    // the outliving DeviceContext) so VkFFTAppend can dereference per call.
+    bool ensure_vkfft() {
+        if (vkfft_ready_ || vkfft_failed_) {
+            return vkfft_ready_;
+        }
+        vkfft_failed_ = true;
+        VkCommandPoolCreateInfo pool_info{};
+        pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        pool_info.queueFamilyIndex = ctx_->queue_family;
+        VkFenceCreateInfo fence_info{};
+        fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        if (vkCreateCommandPool(ctx_->device, &pool_info, nullptr,
+                                &vkfft_pool_) != VK_SUCCESS ||
+            vkCreateFence(ctx_->device, &fence_info, nullptr, &vkfft_fence_) !=
+                VK_SUCCESS) {
+            release_vkfft();
+            return false;
+        }
+        vkfft_psi_buf_ = psi_.buf;
+        vkfft_buf_size_ = static_cast<std::uint64_t>(field_bytes_);
+        VkFFTConfiguration conf{};
+        conf.FFTdim = 3;
+        conf.size[0] = static_cast<std::uint64_t>(grid_.x.n);
+        conf.size[1] = static_cast<std::uint64_t>(grid_.y.n);
+        conf.size[2] = static_cast<std::uint64_t>(grid_.z.n);
+        conf.physicalDevice = &ctx_->phys_dev;
+        conf.device = &ctx_->device;
+        conf.queue = &ctx_->queue;
+        conf.commandPool = &vkfft_pool_;
+        conf.fence = &vkfft_fence_;
+        conf.buffer = &vkfft_psi_buf_;
+        conf.bufferSize = &vkfft_buf_size_;
+        conf.normalize = 1;  // inverse divides by N (replaces the conj/N pass)
+        const VkFFTResult res = initializeVkFFT(&vkfft_app_, conf);
+        if (res != VKFFT_SUCCESS) {
+            std::fprintf(stderr,
+                         "ses_vk::Engine: initializeVkFFT = %d -- staying on "
+                         "the hand-rolled FFT\n",
+                         static_cast<int>(res));
+            release_vkfft();
+            return false;
+        }
+        std::fprintf(stderr, "ses_vk::Engine: VkFFT 3D plan active (%dx%dx%d)\n",
+                     grid_.x.n, grid_.y.n, grid_.z.n);
+        vkfft_ready_ = true;
+        vkfft_failed_ = false;
+        return true;
+    }
+
+    void release_vkfft() {
+        if (vkfft_ready_) {
+            deleteVkFFT(&vkfft_app_);
+            vkfft_ready_ = false;
+        }
+        if (vkfft_fence_ != VK_NULL_HANDLE) {
+            vkDestroyFence(ctx_->device, vkfft_fence_, nullptr);
+            vkfft_fence_ = VK_NULL_HANDLE;
+        }
+        if (vkfft_pool_ != VK_NULL_HANDLE) {
+            vkDestroyCommandPool(ctx_->device, vkfft_pool_, nullptr);
+            vkfft_pool_ = VK_NULL_HANDLE;
+        }
+    }
+
+    // One whole-3D transform straight into the current primary command
+    // buffer, hazard-fenced on both sides (VkFFT records plain dispatches).
+    // direction: -1 forward, 1 inverse (1/N). After the block the recorder
+    // is told a barrier was just emitted, so the next dispatch skips its own.
+    void record_vkfft(Recorder& r, int direction) {
+        if (!r.first) {
+            barrier_compute_to_compute(r.cb);
+        }
+        VkCommandBuffer cb = r.cb;
+        VkFFTLaunchParams lp{};
+        lp.buffer = &vkfft_psi_buf_;
+        lp.commandBuffer = &cb;
+        const VkFFTResult res = VkFFTAppend(&vkfft_app_, direction, &lp);
+        if (res != VKFFT_SUCCESS) {
+            std::fprintf(stderr, "ses_vk::Engine: VkFFTAppend = %d\n",
+                         static_cast<int>(res));
+        }
+        barrier_compute_to_compute(r.cb);
+        r.first = true;  // the trailing barrier covers the next dispatch
+    }
+#else
+    bool ensure_vkfft() { return false; }
+    void release_vkfft() {}
+#endif  // SES_HAVE_VKFFT
 
     void fft3(Recorder& r) {
         const std::uint32_t nn = static_cast<std::uint32_t>(n_) *
@@ -1619,6 +1759,18 @@ private:
     VkDescriptorSet synth_any_set_ = VK_NULL_HANDLE;
     VkDescriptorSet norm_any_set_ = VK_NULL_HANDLE;
     VkDescriptorSet scale_any_set_ = VK_NULL_HANDLE;
+
+    bool use_vkfft_ = true;
+#ifdef SES_HAVE_VKFFT
+    // VkFFT plan on psi_'s VkBuffer; pointees of the configuration.
+    bool vkfft_ready_ = false;
+    bool vkfft_failed_ = false;
+    VkFFTApplication vkfft_app_{};
+    VkBuffer vkfft_psi_buf_ = VK_NULL_HANDLE;
+    std::uint64_t vkfft_buf_size_ = 0;
+    VkCommandPool vkfft_pool_ = VK_NULL_HANDLE;
+    VkFence vkfft_fence_ = VK_NULL_HANDLE;
+#endif
 };
 
 }  // namespace ses_vk
