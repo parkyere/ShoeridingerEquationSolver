@@ -1,14 +1,13 @@
 #pragma once
 
-// The Qt-free simulation director: everything the demo IS, minus the window.
-// Owns the CPU truth session, the ses_vk engine, the AtomModel, and the demo
-// state machine, plus the cpu_is_truth_ sync invariant. The Qt shell calls
-// the control methods, polls take_title_dirty()/title_text(), and assembles
-// the renderer's FrameInput from the display accessors. No Qt type crosses
-// this boundary.
+// The hydrogen scenario (ScenarioDirector implementation): the CPU truth
+// session, the ses_vk engine, the AtomModel, and the atom demo state machine
+// (atlas build, decay, laser, fields, measurement, relaxation), plus the
+// cpu_is_truth_ sync invariant. Qt-free.
 
 #include "atom_model.hpp"
 #include "manifold_spec.hpp"
+#include "scenario.hpp"
 #include "vk_engine.hpp"
 
 #include <core/colormap.hpp>
@@ -92,9 +91,9 @@ inline ses::WavepacketSimulation make_simulation() {
     }};
 }
 
-class SimDirector {
+class HydrogenDirector final : public ScenarioDirector {
 public:
-    SimDirector() : sim_(make_simulation()) {
+    HydrogenDirector() : sim_(make_simulation()) {
         remesh();
         stage_volume();
     }
@@ -532,6 +531,21 @@ public:
         }
         return 0.0;
     }
+    // Scenario keys beyond the generic set (1/R/M/Tab live in the shell).
+    bool handle_key(char key) override {
+        switch (key) {
+            case '2': set_relaxing(); return true;
+            case '3': relax_to_excited(); return true;
+            case '4': relax_to_2s(); return true;
+            case '5': excite_n3(); return true;
+            case 'D': toggle_decay(); return true;
+            case 'E': measure_energy_now(); return true;
+            case 'L': toggle_laser(); return true;
+            default: return false;
+        }
+    }
+    bool scene_ready() const override { return manifold_ready(); }
+
     bool solving() const { return gpu_ok_ && !atlas_done_; }
     // Ready only once the FULL table is assembled (channels_ fills
     // incrementally during the pair phase -- do not race it).

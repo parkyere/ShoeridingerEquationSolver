@@ -1,7 +1,8 @@
 // Humble Object shell -- the Qt boundary. Qt provides the window, input, the
 // Vulkan device, and ONE fullscreen blit of the ses_vk renderer's scene
-// image; everything the demo IS lives in ses_shell::SimDirector (Qt-free).
-// NO domain logic lives here (docs/ARCHITECTURE.md).
+// image; everything the demo IS lives behind ses_shell::ScenarioDirector
+// (Qt-free; --scene= picks the implementation). NO domain logic lives here
+// (docs/ARCHITECTURE.md).
 //
 // Controls: drag = orbit, wheel = zoom, space = pause, Tab = cloud/surface,
 // 1 = real time, 2 = relax (imaginary time), 3 = relax to 2p, 4 = relax to
@@ -16,7 +17,7 @@
 #include "qt_blit.hpp"
 #include "selftest_arcs.hpp"
 #include "shell_ui.hpp"
-#include "sim_director.hpp"
+#include "hydrogen_director.hpp"
 #include "vram_probe.hpp"
 
 #include <QApplication>
@@ -37,6 +38,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 
 namespace {
 
@@ -51,7 +53,10 @@ constexpr int kTickMs = 16;
 
 class Viewport : public QRhiWidget {
 public:
-    explicit Viewport(QWidget* parent = nullptr) : QRhiWidget(parent) {
+    explicit Viewport(std::unique_ptr<ses_shell::ScenarioDirector> director,
+                      QWidget* parent = nullptr)
+        : QRhiWidget(parent), director_(std::move(director)) {
+        hydrogen_ = dynamic_cast<ses_shell::HydrogenDirector*>(director_.get());
         setApi(QRhiWidget::Api::Vulkan);  // before the widget is first backed
         setFocusPolicy(Qt::StrongFocus);
         connect(&timer_, &QTimer::timeout, this, &Viewport::tick);
@@ -68,8 +73,8 @@ protected:
                 init_compute();
                 compute_init_done_ = true;
             }
-            director_.run_frame();
-            if (director_.take_title_dirty()) {
+            director_->run_frame();
+            if (director_->take_title_dirty()) {
                 refresh_title();
             }
             render_scene_offscreen();  // the whole scene, in ses_vk
@@ -84,7 +89,7 @@ protected:
         blit_.release();
         vk_renderer_.destroy();
         vk_renderer_ready_ = false;
-        director_.release_gpu();
+        director_->release_gpu();
         vk_ctx_.destroy();
     }
 
@@ -110,7 +115,7 @@ protected:
         }
         Q_UNUSED(cb);
 
-        director_.mark_display_dirty();
+        director_->mark_display_dirty();
         rhi_ready_ = true;
     }
 
@@ -127,14 +132,14 @@ protected:
         // The scene renderer needs only the DEVICE, not the engine: the CPU
         // fallback path (engine init failure) still renders.
         vk_renderer_ready_ =
-            adopted && vk_renderer_.initialize(vk_ctx_, director_.grid(),
+            adopted && vk_renderer_.initialize(vk_ctx_, director_->grid(),
                                                ses_shell::app_render_blobs());
         if (!vk_renderer_ready_) {
             fatal_rhi_error("render resources",
                             QStringLiteral("ses_vk renderer initialization "
                                            "failed (see stderr)"));
         }
-        director_.init_compute(
+        director_->init_compute(
             vk_ctx_, adopted,
             ses_shell::query_free_vram_bytes(
                 adopted ? vk_ctx_.phys_dev : VK_NULL_HANDLE));
@@ -156,13 +161,13 @@ protected:
         }
 
         ses_vk::SceneRenderer::FrameInput in;
-        in.cloud = director_.cloud();
+        in.cloud = director_->cloud();
         in.azimuth = azimuth_;
         in.elevation = elevation_;
         in.distance = distance_;
-        in.peak = director_.peak();
+        in.peak = director_->peak();
         in.absorbance = absorbance_;
-        in.flash = director_.next_flash_intensity();
+        in.flash = director_->next_flash_intensity();
         // Probability-flow particles (Key F): drawn over the cloud, frozen
         // while paused so a still frame can still accumulate.
         in.flow = flow_on_ && in.cloud;
@@ -170,7 +175,7 @@ protected:
         // Temporal accumulation: keep averaging only while NOTHING changed
         // (camera, display params, flash, psi volume, animating particles).
         in.frame_index = static_cast<float>(frame_index_++ % 4096);
-        const bool volume_written = director_.take_volume_written();
+        const bool volume_written = director_->take_volume_written();
         const bool scene_static =
             !volume_written && azimuth_ == acc_prev_.azimuth &&
             elevation_ == acc_prev_.elevation &&
@@ -186,19 +191,19 @@ protected:
                      in.flash, in.cloud};
         // The psi display volume: the engine's bridge image on the GPU path;
         // null lets the renderer fall back to its CPU-staged texture.
-        in.psi_volume = director_.psi_volume_view();
+        in.psi_volume = director_->psi_volume_view();
         if (in.cloud) {
-            if (director_.take_volume_dirty()) {
+            if (director_->take_volume_dirty()) {
                 // CPU staging only: until compute init has been ATTEMPTED the
                 // 268 MB fallback texture must not be allocated (it would be
                 // orphaned and would deflate the VRAM-budget probe).
-                if (director_.compute_attempted() && !director_.gpu_ok()) {
-                    in.volume_staging = &director_.psi_staging();
+                if (director_->compute_attempted() && !director_->gpu_ok()) {
+                    in.volume_staging = &director_->psi_staging();
                 }
             }
-        } else if (director_.take_mesh_dirty()) {
-            in.mesh = &director_.mesh();
-            in.mesh_colors = &director_.colors();
+        } else if (director_->take_mesh_dirty()) {
+            in.mesh = &director_->mesh();
+            in.mesh_colors = &director_->colors();
         }
         vk_renderer_.render(in);
     }
@@ -236,80 +241,90 @@ public:
         after_control();
     }
     void set_real_time() {
-        director_.set_real_time();
+        director_->set_real_time();
         after_control();
     }
     void set_relaxing() {
-        director_.set_relaxing();
+        if (hydrogen_) hydrogen_->set_relaxing();
         after_control();
     }
     void reset_simulation() {
-        director_.reset_simulation();
+        director_->reset_simulation();
         after_control();
     }
     void measure_now() {
-        director_.measure_now();
+        director_->measure_now();
         after_control();
     }
     void measure_energy_now() {
-        director_.measure_energy_now();
+        if (hydrogen_) hydrogen_->measure_energy_now();
         update();
     }
     void toggle_view_mode() {
-        director_.toggle_view_mode();
+        director_->toggle_view_mode();
         after_control();
     }
     void relax_to_excited() {
-        director_.relax_to_excited();
+        if (hydrogen_) hydrogen_->relax_to_excited();
         after_control();
     }
     void relax_to_2s() {
-        director_.relax_to_2s();
+        if (hydrogen_) hydrogen_->relax_to_2s();
         after_control();
     }
     void toggle_decay() {
-        director_.toggle_decay();
+        if (hydrogen_) hydrogen_->toggle_decay();
         after_control();
     }
     void excite_n3() {
-        director_.excite_n3();
+        if (hydrogen_) hydrogen_->excite_n3();
         after_control();
     }
     void toggle_laser() {
-        director_.toggle_laser();
+        if (hydrogen_) hydrogen_->toggle_laser();
         after_control();
     }
     void set_efield_e0(double e0) {
-        director_.set_efield_e0(e0);
+        if (hydrogen_) hydrogen_->set_efield_e0(e0);
         after_control();
     }
     void set_bfield_b(double b) {
-        director_.set_bfield_b(b);
+        if (hydrogen_) hydrogen_->set_bfield_b(b);
         after_control();
     }
     void toggle_bfield_axis() {
-        director_.toggle_bfield_axis();
+        if (hydrogen_) hydrogen_->toggle_bfield_axis();
         after_control();
     }
-    int bfield_axis() const { return director_.bfield_axis(); }
+    int bfield_axis() const { return hydrogen_ ? hydrogen_->bfield_axis() : 2; }
 
     // Selftest / verification hooks: pure passthroughs (camera is the one
     // piece of state the shell owns itself).
-    double channel_a(int from, int to) const { return director_.channel_a(from, to); }
-    bool solving() const { return director_.solving(); }
-    bool manifold_ready() const { return director_.manifold_ready(); }
-    double state_energy(int idx) const { return director_.state_energy(idx); }
-    long long photon_count() const { return director_.photon_count(); }
-    int last_measured_index() const { return director_.last_measured_index(); }
-    double mean_z() { return director_.mean_z(); }
+    double channel_a(int from, int to) const {
+        return hydrogen_ ? hydrogen_->channel_a(from, to) : 0.0;
+    }
+    bool solving() const { return director_->solving(); }
+    bool manifold_ready() const { return director_->scene_ready(); }
+    double state_energy(int idx) const {
+        return hydrogen_ ? hydrogen_->state_energy(idx) : 0.0;
+    }
+    long long photon_count() const {
+        return hydrogen_ ? hydrogen_->photon_count() : 0;
+    }
+    int last_measured_index() const {
+        return hydrogen_ ? hydrogen_->last_measured_index() : -2;
+    }
+    double mean_z() { return hydrogen_ ? hydrogen_->mean_z() : 0.0; }
     double peak_excited_population() const {
-        return director_.peak_excited_population();
+        return hydrogen_ ? hydrogen_->peak_excited_population() : 0.0;
     }
     void debug_prepare_state(int idx) {
-        director_.debug_prepare_state(idx);
+        if (hydrogen_) hydrogen_->debug_prepare_state(idx);
         after_control();
     }
-    double probe_population(int idx) { return director_.probe_population(idx); }
+    double probe_population(int idx) {
+        return hydrogen_ ? hydrogen_->probe_population(idx) : 0.0;
+    }
 
     // Verification hook (--dump-frame-near): an interior camera (< ~80)
     // exercises the volume proxy's front-face culling.
@@ -325,63 +340,63 @@ protected:
     }
 
     void refresh_title() {
-        window()->setWindowTitle(QString::fromStdString(director_.title_text()));
+        window()->setWindowTitle(QString::fromStdString(director_->title_text()));
     }
 
+    // Generic keys live here; everything else is offered to the scenario as
+    // a plain ASCII key (hydrogen: 2/3/4/5/D/E/L).
     void keyPressEvent(QKeyEvent* e) override {
         switch (e->key()) {
             case Qt::Key_Space:
                 toggle_pause();
-                break;
+                return;
             case Qt::Key_1:
                 set_real_time();
-                break;
-            case Qt::Key_2:
-                set_relaxing();
-                break;
-            case Qt::Key_3:
-                relax_to_excited();
-                break;
-            case Qt::Key_4:
-                relax_to_2s();
-                break;
-            case Qt::Key_5:
-                excite_n3();
-                break;
+                return;
             case Qt::Key_R:
                 reset_simulation();
-                break;
+                return;
             case Qt::Key_M:
                 measure_now();
-                break;
-            case Qt::Key_E:
-                measure_energy_now();
-                break;
-            case Qt::Key_D:
-                toggle_decay();
-                break;
+                return;
             case Qt::Key_F:
                 // Probability-current flow particles (Bohmian tracers).
                 flow_on_ = !flow_on_;
                 update();
-                break;
-            case Qt::Key_L:
-                toggle_laser();
-                break;
+                return;
             case Qt::Key_Tab:
                 toggle_view_mode();
-                break;
+                return;
             case Qt::Key_BracketLeft:
                 absorbance_ = std::max(0.1, absorbance_ / 1.3);
                 after_control();
-                break;
+                return;
             case Qt::Key_BracketRight:
                 absorbance_ = std::min(50.0, absorbance_ * 1.3);
                 after_control();
-                break;
-            default:
-                QRhiWidget::keyPressEvent(e);
                 return;
+            default:
+                break;
+        }
+        const int k = e->key();
+        const char ch =
+            (k >= Qt::Key_0 && k <= Qt::Key_9)
+                ? static_cast<char>('0' + (k - Qt::Key_0))
+                : (k >= Qt::Key_A && k <= Qt::Key_Z)
+                      ? static_cast<char>('A' + (k - Qt::Key_A))
+                      : '\0';
+        if (ch != '\0' && director_->handle_key(ch)) {
+            after_control();
+            return;
+        }
+        QRhiWidget::keyPressEvent(e);
+    }
+
+public:
+    // Toolbar entry point: feed a scenario key as if typed.
+    void press(char ch) {
+        if (director_->handle_key(ch)) {
+            after_control();
         }
     }
 
@@ -390,8 +405,8 @@ private:
         if (paused_) {
             return;
         }
-        director_.tick();
-        if (director_.take_title_dirty()) {
+        director_->tick();
+        if (director_->take_title_dirty()) {
             refresh_title();
         }
         update();
@@ -404,9 +419,13 @@ private:
     ses_vk::SceneRenderer vk_renderer_;  // the whole scene, framework-free
     bool vk_renderer_ready_ = false;
 
-    // The whole demo, Qt-free (sim_director.hpp). Declared after the device
-    // context (the engine's buffers die before the allocator).
-    ses_shell::SimDirector director_;
+    // The scenario (scenario.hpp, chosen in main by --scene=): everything
+    // the demo IS, Qt-free. Declared after the device context (the engine's
+    // buffers die before the allocator). hydrogen_ is the narrow view the
+    // hydrogen-only wrappers (toolbar + selftest arcs) delegate through;
+    // null for other scenes, where those wrappers no-op.
+    std::unique_ptr<ses_shell::ScenarioDirector> director_;
+    ses_shell::HydrogenDirector* hydrogen_ = nullptr;
     ses_shell::BlitPresenter blit_;
     QRhi* rhi_ = nullptr;             // the widget's QRhi, cached in initialize()
     bool rhi_ready_ = false;          // render resources built
@@ -443,14 +462,32 @@ int main(int argc, char** argv) {
     // smooths cube edges; QRhiWidget's sampleCount default (1) already fits.
     QApplication app(argc, argv);
 
+    // Scenario selection (--scene=hydrogen|...); the selftest arcs all drive
+    // the hydrogen scene, which is also the default.
+    QString scene = QStringLiteral("hydrogen");
+    for (const QString& a : app.arguments()) {
+        if (a.startsWith(QStringLiteral("--scene="))) {
+            scene = a.mid(8);
+        }
+    }
+    std::unique_ptr<ses_shell::ScenarioDirector> director;
+    if (scene != QStringLiteral("hydrogen")) {
+        std::fprintf(stderr, "scene: unknown '%s' -- using hydrogen\n",
+                     qPrintable(scene));
+        scene = QStringLiteral("hydrogen");
+    }
+    director = std::make_unique<ses_shell::HydrogenDirector>();
+
     QMainWindow window;
     window.setWindowTitle(QStringLiteral("Electron wavepacket near a hydrogen nucleus"));
-    auto* viewport = new Viewport();
+    auto* viewport = new Viewport(std::move(director));
     window.setCentralWidget(viewport);
 
     // Discoverable controls (shell_ui.hpp): toolbar buttons mirroring the
     // hotkeys + the two field sliders, all Qt::NoFocus so the keys stay live.
-    ses_shell::build_control_bar(window, viewport);
+    if (scene == QStringLiteral("hydrogen")) {
+        ses_shell::build_control_bar(window, viewport);
+    }
 
     window.resize(1024, 768);
     window.show();
