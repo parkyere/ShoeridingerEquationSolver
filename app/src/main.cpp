@@ -16,6 +16,7 @@
 
 #include "harmonic_director.hpp"
 #include "hydrogen_director.hpp"
+#include "tunneling_director.hpp"
 #include "qt_blit.hpp"
 #include "selftest_arcs.hpp"
 #include "shell_ui.hpp"
@@ -58,6 +59,7 @@ public:
                       QWidget* parent = nullptr)
         : QRhiWidget(parent), director_(std::move(director)) {
         hydrogen_ = dynamic_cast<ses_shell::HydrogenDirector*>(director_.get());
+        tunneling_ = dynamic_cast<ses_shell::TunnelingDirector*>(director_.get());
         distance_ = director_->default_camera_distance();
         setApi(QRhiWidget::Api::Vulkan);  // before the widget is first backed
         setFocusPolicy(Qt::StrongFocus);
@@ -327,6 +329,9 @@ public:
     double probe_population(int idx) {
         return hydrogen_ ? hydrogen_->probe_population(idx) : 0.0;
     }
+    double tunnel_transmitted_max() const {
+        return tunneling_ ? tunneling_->transmitted_max() : 0.0;
+    }
 
     // Verification hook (--dump-frame-near): an interior camera (< ~80)
     // exercises the volume proxy's front-face culling.
@@ -428,6 +433,7 @@ private:
     // null for other scenes, where those wrappers no-op.
     std::unique_ptr<ses_shell::ScenarioDirector> director_;
     ses_shell::HydrogenDirector* hydrogen_ = nullptr;
+    ses_shell::TunnelingDirector* tunneling_ = nullptr;
     ses_shell::BlitPresenter blit_;
     QRhi* rhi_ = nullptr;             // the widget's QRhi, cached in initialize()
     bool rhi_ready_ = false;          // render resources built
@@ -472,8 +478,13 @@ int main(int argc, char** argv) {
             scene = a.mid(8);
         }
     }
+    if (app.arguments().contains(QStringLiteral("--selftest-tunnel"))) {
+        scene = QStringLiteral("tunnel");  // the arc drives its own scene
+    }
     std::unique_ptr<ses_shell::ScenarioDirector> director;
-    if (scene == QStringLiteral("harmonic")) {
+    if (scene == QStringLiteral("tunnel")) {
+        director = std::make_unique<ses_shell::TunnelingDirector>();
+    } else if (scene == QStringLiteral("harmonic")) {
         director = std::make_unique<ses_shell::HarmonicDirector>();
     } else {
         if (scene != QStringLiteral("hydrogen")) {

@@ -268,6 +268,22 @@ void register_verification_arcs(QApplication& app, ViewportT* viewport) {
             });
         });
     }
+
+    // Tunneling arc (main forces --scene=tunnel): the packet launched at
+    // x = -30 with v = 0.5 reaches the slab at ~60 au; the transmitted lobe
+    // is fully past it well before ~150 au (~2.5 min at ~1 au/s). Assert a
+    // classically-forbidden transmitted fraction in a sane band.
+    if (app.arguments().contains(QStringLiteral("--selftest-tunnel"))) {
+        run_when_manifold_ready(viewport, [viewport, &app] {
+            QTimer::singleShot(180000, viewport, [viewport, &app] {
+                const double t = viewport->tunnel_transmitted_max();
+                const bool pass = t > 1e-3 && t < 0.9;
+                std::fprintf(stderr, "selftest-tunnel: max T = %.4f  [%s]\n", t,
+                             pass ? "PASS" : "FAIL");
+                app.exit(pass ? 0 : 1);
+            });
+        });
+    }
 }
 
 }  // namespace ses_shell
