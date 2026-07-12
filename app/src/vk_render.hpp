@@ -147,6 +147,7 @@ public:
         destroy_target();
         width_ = w;
         height_ = h;
+        accum_frames_ = 0;  // fresh targets: the early-out must not hold
         return create_target();
     }
 
@@ -162,6 +163,19 @@ public:
     bool render(const FrameInput& in) {
         if (fb_ == VK_NULL_HANDLE) {
             return false;
+        }
+        // Converged early-out: once the temporal accumulation saturates
+        // (accum.comp caps the running mean at kAccumCap samples) a static
+        // scene's composed output cannot change -- skip the whole submission
+        // and let the blit keep sampling the finished present image.
+        if (in.accumulate) {
+            if (accum_frames_ >= kAccumCap && in.volume_staging == nullptr &&
+                in.mesh == nullptr) {
+                return true;
+            }
+            ++accum_frames_;
+        } else {
+            accum_frames_ = 0;
         }
         update_ubos(in);
         if (in.volume_staging != nullptr) {
@@ -1744,6 +1758,9 @@ private:
     VkDescriptorSet shadow_set_ = VK_NULL_HANDLE;
     VkSampler samp_nearest_ = VK_NULL_HANDLE;
     bool aux_valid_ = false;
+    // Converged-frame counter (mirrors accum.comp's sample cap).
+    static constexpr int kAccumCap = 512;
+    int accum_frames_ = 0;
 
     Kernel particles_k_;
     DslHolder flow_dsl_holder_;
