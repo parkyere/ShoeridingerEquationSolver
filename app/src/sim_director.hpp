@@ -77,8 +77,8 @@ constexpr int kAtlasPairsPerFrame = 4;  // dipole pairs evaluated per paint
 inline ses::WavepacketSimulation make_simulation() {
     // +-80 Bohr / 256^3 (power-of-two FFT): holds the n <= 6 shell; no
     // resident atlas. This Gaussian is only the pre-solve placeholder and
-    // the no-GPU fallback: the GPU path replaces it with a random n = 5
-    // shell superposition at the atlas finale (seed_n5_superposition) --
+    // the no-GPU fallback: the GPU path replaces it with a random bound
+    // n <= 5 superposition at the atlas finale (seed_bound_superposition) --
     // a free packet, unlike a bound superposition, leaks past the box.
     const ses::Grid1D axis{-80.0, 80.0, 256};
     const ses::Grid3D grid{axis, axis, axis};
@@ -359,7 +359,7 @@ public:
         gpu_time_ = 0.0;
         pending_gpu_steps_ = 0;
         if (gpu_ok_ && manifold_ready() && mode_ == ViewMode::Cloud) {
-            seed_n5_superposition();  // a fresh random draw each reset
+            seed_bound_superposition();  // a fresh random draw each reset
         }
         stage_active_view();
     }
@@ -983,27 +983,26 @@ private:
                 // -> ~1.2 GB runtime, 512^3 feasible).
                 atom_.release_pair_cache(engine_);
                 atlas_done_ = true;
-                seed_n5_superposition();  // the demo starts bound, in-shell
+                seed_bound_superposition();  // the demo starts bound
                 title_dirty_ = true;
             }
         }
     }
 
-    // Seed psi with a random complex superposition of the n = 5 shell
-    // ([k5S, k6S), 25 bound states): contained by construction -- zero
-    // continuum component, so nothing can leave the box (a free packet
-    // could). The shell is near-degenerate, so the density is quasi-static
-    // and the visible dynamics is the decay cascade.
-    void seed_n5_superposition() {
+    // Seed psi with a random complex superposition of the WHOLE n <= 5
+    // manifold ([0, k6S), 55 bound states): contained by construction --
+    // zero continuum component, so nothing can leave the box (a free packet
+    // could). Cross-shell beats make the density genuinely evolve (fastest:
+    // 1s-2p at T = 2 pi / 0.375 ~ 17 au); renormalized to 1 on the GPU.
+    void seed_bound_superposition() {
         if (!gpu_ok_ || !atom_.radial_ready()) {
             cpu_is_truth_ = true;  // fallback: resume the CPU packet
             return;
         }
         // Complex-Gaussian coefficients = uniform on the state sphere after
         // the final renormalization; c[0]'s phase is folded out (global).
-        constexpr int kShell = k6S - k5S;
         std::normal_distribution<double> gauss(0.0, 1.0);
-        std::array<ses::Complex<double>, kShell> c{};
+        std::array<ses::Complex<double>, k6S> c{};
         for (auto& z : c) {
             z = ses::Complex<double>{gauss(rng_), gauss(rng_)};
         }
@@ -1015,7 +1014,7 @@ private:
                 z = z * rot;  // c[0] is now real >= 0
             }
         }
-        int buf = atom_.synth_transient(engine_, k5S);
+        int buf = atom_.synth_transient(engine_, 0);
         if (buf < 0) {
             cpu_is_truth_ = true;
             return;
@@ -1023,13 +1022,12 @@ private:
         engine_.copy_into_psi(buf);
         engine_.release_state(buf);
         engine_.scale(static_cast<float>(c[0].real()));
-        for (int s = k5S + 1; s < k6S; ++s) {
+        for (int s = 1; s < k6S; ++s) {
             buf = atom_.synth_transient(engine_, s);
             if (buf < 0) {
-                continue;  // shell member missing: superpose the rest
+                continue;  // member missing: superpose the rest
             }
-            engine_.add_state_into_psi(buf, c[s - k5S].real(),
-                                       c[s - k5S].imag());
+            engine_.add_state_into_psi(buf, c[s].real(), c[s].imag());
             engine_.release_state(buf);
         }
         const ses_vk::Engine::NormPeak np = engine_.norm_and_peak();
