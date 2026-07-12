@@ -1,12 +1,12 @@
 #version 450
 
 // Copy the psi SSBO into the 3D volume texture the renderer samples, one
-// texel per grid cell. The volume is RGBA32F; psi lands in .xy (.zw = 0).
+// texel per grid cell. The volume is RG32F (re, im).
 // psi in (binding 0), image3D out (binding 1), grid dims UBO (binding 2).
 layout(local_size_x = 256) in;
 
 layout(std430, binding = 0) readonly buffer PsiBuf { vec2 psi[]; };
-layout(rgba32f, binding = 1) uniform writeonly image3D img;
+layout(rg32f, binding = 1) uniform writeonly image3D img;
 layout(std140, binding = 2) uniform Params { int nx; int ny; int nz; };
 
 void main() {

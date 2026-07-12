@@ -1867,7 +1867,7 @@ bool check_engine_fp16_consumers(ses_vk::DeviceContext& ctx) {
     return pass;
 }
 
-// SSBO -> 3D volume image bridge: copy psi into the RGBA32F volume via
+// SSBO -> 3D volume image bridge: copy psi into the RG32F volume via
 // imageStore, read it back through an SSBO (imageLoad). A store->load
 // round-trip that reproduces psi bit-for-bit proves imageStore wrote exactly
 // the SSBO contents. The volume is a raw VkImage the render shell can

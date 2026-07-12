@@ -1501,31 +1501,23 @@ private:
         return ok;
     }
 
-    // CPU staging path (GPU engine unavailable): RG -> RGBA texels, whole
-    // volume in one buffer-to-image copy.
+    // CPU staging path (GPU engine unavailable): the RG staging IS the texel
+    // layout, whole volume in one buffer-to-image copy.
     void upload_fallback_volume(const std::vector<float>& psi_staging) {
         const std::uint32_t nx = static_cast<std::uint32_t>(grid_.x.n);
         const std::uint32_t ny = static_cast<std::uint32_t>(grid_.y.n);
         const std::uint32_t nz = static_cast<std::uint32_t>(grid_.z.n);
         bool first = false;
         if (fallback_tex_.img == VK_NULL_HANDLE) {
-            if (!ctx_->create_storage_image_3d(
-                    nx, ny, nz, VK_FORMAT_R32G32B32A32_SFLOAT,
-                    &fallback_tex_)) {
+            if (!ctx_->create_storage_image_3d(nx, ny, nz,
+                                               VK_FORMAT_R32G32_SFLOAT,
+                                               &fallback_tex_)) {
                 return;
             }
             first = true;
         }
-        const std::size_t cells = static_cast<std::size_t>(grid_.size());
-        std::vector<float> rgba(4 * cells);
-        for (std::size_t i = 0; i < cells; ++i) {
-            rgba[4 * i + 0] = psi_staging[2 * i];
-            rgba[4 * i + 1] = psi_staging[2 * i + 1];
-            rgba[4 * i + 2] = 0.0f;
-            rgba[4 * i + 3] = 0.0f;
-        }
-        upload_image(fallback_tex_.img, rgba.data(),
-                     rgba.size() * sizeof(float), {nx, ny, nz}, first);
+        upload_image(fallback_tex_.img, psi_staging.data(),
+                     psi_staging.size() * sizeof(float), {nx, ny, nz}, first);
     }
 
     // Point the psi bindings (raymarch, particle advection, sprite color)

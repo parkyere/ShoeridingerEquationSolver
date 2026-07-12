@@ -668,7 +668,7 @@ public:
     }
 
     // ---- SSBO -> 3D volume texture bridge (the renderer feed) -----------
-    // The RGBA32F volume the renderer samples (psi in .xy). Created lazily;
+    // The RG32F volume the renderer samples (re, im). Created lazily;
     // the renderer consumes volume_view() directly (FrameInput::psi_volume).
     VkImage volume_image() {
         return ensure_volume() ? volume_.img : VK_NULL_HANDLE;
@@ -701,7 +701,7 @@ public:
     }
 
     // psi -> volume -> scratch SSBO -> host; bit-exact iff imageStore/
-    // imageLoad round-trip the RGBA32F texel .xy losslessly (check only).
+    // imageLoad round-trip the RG32F texel losslessly (check only).
     bool bridge_roundtrip(std::vector<float>& out) {
         if (!write_psi_to_volume()) {
             return false;
@@ -1542,7 +1542,7 @@ private:
         return np;
     }
 
-    // Lazily create the RGBA32F volume + the store side of the bridge: one
+    // Lazily create the RG32F volume + the store side of the bridge: one
     // submission transitions UNDEFINED -> GENERAL for the compute stores
     // (write_psi_to_volume owns the GENERAL <-> SHADER_READ_ONLY round-trip
     // from then on).
@@ -1552,7 +1552,7 @@ private:
         }
         if (!ctx_->create_storage_image_3d(
                 static_cast<std::uint32_t>(n_), static_cast<std::uint32_t>(n_),
-                static_cast<std::uint32_t>(n_), VK_FORMAT_R32G32B32A32_SFLOAT,
+                static_cast<std::uint32_t>(n_), VK_FORMAT_R32G32_SFLOAT,
                 &volume_)) {
             return false;
         }
