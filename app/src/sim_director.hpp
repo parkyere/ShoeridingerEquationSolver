@@ -59,6 +59,7 @@ constexpr double kMeasureSigma = 1.25;  // Bohr; sigma keeps the measurement
 // ~1e8 au. The title reports the true lifetime and the acceleration factor.
 constexpr double kDecayGammaDisplay = 0.125;
 constexpr double kHaToEv = 27.211386;  // 1 Hartree in eV
+constexpr double kAuToFs = 2.4188843e-2;  // 1 au of time in femtoseconds
 constexpr double kAbsorbWidth = 10.0;  // Bohr; boundary absorber layer
                                        // (interior +-70 untouched; real-time only)
 // Laser: E0 = kRabiTargetOmega / |<2p|z|1s>| (target Rabi frequency over the
@@ -592,8 +593,9 @@ public:
     std::string title_text() {
         // While relaxing: exact <H> on the CPU session, or the free ITP
         // estimator on the GPU path.
+        const double t_au = sim_.time() + gpu_time_;
         std::string s = "Electron near a hydrogen nucleus   t = " +
-                        strf("%.2f", sim_.time() + gpu_time_) + "   ";
+                        strf("%.2f au (%.3f fs)", t_au, t_au * kAuToFs) + "   ";
         if (stepping_ != Stepping::RealTime) {
             s += cpu_is_truth_
                      ? strf("E = %.3f eV   ",
