@@ -75,16 +75,19 @@ constexpr int kAtlasPairsPerFrame = 4;  // dipole pairs evaluated per paint
 // Hamiltonian; the s-state cusp gap shows up in the startup h-audit.
 inline ses::WavepacketSimulation make_simulation() {
     // +-80 Bohr / 256^3 (power-of-two FFT): holds the n <= 6 shell; no
-    // resident atlas.
+    // resident atlas. The packet is the n = 5 circular Kepler orbit
+    // (r0 = n^2, k = 1/n tangential -> L = 5, E ~ -1/(2 n^2)): it populates
+    // the UPPER half of the tracked manifold, orbits at T = 2 pi n^3, and
+    // its decay cascade exercises the m-resolved channel table.
     const ses::Grid1D axis{-80.0, 80.0, 256};
     const ses::Grid3D grid{axis, axis, axis};
     return ses::WavepacketSimulation{ses::WavepacketSimulation::Config{
         grid,
         ses::regularized_coulomb_potential(grid, 1.0, ses::Vec3d{}),
-        ses::Vec3d{3.0, 0.0, 0.0},  // r0: beside the nucleus
-        ses::Vec3d{1.5, 1.5, 1.5},  // sigma
-        ses::Vec3d{0.0, 0.4, 0.0},  // k0: tangential kick
-        0.04,                       // dt
+        ses::Vec3d{25.0, 0.0, 0.0},  // r0: the n = 5 orbit radius (n^2)
+        ses::Vec3d{8.0, 8.0, 8.0},   // sigma: >~ n keeps confinement energy small
+        ses::Vec3d{0.0, 0.2, 0.0},   // k0: tangential, 1/n
+        0.04,                        // dt
     }};
 }
 
