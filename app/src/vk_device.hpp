@@ -370,6 +370,15 @@ struct DeviceContext {
         if (device != VK_NULL_HANDLE) {
             vkDeviceWaitIdle(device);
         }
+        if (oneshot_fence != VK_NULL_HANDLE) {
+            vkDestroyFence(device, oneshot_fence, nullptr);
+            oneshot_fence = VK_NULL_HANDLE;
+        }
+        if (oneshot_pool != VK_NULL_HANDLE) {
+            vkDestroyCommandPool(device, oneshot_pool, nullptr);
+            oneshot_pool = VK_NULL_HANDLE;
+            oneshot_cb = VK_NULL_HANDLE;
+        }
         if (allocator != VK_NULL_HANDLE) {
             vmaDestroyAllocator(allocator);
             allocator = VK_NULL_HANDLE;
@@ -394,6 +403,12 @@ struct DeviceContext {
             instance = VK_NULL_HANDLE;
         }
     }
+
+    // The OneShot scratch set (vk_compute.hpp): one persistent transient
+    // pool + primary cb + fence, reset per submission.
+    VkCommandPool oneshot_pool = VK_NULL_HANDLE;
+    VkCommandBuffer oneshot_cb = VK_NULL_HANDLE;
+    VkFence oneshot_fence = VK_NULL_HANDLE;
 
 private:
     bool owns_device_ = true;

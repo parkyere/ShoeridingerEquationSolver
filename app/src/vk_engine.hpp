@@ -674,7 +674,12 @@ public:
                 vkCmdDispatch(cb, mul_groups_, 1, 1);
             }
         }
-        if (bridge && ensure_volume()) {
+        // store_set_ (not ensure_volume): lazy creation submits its own
+        // OneShot, which must never run while THIS cb is recording (the
+        // shared OneShot pool would be reset under it). The first bridge
+        // always goes through write_psi_to_volume, which creates the volume
+        // outside any recording.
+        if (bridge && store_set_ != VK_NULL_HANDLE) {
             barrier_compute_to_compute(cb);
             transition_volume(cb, VK_IMAGE_LAYOUT_GENERAL);
             bridge_store_.bind(cb, store_set_);
