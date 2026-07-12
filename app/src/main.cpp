@@ -14,10 +14,11 @@
 // vulkan.h inclusion before any Qt header pulls its own Vulkan integration.
 #include "vk_blobs.hpp"
 
+#include "harmonic_director.hpp"
+#include "hydrogen_director.hpp"
 #include "qt_blit.hpp"
 #include "selftest_arcs.hpp"
 #include "shell_ui.hpp"
-#include "hydrogen_director.hpp"
 #include "vram_probe.hpp"
 
 #include <QApplication>
@@ -57,6 +58,7 @@ public:
                       QWidget* parent = nullptr)
         : QRhiWidget(parent), director_(std::move(director)) {
         hydrogen_ = dynamic_cast<ses_shell::HydrogenDirector*>(director_.get());
+        distance_ = director_->default_camera_distance();
         setApi(QRhiWidget::Api::Vulkan);  // before the widget is first backed
         setFocusPolicy(Qt::StrongFocus);
         connect(&timer_, &QTimer::timeout, this, &Viewport::tick);
@@ -471,12 +473,16 @@ int main(int argc, char** argv) {
         }
     }
     std::unique_ptr<ses_shell::ScenarioDirector> director;
-    if (scene != QStringLiteral("hydrogen")) {
-        std::fprintf(stderr, "scene: unknown '%s' -- using hydrogen\n",
-                     qPrintable(scene));
-        scene = QStringLiteral("hydrogen");
+    if (scene == QStringLiteral("harmonic")) {
+        director = std::make_unique<ses_shell::HarmonicDirector>();
+    } else {
+        if (scene != QStringLiteral("hydrogen")) {
+            std::fprintf(stderr, "scene: unknown '%s' -- using hydrogen\n",
+                         qPrintable(scene));
+            scene = QStringLiteral("hydrogen");
+        }
+        director = std::make_unique<ses_shell::HydrogenDirector>();
     }
-    director = std::make_unique<ses_shell::HydrogenDirector>();
 
     QMainWindow window;
     window.setWindowTitle(QStringLiteral("Electron wavepacket near a hydrogen nucleus"));
@@ -484,9 +490,13 @@ int main(int argc, char** argv) {
     window.setCentralWidget(viewport);
 
     // Discoverable controls (shell_ui.hpp): toolbar buttons mirroring the
-    // hotkeys + the two field sliders, all Qt::NoFocus so the keys stay live.
+    // hotkeys, all Qt::NoFocus so the keys stay live.
     if (scene == QStringLiteral("hydrogen")) {
         ses_shell::build_control_bar(window, viewport);
+    } else {
+        ses_shell::build_generic_bar(
+            window, viewport,
+            {qMakePair(QStringLiteral("Relax to ground (2)"), '2')});
     }
 
     window.resize(1024, 768);

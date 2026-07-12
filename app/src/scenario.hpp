@@ -45,6 +45,9 @@ public:
     virtual bool solving() const = 0;      // startup solve owns the GPU state
     virtual bool scene_ready() const = 0;  // demo fully armed (selftest gate)
 
+    // Camera start distance framing this scene's box (Bohr).
+    virtual double default_camera_distance() const { return 150.0; }
+
     // ---- display accessors (FrameInput assembly + title) ----
     virtual bool cloud() const = 0;
     virtual double peak() const = 0;

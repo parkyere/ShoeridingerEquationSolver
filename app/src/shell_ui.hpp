@@ -8,9 +8,12 @@
 #include <QLabel>
 #include <QMainWindow>
 #include <QObject>
+#include <QPair>
 #include <QSlider>
 #include <QString>
 #include <QToolBar>
+
+#include <initializer_list>
 
 namespace ses_shell {
 
@@ -103,6 +106,31 @@ void build_control_bar(QMainWindow& window, ViewportT* viewport) {
     }
     controls->addSeparator();
     controls->addAction(QStringLiteral("Reset packet (R)"), viewport,
+                        [viewport] { viewport->reset_simulation(); });
+    controls->addAction(QStringLiteral("Cloud/Surface (Tab)"), viewport,
+                        [viewport] { viewport->toggle_view_mode(); });
+    controls->addAction(QStringLiteral("Pause (Space)"), viewport,
+                        [viewport] { viewport->toggle_pause(); });
+}
+
+// The generic bar for non-hydrogen scenes: the shared controls plus any
+// scenario keys, fed through Viewport::press.
+template <typename ViewportT>
+void build_generic_bar(QMainWindow& window, ViewportT* viewport,
+                       std::initializer_list<QPair<QString, char>> scene_keys) {
+    QToolBar* controls = window.addToolBar(QStringLiteral("Controls"));
+    controls->setMovable(false);
+    controls->addAction(QStringLiteral("Real time (1)"), viewport,
+                        [viewport] { viewport->set_real_time(); });
+    for (const auto& k : scene_keys) {
+        const char ch = k.second;
+        controls->addAction(k.first, viewport,
+                            [viewport, ch] { viewport->press(ch); });
+    }
+    controls->addAction(QStringLiteral("Measure (M)"), viewport,
+                        [viewport] { viewport->measure_now(); });
+    controls->addSeparator();
+    controls->addAction(QStringLiteral("Reset (R)"), viewport,
                         [viewport] { viewport->reset_simulation(); });
     controls->addAction(QStringLiteral("Cloud/Surface (Tab)"), viewport,
                         [viewport] { viewport->toggle_view_mode(); });
