@@ -35,7 +35,7 @@ enum class BaseViewMode { Cloud, Surface };
 enum class BaseStepping { RealTime, Relaxing };
 
 constexpr int kBaseStepsPerTick = 1;
-constexpr int kBaseMaxPendingSteps = 8;  // backlog cap, same rationale as hydrogen
+constexpr int kBaseMaxPendingSteps = 4;  // backlog cap, same rationale as hydrogen
 constexpr int kBaseRelaxStepsPerTick = 1;
 constexpr double kBaseRelaxDtau = 0.05;
 constexpr double kBaseIsoFraction = 0.25;

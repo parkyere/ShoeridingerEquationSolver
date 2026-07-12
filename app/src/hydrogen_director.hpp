@@ -44,9 +44,10 @@ enum class LaserPol { Off, Z, X };
 
 constexpr int kStepsPerTick = 1;
 // Backlog cap: a stalled paint cannot spiral (time is credited at execution,
-// dropped ticks drop cleanly). The GPU saturates at ~26 steps/s at 256^3, so
-// raising the cap only lengthens the per-paint block; 8 keeps paints ~300 ms.
-constexpr int kMaxPendingGpuSteps = 8;
+// dropped ticks drop cleanly). The cap does NOT set the sim rate (measured:
+// 8 vs 32 gave the same au/s) -- only the per-paint block length, i.e. the
+// UI freeze. 4 halves the freeze of the old 8 at zero throughput cost.
+constexpr int kMaxPendingGpuSteps = 4;
 constexpr int kRelaxStepsPerTick = 1;
 constexpr double kRelaxDtau = 0.05;
 constexpr double kIsoFraction = 0.25;
