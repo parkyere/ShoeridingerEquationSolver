@@ -15,6 +15,19 @@
 
 #include <gtest/gtest.h>
 
+// C++20 makes std::complex ARITHMETIC constexpr, and MSVC and GCC constant-
+// evaluate it. Clang (even 22) cannot constant-fold libstdc++'s
+// __complex__-based compound assignments (a long-standing clang/libstdc++
+// gap; libc++ is fine), so on that one combination the SAME expressions and
+// value pins run at runtime only -- the arithmetic contract is unchanged,
+// only the compile-time-evaluability pin is narrowed to where it holds.
+// (Construction/conj/norm_sq stay constexpr everywhere.)
+#if defined(__clang__) && defined(__GLIBCXX__)
+#define SES_COMPLEX_ARITH_CONSTEXPR const
+#else
+#define SES_COMPLEX_ARITH_CONSTEXPR constexpr
+#endif
+
 namespace {
 
 using Cd = ses::Complex<double>;
@@ -32,34 +45,34 @@ TEST(Complex, AggregateConstruction) {
 }
 
 TEST(Complex, Addition) {
-    constexpr Cd s = Cd{1.0, 2.0} + Cd{3.0, -5.0};
+    SES_COMPLEX_ARITH_CONSTEXPR Cd s = Cd{1.0, 2.0} + Cd{3.0, -5.0};
     EXPECT_EQ(s.real(), 4.0);
     EXPECT_EQ(s.imag(), -3.0);
 }
 
 TEST(Complex, Subtraction) {
-    constexpr Cd d = Cd{1.0, 2.0} - Cd{3.0, -5.0};
+    SES_COMPLEX_ARITH_CONSTEXPR Cd d = Cd{1.0, 2.0} - Cd{3.0, -5.0};
     EXPECT_EQ(d.real(), -2.0);
     EXPECT_EQ(d.imag(), 7.0);
 }
 
 TEST(Complex, MultiplicationSatisfiesISquaredEqualsMinusOne) {
     constexpr Cd i{0.0, 1.0};
-    constexpr Cd ii = i * i;
+    SES_COMPLEX_ARITH_CONSTEXPR Cd ii = i * i;
     EXPECT_EQ(ii.real(), -1.0);
     EXPECT_EQ(ii.imag(), 0.0);
 }
 
 TEST(Complex, MultiplicationGeneralCase) {
     // (1+2i)(3+4i) = 3 + 4i + 6i + 8i^2 = -5 + 10i
-    constexpr Cd p = Cd{1.0, 2.0} * Cd{3.0, 4.0};
+    SES_COMPLEX_ARITH_CONSTEXPR Cd p = Cd{1.0, 2.0} * Cd{3.0, 4.0};
     EXPECT_EQ(p.real(), -5.0);
     EXPECT_EQ(p.imag(), 10.0);
 }
 
 TEST(Complex, ScalarMultiplicationFromBothSides) {
-    constexpr Cd l = 2.0 * Cd{1.0, -3.0};
-    constexpr Cd r = Cd{1.0, -3.0} * 2.0;
+    SES_COMPLEX_ARITH_CONSTEXPR Cd l = 2.0 * Cd{1.0, -3.0};
+    SES_COMPLEX_ARITH_CONSTEXPR Cd r = Cd{1.0, -3.0} * 2.0;
     EXPECT_EQ(l.real(), 2.0);
     EXPECT_EQ(l.imag(), -6.0);
     EXPECT_EQ(r.real(), 2.0);
@@ -93,7 +106,7 @@ TEST(Complex, DivisionByComplex) {
 TEST(Complex, MultiplicationConjugateGivesRealNormSq) {
     // z * conj(z) must be purely real and equal |z|^2
     constexpr Cd z{3.0, -4.0};
-    constexpr Cd zz = z * conj(z);
+    SES_COMPLEX_ARITH_CONSTEXPR Cd zz = z * conj(z);
     EXPECT_EQ(zz.real(), 25.0);
     EXPECT_EQ(zz.imag(), 0.0);
 }
