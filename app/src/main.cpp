@@ -249,6 +249,15 @@ public:
                 continue;
             }
 
+            // Achieved sim rate over a ~1 s rolling window (panel readout).
+            if (now - perf_last_ms_ >= 1000) {
+                const double st = director_->sim_time();
+                perf_sim_rate_ = (st - perf_last_sim_t_) * 1000.0 /
+                                 static_cast<double>(now - perf_last_ms_);
+                perf_last_sim_t_ = st;
+                perf_last_ms_ = now;
+            }
+
             // UI + present. The scene view samples in the presenter's pass;
             // ImGui rides the same pass after the blit.
             ImGui_ImplVulkan_NewFrame();
@@ -338,6 +347,12 @@ public:
     void set_time_scale(int scale) {
         director_->set_time_scale(scale);
         refresh_status();
+    }
+    // Panel readout: achieved au/s and the 1x baseline (62.5 ticks/s x dt)
+    // it is measured against.
+    double sim_rate() const { return perf_sim_rate_; }
+    double baseline_sim_rate() const {
+        return (1000.0 / kTickMs) * director_->sim_dt();
     }
 
     // ImGui panel entry point: feed a scenario key as if typed.
@@ -616,6 +631,9 @@ private:
     ses_shell::Scheduler sched_;
     ses_shell::UiState ui_;
     std::string status_text_;
+    double perf_sim_rate_ = 0.0;     // achieved au/s, ~1 s rolling window
+    double perf_last_sim_t_ = 0.0;
+    std::uint64_t perf_last_ms_ = 0;
     bool headless_ = false;      // --selftest-*/--dump-frame: pure GPGPU,
                                  // no window/surface/swapchain/ImGui
     bool needs_render_ = false;  // --dump-frame: offscreen renders required

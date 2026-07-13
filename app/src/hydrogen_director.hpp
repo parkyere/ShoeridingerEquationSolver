@@ -313,6 +313,11 @@ public:
     }
     int time_scale() const override { return time_scale_; }
 
+    // Simulated clock for the shell's au/s readout (same expression the
+    // title and the jump log use).
+    double sim_time() const override { return sim_.time() + gpu_time_; }
+    double sim_dt() const override { return sim_.dt(); }
+
     // ---- controls (the shell's key/toolbar entry points) ----
 
     void set_real_time() override {

@@ -155,6 +155,10 @@ public:
     }
     int time_scale() const override { return time_scale_; }
 
+    // Simulated clock for the shell's au/s readout.
+    double sim_time() const override { return sim_.time() + gpu_time_; }
+    double sim_dt() const override { return sim_.dt(); }
+
     // ---- generic controls ----
 
     void set_real_time() override {

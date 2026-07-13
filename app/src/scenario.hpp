@@ -55,6 +55,11 @@ public:
     virtual void set_time_scale(int scale) { (void)scale; }
     virtual int time_scale() const { return 1; }
 
+    // Total simulated time (au) and the integrator step (au) -- the shell's
+    // performance readout derives the achieved au/s from these.
+    virtual double sim_time() const { return 0.0; }
+    virtual double sim_dt() const { return 0.0; }
+
     // ---- display accessors (FrameInput assembly + title) ----
     virtual bool cloud() const = 0;
     virtual double peak() const = 0;

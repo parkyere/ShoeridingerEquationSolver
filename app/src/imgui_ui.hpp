@@ -22,6 +22,23 @@ struct UiState {
     int time_scale = 1;     // steps-per-frame multiplier (dt untouched)
 };
 
+// Performance readout, shared by every scenario panel: rendering fps (ImGui's
+// rolling average) and the ACHIEVED simulated-time rate with its multiple of
+// the 1x baseline -- the honest counterpart of the time-scale slider (the
+// multiple saturates below the slider once the GPU runs out of headroom).
+template <typename ShellT>
+void draw_perf_readout(ShellT& shell) {
+    const double rate = shell.sim_rate();
+    const double base = shell.baseline_sim_rate();
+    ImGui::Text("%.1f fps   %.2f au/s%s", ImGui::GetIO().Framerate, rate,
+                base > 0.0 ? "" : " (warming up)");
+    if (base > 0.0) {
+        ImGui::SameLine();
+        ImGui::Text("(x%.1f)", rate / base);
+    }
+    ImGui::Separator();
+}
+
 // The visualized-time slider, shared by every scenario panel: multiplies the
 // integrator steps per rendered frame (dt and accuracy untouched); past the
 // GPU's headroom the fps drops honestly instead of skipping physics.
@@ -42,6 +59,7 @@ void draw_hydrogen_panel(ShellT& shell, UiState& ui) {
     ImGui::SetNextWindowPos(ImVec2(8, 8), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(430, 0), ImGuiCond_FirstUseEver);
     ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_NoCollapse);
+    draw_perf_readout(shell);
 
     if (ImGui::Button("Measure (M)")) shell.measure_now();
     ImGui::SameLine();
@@ -116,6 +134,7 @@ void draw_generic_panel(ShellT& shell, UiState& ui,
     ImGui::SetNextWindowPos(ImVec2(8, 8), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(430, 0), ImGuiCond_FirstUseEver);
     ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_NoCollapse);
+    draw_perf_readout(shell);
     if (ImGui::Button("Real time (1)")) shell.set_real_time();
     ImGui::SameLine();
     for (const auto& k : scene_keys) {
