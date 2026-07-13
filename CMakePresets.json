@@ -18,7 +18,7 @@
         {
             "name": "msvc-release",
             "displayName": "Windows MSVC Release (static)",
-            "description": "Windows Release build. All deps static via vcpkg x64-windows-static (static libraries + static CRT). FIRST configure builds Qt from source (slow once, then binary-cached). Bootstrap external/vcpkg/bootstrap-vcpkg.bat and configure from an MSVC vcvarsall x64 environment.",
+            "description": "Windows Release build. All deps static via vcpkg x64-windows-static (static libraries + static CRT; first configure takes minutes, then binary-cached). Bootstrap external/vcpkg/bootstrap-vcpkg.bat and configure from an MSVC vcvarsall x64 environment.",
             "inherits": "msvc-base",
             "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
         },
@@ -44,9 +44,19 @@
         {
             "name": "linux-release",
             "displayName": "Linux Release (static)",
-            "description": "Linux Release build. Deps static via vcpkg x64-linux (static libraries; glibc stays dynamic, as is standard on Linux). Portable AVX2 (bitwise-reproducible oracles). First configure builds Qt from source (slow once, then cached). Bootstrap external/vcpkg/bootstrap-vcpkg.sh first.",
+            "description": "Linux Release build. Deps static via vcpkg x64-linux (static libraries; glibc stays dynamic, as is standard on Linux). Portable AVX2 (bitwise-reproducible oracles). SDL3 needs the system X11/Wayland dev headers. Bootstrap external/vcpkg/bootstrap-vcpkg.sh first.",
             "inherits": "linux-base",
             "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+        },
+        {
+            "name": "linux-clang22",
+            "displayName": "Linux Release (LLVM clang 22)",
+            "description": "linux-release pinned to LLVM clang 22 by PATH name (clang++-22). Use where the default clang++ resolves to AOCC: its clang-17 base cannot constant-evaluate libstdc++ 15's C++20 constexpr std::complex arithmetic (complex_test fails), and this project pins portable AVX2 anyway, so AOCC's Zen tuning buys nothing here.",
+            "inherits": "linux-release",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang-22",
+                "CMAKE_CXX_COMPILER": "clang++-22"
+            }
         },
         {
             "name": "linux-debug",
@@ -60,12 +70,14 @@
         { "name": "msvc-release", "configurePreset": "msvc-release" },
         { "name": "msvc-debug", "configurePreset": "msvc-debug" },
         { "name": "linux-release", "configurePreset": "linux-release" },
+        { "name": "linux-clang22", "configurePreset": "linux-clang22" },
         { "name": "linux-debug", "configurePreset": "linux-debug" }
     ],
     "testPresets": [
         { "name": "msvc-release", "configurePreset": "msvc-release", "output": { "outputOnFailure": true } },
         { "name": "msvc-debug", "configurePreset": "msvc-debug", "output": { "outputOnFailure": true } },
         { "name": "linux-release", "configurePreset": "linux-release", "output": { "outputOnFailure": true } },
+        { "name": "linux-clang22", "configurePreset": "linux-clang22", "output": { "outputOnFailure": true } },
         { "name": "linux-debug", "configurePreset": "linux-debug", "output": { "outputOnFailure": true } }
     ]
 }

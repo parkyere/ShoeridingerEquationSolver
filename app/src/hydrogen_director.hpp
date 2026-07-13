@@ -99,7 +99,7 @@ public:
         stage_volume();
     }
 
-    const ses::Grid3D& grid() const { return sim_.grid(); }
+    const ses::Grid3D& grid() const override { return sim_.grid(); }
 
     // ---- lifecycle ----
 
@@ -107,7 +107,7 @@ public:
     // atlas precision from probed VRAM, atom solve, projection index,
     // absorber mask. Any failure falls back to CPU stepping.
     void init_compute(ses_vk::DeviceContext& ctx, bool device_ok,
-                      std::int64_t free_vram_bytes) {
+                      std::int64_t free_vram_bytes) override {
         compute_attempted_ = true;
         gpu_ok_ = device_ok &&
                   engine_.initialize(ctx, sim_.grid(),
@@ -182,7 +182,7 @@ public:
 
     // The widget's device is about to go away: tear down everything the
     // engine created on it. GPU simulation state dies with it.
-    void release_gpu() {
+    void release_gpu() override {
         engine_.destroy();
         gpu_ok_ = false;
     }
@@ -196,7 +196,7 @@ public:
     // Engine stepping, atlas build, measurement service, decay/laser trials.
     // Runs once per paint, BEFORE the widget frame (engine offscreen frames
     // are illegal mid-frame).
-    void run_frame() {
+    void run_frame() override {
         // The atlas build advances regardless of view mode: a Tab to Surface
         // during startup must not wedge solving() forever.
         if (gpu_ok_ && !atlas_done_) {
@@ -271,7 +271,7 @@ public:
     }
 
     // ---- the timer tick: accumulate work / CPU fallback stepping ----
-    void tick() {
+    void tick() override {
         if (use_gpu_path()) {
             // Steps execute in run_frame (once per paint); cap the backlog.
             // The laser demo steps hotter so a flop fits in wall seconds.
@@ -301,7 +301,7 @@ public:
 
     // ---- controls (the shell's key/toolbar entry points) ----
 
-    void set_real_time() {
+    void set_real_time() override {
         stepping_ = Stepping::RealTime;
         drop_relax_tables();
     }
@@ -339,7 +339,7 @@ public:
         }
     }
 
-    void reset_simulation() {
+    void reset_simulation() override {
         if (solving()) {
             return;  // the startup atlas build owns the GPU state
         }
@@ -361,7 +361,7 @@ public:
 
     // Soft position measurement: sample from |psi|^2 (RNG lives here; core
     // takes the uniform draw) and let the sharpened packet re-evolve.
-    void measure_now() {
+    void measure_now() override {
         if (solving()) {
             return;
         }
@@ -384,7 +384,7 @@ public:
         laser_pol_ = LaserPol::Off;
     }
 
-    void toggle_view_mode() {
+    void toggle_view_mode() override {
         if (solving()) {
             return;
         }
@@ -542,7 +542,7 @@ public:
     }
     bool scene_ready() const override { return manifold_ready(); }
 
-    bool solving() const { return gpu_ok_ && !atlas_done_; }
+    bool solving() const override { return gpu_ok_ && !atlas_done_; }
     // Ready only once the FULL table is assembled (channels_ fills
     // incrementally during the pair phase -- do not race it).
     bool manifold_ready() const { return atlas_done_ && !atom_.channels().empty(); }
@@ -579,15 +579,15 @@ public:
 
     // ---- display-facing accessors (the shell's FrameInput assembly) ----
 
-    bool cloud() const { return mode_ == ViewMode::Cloud; }
-    double peak() const { return peak_; }
-    bool compute_attempted() const { return compute_attempted_; }
-    bool gpu_ok() const { return gpu_ok_; }
+    bool cloud() const override { return mode_ == ViewMode::Cloud; }
+    double peak() const override { return peak_; }
+    bool compute_attempted() const override { return compute_attempted_; }
+    bool gpu_ok() const override { return gpu_ok_; }
     // The engine's bridge image on the GPU path; null lets the renderer fall
     // back to its CPU-staged texture.
-    VkImageView psi_volume_view() { return gpu_ok_ ? engine_.volume_view() : VK_NULL_HANDLE; }
+    VkImageView psi_volume_view() override { return gpu_ok_ ? engine_.volume_view() : VK_NULL_HANDLE; }
     // Photon flash: a brief warm background right after a quantum jump.
-    float next_flash_intensity() {
+    float next_flash_intensity() override {
         if (flash_ticks_ <= 0) {
             return 0.0f;
         }
@@ -595,36 +595,36 @@ public:
         --flash_ticks_;
         return v;
     }
-    bool take_volume_written() {
+    bool take_volume_written() override {
         const bool w = volume_written_;
         volume_written_ = false;
         return w;
     }
-    bool take_volume_dirty() {
+    bool take_volume_dirty() override {
         const bool d = volume_dirty_;
         volume_dirty_ = false;
         return d;
     }
-    bool take_mesh_dirty() {
+    bool take_mesh_dirty() override {
         const bool d = mesh_dirty_;
         mesh_dirty_ = false;
         return d;
     }
-    void mark_display_dirty() {  // shell resize / first frame
+    void mark_display_dirty() override {  // shell resize / first frame
         mesh_dirty_ = true;
         volume_dirty_ = true;
     }
-    bool take_title_dirty() {
+    bool take_title_dirty() override {
         const bool t = title_dirty_;
         title_dirty_ = false;
         return t;
     }
-    const std::vector<float>& psi_staging() const { return psi_staging_; }
-    const ses::Mesh& mesh() const { return mesh_; }
-    const std::vector<ses::Rgb>& colors() const { return colors_; }
+    const std::vector<float>& psi_staging() const override { return psi_staging_; }
+    const ses::Mesh& mesh() const override { return mesh_; }
+    const std::vector<ses::Rgb>& colors() const override { return colors_; }
 
     // The full window-title readout, composed Qt-free.
-    std::string title_text() {
+    std::string title_text() override {
         // While relaxing: exact <H> on the CPU session, or the free ITP
         // estimator on the GPU path.
         const double t_au = sim_.time() + gpu_time_;
