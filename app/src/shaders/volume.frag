@@ -2,7 +2,7 @@
 
 // Front-to-back ray-marched volume render of |psi|^2 with phase-tinted color.
 // Transcribes the TESTED core/volume.hpp formulas (ray_box slab, Beer-Lambert
-// alpha, compositing). psi is an RG32F 3D texture (re,im), colors
+// alpha, compositing). psi is an RG16F 3D texture (re,im), colors
 // from the phase LUT 1D texture. std140 UBO (binding 0, shared with the
 // vertex stage); samplers at bindings 1-4.
 layout(location = 0) in vec3 v_world;

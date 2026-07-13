@@ -1932,11 +1932,100 @@ bool check_engine_fp16_consumers(ses_vk::DeviceContext& ctx) {
     return pass;
 }
 
-// SSBO -> 3D volume image bridge: copy psi into the RG32F volume via
-// imageStore, read it back through an SSBO (imageLoad). A store->load
-// round-trip that reproduces psi bit-for-bit proves imageStore wrote exactly
-// the SSBO contents. The volume is a raw VkImage the render shell can
-// import.
+// float -> IEEE binary16 bits, round-to-nearest-even: the conversion the
+// RG16F imageStore applies. Handles subnormals/inf/nan exactly.
+std::uint16_t f32_to_f16_bits(float value) {
+    std::uint32_t f;
+    std::memcpy(&f, &value, sizeof(f));
+    const std::uint32_t sign = (f >> 16) & 0x8000u;
+    f &= 0x7fffffffu;
+    if (f > 0x7f800000u) {  // NaN
+        return static_cast<std::uint16_t>(sign | 0x7e00u);
+    }
+    if (f >= 0x47800000u) {  // overflow (incl. inf) -> inf
+        return static_cast<std::uint16_t>(sign | 0x7c00u);
+    }
+    if (f >= 0x38800000u) {  // normal half: RNE on the dropped 13 bits
+        f += 0x00000fffu + ((f >> 13) & 1u);
+        return static_cast<std::uint16_t>(sign | ((f - 0x38000000u) >> 13));
+    }
+    if (f < 0x33000000u) {  // below half of the min subnormal -> +-0
+        return static_cast<std::uint16_t>(sign);
+    }
+    // subnormal half: h_mant = RNE(mant24 * 2^(e-126)), shift in [14, 24]
+    const std::uint32_t e = f >> 23;
+    const std::uint32_t shift = 126u - e;
+    const std::uint32_t mant = (f & 0x7fffffu) | 0x800000u;
+    const std::uint32_t halfway = 1u << (shift - 1u);
+    const std::uint32_t rem = mant & ((1u << shift) - 1u);
+    std::uint32_t hm = mant >> shift;
+    if (rem > halfway || (rem == halfway && (hm & 1u) != 0u)) {
+        ++hm;  // may carry into the min-normal encoding: correct by layout
+    }
+    return static_cast<std::uint16_t>(sign | hm);
+}
+
+// Exact half -> float (every binary16 value is representable in binary32).
+float f16_bits_to_f32(std::uint16_t h) {
+    const std::uint32_t sign = static_cast<std::uint32_t>(h & 0x8000u) << 16;
+    const std::uint32_t em = h & 0x7fffu;
+    std::uint32_t f;
+    if (em >= 0x7c00u) {  // inf/nan
+        f = sign | 0x7f800000u | (static_cast<std::uint32_t>(em & 0x3ffu) << 13);
+    } else if (em >= 0x0400u) {  // normal: rebias exponent +112
+        f = sign | ((em + 0x1c000u) << 13);
+    } else if (em == 0u) {
+        f = sign;
+    } else {  // subnormal: em * 2^-24, exact in binary32
+        const float v = static_cast<float>(em) * 5.9604644775390625e-8f;
+        float r = (sign != 0u) ? -v : v;
+        return r;
+    }
+    float out;
+    std::memcpy(&out, &f, sizeof(out));
+    return out;
+}
+
+// float -> binary16 bits, round-toward-zero: the OTHER conversion Vulkan
+// permits for narrowing float stores (spec: RTE or RTZ, implementation's
+// choice). Finite overflow clamps to max finite (RTZ never makes inf).
+std::uint16_t f32_to_f16_bits_rtz(float value) {
+    std::uint32_t f;
+    std::memcpy(&f, &value, sizeof(f));
+    const std::uint32_t sign = (f >> 16) & 0x8000u;
+    f &= 0x7fffffffu;
+    if (f > 0x7f800000u) {
+        return static_cast<std::uint16_t>(sign | 0x7e00u);  // NaN
+    }
+    if (f == 0x7f800000u) {
+        return static_cast<std::uint16_t>(sign | 0x7c00u);  // inf
+    }
+    if (f >= 0x47800000u) {
+        return static_cast<std::uint16_t>(sign | 0x7bffu);  // clamp
+    }
+    if (f >= 0x38800000u) {  // normal half: truncate the 13 dropped bits
+        return static_cast<std::uint16_t>(sign | ((f - 0x38000000u) >> 13));
+    }
+    if (f < 0x33800000u) {  // below the min subnormal (2^-24) -> +-0
+        return static_cast<std::uint16_t>(sign);
+    }
+    const std::uint32_t e = f >> 23;
+    const std::uint32_t shift = 126u - e;
+    const std::uint32_t mant = (f & 0x7fffffu) | 0x800000u;
+    return static_cast<std::uint16_t>(sign | (mant >> shift));
+}
+
+// The two spec-legal RG16F imageStore quantizations of x (fp32 side).
+float f16_quantize(float x) { return f16_bits_to_f32(f32_to_f16_bits(x)); }
+float f16_quantize_rtz(float x) {
+    return f16_bits_to_f32(f32_to_f16_bits_rtz(x));
+}
+
+// SSBO -> 3D volume image bridge: copy psi into the RG16F volume via
+// imageStore, read it back through an SSBO (imageLoad). The store quantizes
+// to fp16 (display-only precision), so the oracle is the CPU-side fp16
+// round-to-nearest of psi -- the round-trip must reproduce THAT bit-for-bit.
+// The volume is a raw VkImage the render shell can import.
 bool check_engine_bridge(ses_vk::DeviceContext& ctx) {
     const ses::Grid1D axis{-4.0, 4.0, 8};
     const ses::Grid3D g{axis, axis, axis};
@@ -1960,15 +2049,36 @@ bool check_engine_bridge(ses_vk::DeviceContext& ctx) {
         std::printf("bridge (raw Vulkan): roundtrip FAIL\n");
         return false;
     }
-    double max_err = 0.0;
+    // Oracle: every texel must be bitwise one of the two SPEC-LEGAL fp16
+    // quantizations of psi (Vulkan allows RTE or RTZ for narrowing stores).
+    // Counts identify what this implementation actually does.
+    auto bits = [](float x) {
+        std::uint32_t b;
+        std::memcpy(&b, &x, sizeof(b));
+        return b;
+    };
+    std::size_t n_illegal = 0;
+    std::size_t n_rtz_only = 0;  // matched RTZ where RTE differed
+    double max_quant = 0.0;      // RNE quantization scale, for the record
     for (std::size_t i = 0; i < psi_ref.size(); ++i) {
-        max_err = std::max(
-            max_err, static_cast<double>(std::abs(roundtrip[i] - psi_ref[i])));
+        const float rte = f16_quantize(psi_ref[i]);
+        const float rtz = f16_quantize_rtz(psi_ref[i]);
+        const std::uint32_t got = bits(roundtrip[i]);
+        const bool is_rte = got == bits(rte);
+        const bool is_rtz = got == bits(rtz);
+        if (!is_rte && !is_rtz) {
+            ++n_illegal;
+        } else if (is_rtz && !is_rte) {
+            ++n_rtz_only;
+        }
+        max_quant = std::max(
+            max_quant, static_cast<double>(std::abs(rte - psi_ref[i])));
     }
-    const bool pass = max_err == 0.0;  // pure copy: must be bitwise
+    const bool pass = n_illegal == 0;
     std::printf(
-        "bridge psi -> volume -> SSBO (raw Vulkan): max err = %.3e  [%s]\n",
-        max_err, pass ? "PASS" : "FAIL");
+        "bridge psi -> RG16F volume -> SSBO (raw Vulkan): %zu texel(s) "
+        "outside RTE/RTZ, rtz-only %zu, quantization %.3e  [%s]\n",
+        n_illegal, n_rtz_only, max_quant, pass ? "PASS" : "FAIL");
     return pass;
 }
 
