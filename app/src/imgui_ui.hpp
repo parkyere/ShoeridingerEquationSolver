@@ -120,6 +120,21 @@ void draw_hydrogen_panel(ShellT& shell, UiState& ui) {
 
     draw_time_scale(shell, ui);
 
+    // MCWF no-jump damping: superpositions visibly emit between jumps
+    // (H_eff amplitude decay); pure eigenstates are unaffected either way.
+    bool mcwf = shell.mcwf_damping();
+    if (ImGui::Checkbox("MCWF damping", &mcwf)) {
+        shell.set_mcwf_damping(mcwf);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Between jumps, drain excited amplitudes as "
+                          "e^(-gamma t/2) conditioned on no photon\n"
+                          "(Monte Carlo wave function). Watch a superposition's "
+                          "beat fade as it emits.\nAuto-skipped while the laser "
+                          "drives (the accelerated gammas would swamp the "
+                          "flop).");
+    }
+
     ImGui::Separator();
     ImGui::PushTextWrapPos(0.0f);
     ImGui::TextUnformatted(shell.status_text().c_str());

@@ -344,6 +344,12 @@ public:
         refresh_status();
     }
     int bfield_axis() const { return hydrogen_ ? hydrogen_->bfield_axis() : 2; }
+    void set_mcwf_damping(bool on) {
+        if (hydrogen_) hydrogen_->set_mcwf_damping(on);
+    }
+    bool mcwf_damping() const {
+        return hydrogen_ ? hydrogen_->mcwf_damping() : false;
+    }
     void set_time_scale(int scale) {
         director_->set_time_scale(scale);
         refresh_status();

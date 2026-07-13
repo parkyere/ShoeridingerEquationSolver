@@ -118,6 +118,20 @@ public:
             &state_norm2_[s]);
     }
 
+    // Normalized complex amplitude <n|psi> from the last project_psi() pass
+    // (the MCWF no-jump damping consumes it; population = |amplitude|^2).
+    ses::Complex<double> project_state_amplitude(const ses_vk::Engine& engine,
+                                                 int idx) const {
+        const StateSpec& sp = kStateSpec[static_cast<std::size_t>(idx)];
+        const double n2 = state_norm2_[static_cast<std::size_t>(idx)];
+        if (n2 <= 0.0) {
+            return {};
+        }
+        return engine.project_amplitude(
+                   radial_u_[static_cast<std::size_t>(sp.level)], sp.l, sp.m) /
+               std::sqrt(n2);
+    }
+
     // Population |<n|psi>|^2 from the last engine.project_psi() pass: the 1-D
     // radial dot g_lm . u_nl, grid-normalized so the value equals a full 3D
     // inner product against the grid-normalized orbital.

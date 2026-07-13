@@ -318,6 +318,10 @@ public:
     double sim_time() const override { return sim_.time() + gpu_time_; }
     double sim_dt() const override { return sim_.dt(); }
 
+    // MCWF no-jump damping toggle (panel checkbox; see apply_mcwf_damping).
+    void set_mcwf_damping(bool on) { mcwf_damping_ = on; }
+    bool mcwf_damping() const { return mcwf_damping_; }
+
     // ---- controls (the shell's key/toolbar entry points) ----
 
     void set_real_time() override {
@@ -720,6 +724,62 @@ private:
                                          : ses::Vec3d{0.0, 0.0, 1.0};
     }
 
+    // MCWF no-jump damping: psi += (e^{-gamma_n dt/2} - 1) c_n |n> for each
+    // occupied excited state, then renormalize -- the non-Hermitian H_eff
+    // conditioned on "no photon detected". A pure eigenstate is unchanged
+    // (the renorm cancels its damping); a superposition visibly breathes its
+    // excited fraction out between jumps. Cost control: only states with
+    // pop >= 1e-3, the strongest kMcwfMaxStates per tick (one transient
+    // synthesis + axpy each) -- exact once the cloud concentrates onto a
+    // few states, approximate-but-convergent for the 55-state seed.
+    void apply_mcwf_damping(const std::array<double, kNumStates>& pop,
+                            double dt) {
+        constexpr int kMcwfMaxStates = 8;
+        constexpr double kMcwfMinPop = 1e-3;
+        std::array<double, kNumStates> gamma_out{};
+        for (const ShellChannel& ch : atom_.channels()) {
+            gamma_out[static_cast<std::size_t>(ch.from)] += ch.gamma_display;
+        }
+        std::array<int, kNumStates> order{};
+        int n_cand = 0;
+        for (int s = 1; s < kNumStates; ++s) {
+            if (gamma_out[static_cast<std::size_t>(s)] > 0.0 &&
+                pop[static_cast<std::size_t>(s)] >= kMcwfMinPop) {
+                order[static_cast<std::size_t>(n_cand++)] = s;
+            }
+        }
+        if (n_cand == 0) {
+            return;
+        }
+        std::partial_sort(order.begin(),
+                          order.begin() + std::min(n_cand, kMcwfMaxStates),
+                          order.begin() + n_cand, [&pop](int a, int b) {
+                              return pop[static_cast<std::size_t>(a)] >
+                                     pop[static_cast<std::size_t>(b)];
+                          });
+        bool damped = false;
+        for (int i = 0; i < std::min(n_cand, kMcwfMaxStates); ++i) {
+            const int s = order[static_cast<std::size_t>(i)];
+            const double f =
+                std::exp(-0.5 * gamma_out[static_cast<std::size_t>(s)] * dt);
+            const ses::Complex<double> c =
+                atom_.project_state_amplitude(engine_, s);
+            const ses::Complex<double> d = (f - 1.0) * c;
+            const int buf = atom_.synth_transient(engine_, s);
+            if (buf >= 0) {
+                engine_.add_state_into_psi(buf, d.real(), d.imag());
+                engine_.release_state(buf);
+                damped = true;
+            }
+        }
+        if (damped) {
+            const ses_vk::Engine::NormPeak np = engine_.norm_and_peak();
+            if (np.sum > 0.0) {
+                engine_.scale(static_cast<float>(1.0 / std::sqrt(np.sum)));
+            }
+        }
+    }
+
     // One real-time step batch: propagate (driven / magnetic / plain),
     // absorb at the walls, then the title-cadence readouts and trials.
     void run_real_time_batch() {
@@ -789,8 +849,9 @@ private:
                                pop[atom_.channels()[c].from];
                 }
                 std::uniform_real_distribution<double> uniform(0.0, 1.0);
+                const double trial_dt = decay_accum_dt_;
                 const ses::ChannelPick pick = ses::pick_decay_channel(
-                    rates, decay_accum_dt_, uniform(rng_), uniform(rng_));
+                    rates, trial_dt, uniform(rng_), uniform(rng_));
                 decay_accum_dt_ = 0.0;
                 if (pick.channel >= 0) {
                     const ShellChannel& ch =
@@ -805,6 +866,14 @@ private:
                                  last_jump_.c_str(), photon_count_,
                                  sim_.time() + gpu_time_);
                     title_dirty_ = true;
+                } else if (mcwf_damping_ && laser_pol_ == LaserPol::Off) {
+                    // No photon detected this interval: MCWF no-jump
+                    // evolution (H_eff) damps each excited amplitude by
+                    // e^{-gamma_n dt/2}. Skipped after a jump (the projected
+                    // amplitudes are stale post-collapse) and while the
+                    // laser drives (display-accelerated gammas would swamp
+                    // the coherent flop).
+                    apply_mcwf_damping(pop, trial_dt);
                 }
             }
         }
@@ -1163,6 +1232,7 @@ private:
     bool cpu_is_truth_ = true;
     int pending_gpu_steps_ = 0;
     int time_scale_ = 1;  // steps-per-tick multiplier (dt untouched)
+    bool mcwf_damping_ = true;  // no-jump H_eff damping between jumps
     bool pending_energy_measure_ = false;  // Key E: serviced in run_frame
     bool gpu_title_due_ = false;
     bool title_dirty_ = false;
