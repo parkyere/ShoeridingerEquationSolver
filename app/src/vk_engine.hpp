@@ -829,6 +829,23 @@ public:
         subtract_projection(handle, -cre, -cim);
     }
 
+    // Persistent scratch state (uninitialized fp32): callers that
+    // re-synthesize repeatedly (the MCWF damping path) reuse ONE buffer
+    // instead of per-call create + release (release_state device-idles).
+    int create_scratch_state() { return create_state_buffer_uninit(); }
+
+    // Re-synthesize into an existing fp32 state buffer (see scratch note).
+    bool synthesize_state_over(int handle, const std::vector<double>& u,
+                               int l, int m, double h_radial, double rmax,
+                               int n_radial, double* out_norm2 = nullptr) {
+        State* st = state_at(handle);
+        if (st == nullptr || st->is_half) {
+            return false;
+        }
+        return synthesize_into_buffer(st->buf, u, l, m, h_radial, rmax,
+                                      n_radial, nullptr, out_norm2);
+    }
+
     // psi <- src (bitwise; the quantum-jump collapse path). fp32 states only.
     void copy_into_psi(int handle) {
         State* st = state_at(handle);

@@ -1022,6 +1022,9 @@ private:
                           });
         bool damped = false;
         double damp_loss = 0.0;  // norm removed by H_eff (NOT the absorber)
+        if (mcwf_scratch_ < 0) {
+            mcwf_scratch_ = engine_.create_scratch_state();
+        }
         for (int i = 0; i < std::min(n_cand, kMcwfMaxStates); ++i) {
             const int s = order[static_cast<std::size_t>(i)];
             const double f =
@@ -1029,10 +1032,9 @@ private:
             const ses::Complex<double> c =
                 atom_.project_state_amplitude(engine_, s);
             const ses::Complex<double> d = (f - 1.0) * c;
-            const int buf = atom_.synth_transient(engine_, s);
-            if (buf >= 0) {
-                engine_.add_state_into_psi(buf, d.real(), d.imag());
-                engine_.release_state(buf);
+            if (mcwf_scratch_ >= 0 &&
+                atom_.synth_over(engine_, mcwf_scratch_, s)) {
+                engine_.add_state_into_psi(mcwf_scratch_, d.real(), d.imag());
                 damp_loss += pop[static_cast<std::size_t>(s)] * (1.0 - f * f);
                 damped = true;
             }
@@ -1526,6 +1528,7 @@ private:
     int pending_gpu_steps_ = 0;
     int time_scale_ = 1;  // steps-per-tick multiplier (dt untouched)
     bool mcwf_damping_ = true;  // no-jump H_eff damping between jumps
+    int mcwf_scratch_ = -1;     // reused synthesis buffer (see synth_over)
     bool pending_energy_measure_ = false;  // Key E: serviced in run_frame
     bool gpu_title_due_ = false;
     bool title_dirty_ = false;

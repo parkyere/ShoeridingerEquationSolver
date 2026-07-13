@@ -168,6 +168,19 @@ public:
                                        radial_grid_.n, out_peak, &state_norm2_[s]);
     }
 
+    // Re-synthesize eigenstate idx into an existing scratch buffer (the MCWF
+    // path refills one buffer 8x per title tick; fresh transients would
+    // device-idle + reallocate each time). Bookkeeping = synth_transient.
+    bool synth_over(ses_vk::Engine& engine, int handle, int idx) {
+        const std::size_t s = static_cast<std::size_t>(idx);
+        const StateSpec& sp = kStateSpec[s];
+        state_energy_[s] = radial_energy_[static_cast<std::size_t>(sp.level)];
+        return engine.synthesize_state_over(
+            handle, radial_u_[static_cast<std::size_t>(sp.level)], sp.l, sp.m,
+            radial_grid_.h(), radial_grid_.rmax, radial_grid_.n,
+            &state_norm2_[s]);
+    }
+
     // Ensure state `idx` has a resident GPU buffer, synthesized on the GPU.
     bool ensure_state(ses_vk::Engine& engine, int idx) {
         const std::size_t s = static_cast<std::size_t>(idx);
