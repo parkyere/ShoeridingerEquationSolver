@@ -20,6 +20,29 @@
 
 namespace ses {
 
+// Twiddle table w[j] = e^{-2 pi i j / n}, j = 0 .. n/2-1, computed directly
+// so every factor sits within ~1 ulp of the unit circle. (The recurrence
+// w *= wlen drifts off the circle and systematically damps the norm --
+// caught by SplitOperator.ConservesNorm over 200 steps.) thread_local cache
+// keyed on n: the 3D transform calls fft() once per line, and per-line
+// heap allocation + sincos recompute dominated the small-line cost; each
+// OpenMP thread owns its table, so reads are lock-free and the values are
+// bitwise identical to the former per-call computation.
+inline const Complex<double>* fft_twiddles(std::size_t n) {
+    thread_local std::vector<Complex<double>> w;
+    thread_local std::size_t wn = 0;
+    if (wn != n) {
+        w.resize(n / 2);
+        const double ang = -2.0 * std::numbers::pi / static_cast<double>(n);
+        for (std::size_t j = 0; j < n / 2; ++j) {
+            const double th = ang * static_cast<double>(j);
+            w[j] = Complex<double>{std::cos(th), std::sin(th)};
+        }
+        wn = n;
+    }
+    return w.data();
+}
+
 // In-place forward transform of a contiguous line of length n.
 // Iterative: bit-reversal permutation, then butterfly passes of doubling
 // length.
@@ -41,16 +64,7 @@ inline void fft(Complex<double>* a, std::size_t n) {
         }
     }
 
-    // Twiddle table w[j] = e^{-2 pi i j / n}, j = 0 .. n/2-1, computed directly
-    // so every factor sits within ~1 ulp of the unit circle. (The recurrence
-    // w *= wlen drifts off the circle and systematically damps the norm --
-    // caught by SplitOperator.ConservesNorm over 200 steps.)
-    std::vector<Complex<double>> w(n / 2);
-    const double ang = -2.0 * std::numbers::pi / static_cast<double>(n);
-    for (std::size_t j = 0; j < n / 2; ++j) {
-        const double th = ang * static_cast<double>(j);
-        w[j] = Complex<double>{std::cos(th), std::sin(th)};
-    }
+    const Complex<double>* w = fft_twiddles(n);  // see the cache note above
 
     // Butterfly passes: len = 2, 4, ..., n. Stage len uses w_len^j = w[j * n/len].
     for (std::size_t len = 2; len <= n; len <<= 1) {
