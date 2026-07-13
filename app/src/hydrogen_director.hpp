@@ -80,8 +80,9 @@ inline ses::WavepacketSimulation make_simulation() {
     // +-80 Bohr / 256^3 (power-of-two FFT): holds the n <= 6 shell; no
     // resident atlas. This Gaussian is only the pre-solve placeholder and
     // the no-GPU fallback: the GPU path replaces it with a random bound
-    // n <= 5 superposition at the atlas finale (seed_bound_superposition) --
-    // a free packet, unlike a bound superposition, leaks past the box.
+    // n <= 6 superposition at the atlas finale (seed_bound_superposition) --
+    // a free packet leaks continuum past the box, a bound seed essentially
+    // does not.
     const ses::Grid1D axis{-80.0, 80.0, 256};
     const ses::Grid3D grid{axis, axis, axis};
     return ses::WavepacketSimulation{ses::WavepacketSimulation::Config{
@@ -359,7 +360,7 @@ public:
             return;
         }
         // ITP converges to the lowest component PRESENT in the seed: a state
-        // orthogonal to 1s (the n = 5 shell superposition) would stall
+        // orthogonal to 1s (a pure excited eigenstate) would stall
         // in-shell until fp32 noise leaks, and the plateau auto-complete
         // would fire first. Mix in 1% of an s-symmetric Gaussian so the
         // descent starts immediately. Only needed when the GPU state is
@@ -1000,7 +1001,7 @@ private:
     // excited fraction out between jumps. Cost control: only states with
     // pop >= 1e-3, the strongest kMcwfMaxStates per tick (one transient
     // synthesis + axpy each) -- exact once the cloud concentrates onto a
-    // few states, approximate-but-convergent for the 55-state seed.
+    // few states, approximate-but-convergent for the 91-state seed.
     void apply_mcwf_damping(const std::array<double, kNumStates>& pop,
                             double dt) {
         constexpr int kMcwfMaxStates = 8;
@@ -1388,11 +1389,12 @@ private:
         }
     }
 
-    // Seed psi with a random complex superposition of the WHOLE n <= 5
-    // manifold ([0, k6S), 55 bound states): contained by construction --
-    // zero continuum component, so nothing can leave the box (a free packet
-    // could). Cross-shell beats make the density genuinely evolve (fastest:
-    // 1s-2p at T = 2 pi / 0.375 ~ 17 au); renormalized to 1 on the GPU.
+    // Seed psi with a random complex superposition of the WHOLE tracked
+    // n <= 6 manifold ([0, kNumStates), 91 bound states). n <= 5 sits inside
+    // the box; the diffuse low-l n = 6 (6s/6p/6d, <r> ~ 54 a0) reaches the
+    // +-70 absorber, so a few percent slowly ionizes with no laser --
+    // deliberate (maximum orbitals), not a bug. Cross-shell beats evolve the
+    // density (fastest 1s-2p, T ~ 17 au); renormalized to 1 on the GPU.
     void seed_bound_superposition() {
         if (!gpu_ok_ || !atom_.radial_ready()) {
             cpu_is_truth_ = true;  // fallback: resume the CPU packet
@@ -1401,7 +1403,7 @@ private:
         // Complex-Gaussian coefficients = uniform on the state sphere after
         // the final renormalization; c[0]'s phase is folded out (global).
         std::normal_distribution<double> gauss(0.0, 1.0);
-        std::array<ses::Complex<double>, k6S> c{};
+        std::array<ses::Complex<double>, kNumStates> c{};
         for (auto& z : c) {
             z = ses::Complex<double>{gauss(rng_), gauss(rng_)};
         }
@@ -1421,7 +1423,7 @@ private:
         engine_.copy_into_psi(buf);
         engine_.release_state(buf);
         engine_.scale(static_cast<float>(c[0].real()));
-        for (int s = 1; s < k6S; ++s) {
+        for (int s = 1; s < kNumStates; ++s) {
             buf = atom_.synth_transient(engine_, s);
             if (buf < 0) {
                 continue;  // member missing: superpose the rest

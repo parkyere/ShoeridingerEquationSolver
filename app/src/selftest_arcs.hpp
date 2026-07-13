@@ -64,7 +64,7 @@ void register_verification_arcs(ShellT* shell) {
 
     // Decay arc: prepare 2p WITH DECAY OFF (relaxation auto-completes into
     // real time, and an armed 2p would fire its one photon BEFORE the
-    // baseline -- the n<=5 seed converges fast enough to lose that race
+    // baseline -- the n<=6 seed converges fast enough to lose that race
     // most runs), then arm decay exactly when the counting window opens.
     // >= 1 jump expected: tau_display ~ 8 au vs a ~75 au window.
     if (shell->has_arg("--selftest-decay")) {
@@ -91,9 +91,8 @@ void register_verification_arcs(ShellT* shell) {
         run_when_manifold_ready(shell, [shell] {
             shell->toggle_decay();  // OFF: keep the relaxed state stationary
             shell->set_relaxing();  // cool to 1s
-            // 20 s: the n = 5 shell seed is ~orthogonal to 1s, so the descent
-            // rides the 1% ground seed (see set_relaxing) -- slower than the
-            // old free packet cooled.
+            // 20 s: the random n <= 6 seed carries only ~1% weight in 1s, so
+            // the ITP descent to ground needs a generous window to converge.
             shell->sched().after(20000, [shell] {
                 shell->measure_energy_now();
                 shell->sched().after(1500, [shell] {
