@@ -200,7 +200,7 @@ public:
         if (in.cloud && (in.volume_changed || !aux_valid_) &&
             volume_bound_view_ != VK_NULL_HANDLE) {
             occ_k_.bind(cb, occ_set_);
-            vkCmdDispatch(cb, 8, 8, 8);  // 32^3 / 4^3
+            vkCmdDispatch(cb, 32, 32, 32);  // one workgroup per occ cell
             barrier_compute_to_compute(cb);
             dilate_k_.bind(cb, dilate_set_);
             vkCmdDispatch(cb, 8, 8, 8);

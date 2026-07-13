@@ -1202,9 +1202,14 @@ public:
         vmaInvalidateAllocation(ctx_->allocator, staging_.alloc, 0,
                                 VK_WHOLE_SIZE);
         const float* raw = static_cast<const float*>(staging_.mapped);
-        glm_host_.assign(
-            static_cast<std::size_t>(proj_ncomp_),
-            std::vector<ses::Complex<double>>(static_cast<std::size_t>(proj_nr_)));
+        // Shape once, reuse thereafter: every element is overwritten below,
+        // and re-assigning heap-allocated ncomp vectors per projection was
+        // the one recurring allocator churn on the title cadence.
+        if (glm_host_.size() != static_cast<std::size_t>(proj_ncomp_)) {
+            glm_host_.assign(static_cast<std::size_t>(proj_ncomp_),
+                             std::vector<ses::Complex<double>>(
+                                 static_cast<std::size_t>(proj_nr_)));
+        }
         for (int c = 0; c < proj_ncomp_; ++c) {
             for (int j = 0; j < proj_nr_; ++j) {
                 const std::size_t o =
