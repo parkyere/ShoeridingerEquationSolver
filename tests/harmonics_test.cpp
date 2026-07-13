@@ -238,4 +238,36 @@ TEST(SynthesizeOrbital, ParityFollowsTheHarmonic) {
     }
 }
 
+TEST(RealSphericalHarmonic, CosSinPairsCombineToLzEigenfunctions) {
+    // The L_z-measurement convention: for every l <= 5, 0 < m <= l, the
+    // combination Y_{l,+m} + i Y_{l,-m} must be proportional to e^{+i m phi}
+    // -- azimuthally UNIFORM magnitude with phase advancing as +m*phi. This
+    // pins the (cos, sin) pairing AND its sign for the whole table at once.
+    const double z = 0.23;  // generic polar angle (away from theta nodes)
+    const double rho = std::sqrt(1.0 - z * z);
+    for (int l = 1; l <= 5; ++l) {
+        for (int m = 1; m <= l; ++m) {
+            const auto f = [&](double phi) {
+                const double x = rho * std::cos(phi);
+                const double y = rho * std::sin(phi);
+                return ses::Complex<double>{
+                    ses::real_spherical_harmonic(l, m, x, y, z),
+                    ses::real_spherical_harmonic(l, -m, x, y, z)};
+            };
+            const ses::Complex<double> f0 = f(0.0);
+            ASSERT_GT(std::abs(f0), 1e-4) << "theta node hit at l=" << l;
+            for (int k = 1; k <= 7; ++k) {
+                const double phi = 0.83 * k;
+                const ses::Complex<double> ratio = f(phi) / f0;
+                // ratio must equal e^{+i m phi} exactly (uniform ring,
+                // right-handed phase advance).
+                EXPECT_NEAR(ratio.real(), std::cos(m * phi), 1e-12)
+                    << "l=" << l << " m=" << m;
+                EXPECT_NEAR(ratio.imag(), std::sin(m * phi), 1e-12)
+                    << "l=" << l << " m=" << m;
+            }
+        }
+    }
+}
+
 }  // namespace

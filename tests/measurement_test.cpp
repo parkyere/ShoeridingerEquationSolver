@@ -153,6 +153,48 @@ TEST(CollapseWavepacket, SharperMeasurementRespreadsFaster) {
     EXPECT_GT(sharp, broad * 1.5);  // decisively faster, not marginally
 }
 
+TEST(SignedMAmplitudes, PxSplitsEquallyAndKeptOutcomesReconstruct) {
+    // L_z measurement bookkeeping on a real-harmonic (cos, sin) pair.
+    // A pure cos-type state (p_x): a_+ and a_- each carry probability 1/2.
+    const Complex<double> c_cos{1.0, 0.0};
+    const Complex<double> c_sin{0.0, 0.0};
+    const ses::SignedM a = ses::signed_m_amplitudes(c_cos, c_sin);
+    EXPECT_NEAR(ses::norm_sq(a.plus), 0.5, 1e-15);
+    EXPECT_NEAR(ses::norm_sq(a.minus), 0.5, 1e-15);
+
+    // Keeping ONE signed-m outcome rebuilds a ring state: equal cos/sin
+    // populations regardless of the input pair.
+    const ses::RealPair kept = ses::pair_from_signed_m(a.plus, +1);
+    EXPECT_NEAR(ses::norm_sq(kept.c_cos), ses::norm_sq(kept.c_sin), 1e-15);
+
+    // Completeness: keeping BOTH outcomes reconstructs the original pair.
+    const ses::RealPair kp = ses::pair_from_signed_m(a.plus, +1);
+    const ses::RealPair km = ses::pair_from_signed_m(a.minus, -1);
+    const Complex<double> rc = kp.c_cos + km.c_cos;
+    const Complex<double> rs = kp.c_sin + km.c_sin;
+    EXPECT_NEAR(rc.real(), c_cos.real(), 1e-15);
+    EXPECT_NEAR(rc.imag(), c_cos.imag(), 1e-15);
+    EXPECT_NEAR(rs.real(), c_sin.real(), 1e-15);
+    EXPECT_NEAR(rs.imag(), c_sin.imag(), 1e-15);
+}
+
+TEST(SignedMAmplitudes, GenericPairRoundTripsAndConservesProbability) {
+    const Complex<double> c_cos{0.3, -0.7};
+    const Complex<double> c_sin{-0.2, 0.55};
+    const ses::SignedM a = ses::signed_m_amplitudes(c_cos, c_sin);
+
+    // Born-rule completeness on the pair subspace.
+    EXPECT_NEAR(ses::norm_sq(a.plus) + ses::norm_sq(a.minus),
+                ses::norm_sq(c_cos) + ses::norm_sq(c_sin), 1e-15);
+
+    const ses::RealPair kp = ses::pair_from_signed_m(a.plus, +1);
+    const ses::RealPair km = ses::pair_from_signed_m(a.minus, -1);
+    EXPECT_NEAR((kp.c_cos + km.c_cos).real(), c_cos.real(), 1e-15);
+    EXPECT_NEAR((kp.c_cos + km.c_cos).imag(), c_cos.imag(), 1e-15);
+    EXPECT_NEAR((kp.c_sin + km.c_sin).real(), c_sin.real(), 1e-15);
+    EXPECT_NEAR((kp.c_sin + km.c_sin).imag(), c_sin.imag(), 1e-15);
+}
+
 TEST(PovmOutcomeDensity, IsRawDensityBlurredByTheKrausWidth) {
     // POVM consistency: E_c = M_c^dag M_c with M_c = e^{-(r-c)^2/(4 s^2)}
     // means P(c) ~ |psi|^2 convolved with e^{-(r-c)^2/(2 s^2)} -- a Gaussian

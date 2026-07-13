@@ -41,6 +41,7 @@ namespace ses_shell {
 enum class ViewMode { Cloud, Surface };
 enum class Stepping { RealTime, Relaxing, RelaxingExcited };
 enum class LaserPol { Off, Z, X };
+enum class PartialBasis { None, NShell, LTotal, MZ };
 
 constexpr int kStepsPerTick = 1;
 // Backlog cap: a stalled paint cannot spiral (time is credited at execution,
@@ -249,40 +250,19 @@ public:
                         atom_.state_energy(n) * kHaToEv);
                 } else {
                     // A continuum verdict must not leave bound populations
-                    // behind: psi <- (1 - P)|psi>, renormalized. Estimate the
-                    // residual BEFORE mutating psi -- renormalizing an
-                    // fp32-noise remnant would amplify garbage ~1000x into a
-                    // "physical" cloud, so below the floor psi stays as is.
-                    double bound = 0.0;
-                    for (double p : pop) {
-                        bound += p;
-                    }
-                    const double residual = engine_.norm_and_peak().sum - bound;
-                    if (residual > 1e-4) {
-                        for (int s = 0; s < kNumStates; ++s) {
-                            if (pop[static_cast<std::size_t>(s)] < 1e-9) {
-                                continue;
-                            }
-                            const ses::Complex<double> c =
-                                atom_.project_state_amplitude(engine_, s);
-                            const int buf = atom_.synth_transient(engine_, s);
-                            if (buf >= 0) {
-                                engine_.add_state_into_psi(buf, -c.real(),
-                                                           -c.imag());
-                                engine_.release_state(buf);
-                            }
-                        }
-                        const ses_vk::Engine::NormPeak np =
-                            engine_.norm_and_peak();
-                        if (np.sum > 1e-12) {
-                            engine_.scale(
-                                static_cast<float>(1.0 / std::sqrt(np.sum)));
-                        }
-                        reset_ionized_tally();
-                        write_display_texture();
-                    }
+                    // behind: project the manifold out (fp32-noise residuals
+                    // are left alone inside the helper).
+                    project_manifold_out();
                     last_measure_ = "outside tracked manifold";
                 }
+                title_dirty_ = true;
+            }
+            // Partial projective measurement (n-shell / l / m buttons):
+            // deferred here like the energy measurement above.
+            if (pending_partial_ != PartialBasis::None && manifold_ready()) {
+                const PartialBasis basis = pending_partial_;
+                pending_partial_ = PartialBasis::None;
+                run_partial_measure(basis);
                 title_dirty_ = true;
             }
             if (pending_gpu_steps_ > 0) {
@@ -445,6 +425,17 @@ public:
         stepping_ = Stepping::RealTime;  // observe, then let H evolve it
         laser_pol_ = LaserPol::Off;
     }
+
+    // Partial projective measurements (panel buttons): sample ONE quantum
+    // number and project onto its DEGENERATE subspace -- coherence within
+    // survives ({H, L^2, L_z} commute). Key E stays the maximal (n,l,m)
+    // collapse. Deferred to run_frame like the energy measurement.
+    void measure_n_shell_now() { queue_partial_measure(PartialBasis::NShell); }
+    void measure_l_now() { queue_partial_measure(PartialBasis::LTotal); }
+    void measure_m_now() { queue_partial_measure(PartialBasis::MZ); }
+    // Last partial outcome: the sampled n, l, or signed m (-99 = none yet,
+    // -1 = continuum verdict).
+    int last_partial_outcome() const { return last_partial_outcome_; }
 
     void toggle_view_mode() override {
         if (solving()) {
@@ -644,6 +635,27 @@ public:
         engine_.project_psi();
         return atom_.project_population(engine_, idx);
     }
+    // Selftest hook: psi = (|a> + |b>)/sqrt(2) -- the intra-shell coherence
+    // probe the partial-measurement arc collapses.
+    void debug_prepare_superposition(int a, int b) {
+        if (!manifold_ready() || a < 0 || a >= kNumStates || b < 0 ||
+            b >= kNumStates || a == b) {
+            return;
+        }
+        atom_.collapse_onto(engine_, a);
+        const int buf = atom_.synth_transient(engine_, b);
+        if (buf >= 0) {
+            engine_.add_state_into_psi(buf, 1.0, 0.0);
+            engine_.release_state(buf);
+        }
+        const ses_vk::Engine::NormPeak np = engine_.norm_and_peak();
+        if (np.sum > 0.0) {
+            engine_.scale(static_cast<float>(1.0 / std::sqrt(np.sum)));
+        }
+        reset_ionized_tally();
+        cpu_is_truth_ = false;
+        stepping_ = Stepping::RealTime;
+    }
 
     // ---- display-facing accessors (the shell's FrameInput assembly) ----
 
@@ -777,6 +789,211 @@ private:
     void reset_ionized_tally() {
         bound_survival_ = 1.0;
         norm_baseline_ = 1.0;
+    }
+
+    void queue_partial_measure(PartialBasis b) {
+        if (solving() || !use_gpu_path() || !manifold_ready()) {
+            return;
+        }
+        pending_partial_ = b;
+        stepping_ = Stepping::RealTime;  // observe, then let H evolve it
+        laser_pol_ = LaserPol::Off;
+    }
+
+    // Continuum verdict: subtract every tracked component (psi <- (1-P)psi,
+    // renormalized) -- unless the residual is fp32 noise (renormalizing it
+    // would fabricate a cloud; psi is left alone then). Precondition:
+    // project_psi() deposited for the CURRENT psi.
+    void project_manifold_out() {
+        std::array<ses::Complex<double>, kNumStates> amp{};
+        double bound = 0.0;
+        for (int s = 0; s < kNumStates; ++s) {
+            amp[static_cast<std::size_t>(s)] =
+                atom_.project_state_amplitude(engine_, s);
+            bound += ses::norm_sq(amp[static_cast<std::size_t>(s)]);
+        }
+        const double residual = engine_.norm_and_peak().sum - bound;
+        if (residual <= 1e-4) {
+            return;
+        }
+        for (int s = 0; s < kNumStates; ++s) {
+            if (ses::norm_sq(amp[static_cast<std::size_t>(s)]) < 1e-9) {
+                continue;
+            }
+            const ses::Complex<double> c = amp[static_cast<std::size_t>(s)];
+            const int buf = atom_.synth_transient(engine_, s);
+            if (buf >= 0) {
+                engine_.add_state_into_psi(buf, -c.real(), -c.imag());
+                engine_.release_state(buf);
+            }
+        }
+        const ses_vk::Engine::NormPeak np = engine_.norm_and_peak();
+        if (np.sum > 1e-12) {
+            engine_.scale(static_cast<float>(1.0 / std::sqrt(np.sum)));
+        }
+        reset_ionized_tally();
+        cpu_is_truth_ = false;
+        write_display_texture();
+    }
+
+    // Partial projective measurement: Born-sample ONE quantum number (n, l,
+    // or signed m -- the latter via the real-pair L_z recombination) and
+    // rebuild psi from the kept tracked amplitudes. The continuum residual
+    // is discarded (the collapse_onto seam); the deficit samples the
+    // continuum verdict, which projects the manifold out instead.
+    void run_partial_measure(PartialBasis basis) {
+        engine_.project_psi();
+        std::array<ses::Complex<double>, kNumStates> amp{};
+        for (int s = 0; s < kNumStates; ++s) {
+            amp[static_cast<std::size_t>(s)] =
+                atom_.project_state_amplitude(engine_, s);
+        }
+        // Outcome keys: n -> 0..5 (n-1), l -> 0..5, signed m -> 0..10 (m+5).
+        std::array<double, 11> prob{};
+        for (int s = 0; s < kNumStates; ++s) {
+            const StateSpec& sp = kStateSpec[static_cast<std::size_t>(s)];
+            const double p = ses::norm_sq(amp[static_cast<std::size_t>(s)]);
+            if (basis == PartialBasis::NShell) {
+                prob[static_cast<std::size_t>(state_n(s) - 1)] += p;
+            } else if (basis == PartialBasis::LTotal) {
+                prob[static_cast<std::size_t>(sp.l)] += p;
+            } else if (sp.m == 0) {
+                prob[5] += p;  // M = 0
+            } else if (sp.m > 0) {
+                const int partner = sin_partner(s);
+                const ses::SignedM a = ses::signed_m_amplitudes(
+                    amp[static_cast<std::size_t>(s)],
+                    amp[static_cast<std::size_t>(partner)]);
+                prob[static_cast<std::size_t>(sp.m + 5)] += ses::norm_sq(a.plus);
+                prob[static_cast<std::size_t>(-sp.m + 5)] +=
+                    ses::norm_sq(a.minus);
+            }
+        }
+        double bound = 0.0;
+        for (double p : prob) {
+            bound += p;
+        }
+        std::uniform_real_distribution<double> uniform(0.0, 1.0);
+        const double u = uniform(rng_);
+        int key = -1;
+        double cum = 0.0;
+        for (int k = 0; k < 11; ++k) {
+            cum += prob[static_cast<std::size_t>(k)];
+            if (u < cum) {
+                key = k;
+                break;
+            }
+        }
+        if (key < 0) {
+            // Fell into the 1 - sum deficit: continuum / untracked.
+            project_manifold_out();
+            last_partial_outcome_ = -1;
+            last_measure_ = "outside tracked manifold";
+            return;
+        }
+        // Kept coefficients on the real basis for the sampled subspace.
+        std::array<ses::Complex<double>, kNumStates> keep{};
+        for (int s = 0; s < kNumStates; ++s) {
+            const StateSpec& sp = kStateSpec[static_cast<std::size_t>(s)];
+            if (basis == PartialBasis::NShell) {
+                if (state_n(s) - 1 == key) {
+                    keep[static_cast<std::size_t>(s)] =
+                        amp[static_cast<std::size_t>(s)];
+                }
+            } else if (basis == PartialBasis::LTotal) {
+                if (sp.l == key) {
+                    keep[static_cast<std::size_t>(s)] =
+                        amp[static_cast<std::size_t>(s)];
+                }
+            } else {
+                const int m_kept = key - 5;
+                if (sp.m == 0 && m_kept == 0) {
+                    keep[static_cast<std::size_t>(s)] =
+                        amp[static_cast<std::size_t>(s)];
+                } else if (sp.m > 0 && sp.m == std::abs(m_kept)) {
+                    const int partner = sin_partner(s);
+                    const ses::SignedM a = ses::signed_m_amplitudes(
+                        amp[static_cast<std::size_t>(s)],
+                        amp[static_cast<std::size_t>(partner)]);
+                    const ses::RealPair rp = ses::pair_from_signed_m(
+                        m_kept > 0 ? a.plus : a.minus, m_kept > 0 ? 1 : -1);
+                    keep[static_cast<std::size_t>(s)] = rp.c_cos;
+                    keep[static_cast<std::size_t>(partner)] = rp.c_sin;
+                }
+            }
+        }
+        rebuild_psi_from(keep);
+        const double p_key = prob[static_cast<std::size_t>(key)];
+        if (basis == PartialBasis::NShell) {
+            last_partial_outcome_ = key + 1;
+            last_measure_ = strf("n=%d shell (P %.2f)", key + 1, p_key);
+        } else if (basis == PartialBasis::LTotal) {
+            last_partial_outcome_ = key;
+            last_measure_ = strf("l=%d (P %.2f)", key, p_key);
+        } else {
+            last_partial_outcome_ = key - 5;
+            last_measure_ = strf("m=%+d (P %.2f)", key - 5, p_key);
+        }
+    }
+
+    // The sin-type partner (same level, m = -m) of a cos-type state.
+    static int sin_partner(int s) {
+        const StateSpec& sp = kStateSpec[static_cast<std::size_t>(s)];
+        for (int j = 0; j < kNumStates; ++j) {
+            const StateSpec& sj = kStateSpec[static_cast<std::size_t>(j)];
+            if (sj.level == sp.level && sj.m == -sp.m) {
+                return j;
+            }
+        }
+        return s;  // unreachable: the table is m-complete per level
+    }
+
+    // psi <- sum keep[s] |s>, renormalized. The seed recipe: rotate the
+    // global phase so the anchor coefficient is real (engine scale() is
+    // real), overwrite psi with the anchor state, then add the rest.
+    void rebuild_psi_from(const std::array<ses::Complex<double>, kNumStates>& keep) {
+        int anchor = 0;
+        for (int s = 1; s < kNumStates; ++s) {
+            if (ses::norm_sq(keep[static_cast<std::size_t>(s)]) >
+                ses::norm_sq(keep[static_cast<std::size_t>(anchor)])) {
+                anchor = s;
+            }
+        }
+        const double mag =
+            std::sqrt(ses::norm_sq(keep[static_cast<std::size_t>(anchor)]));
+        if (mag <= 0.0) {
+            return;  // empty subspace cannot be sampled (prob > 0 gate)
+        }
+        const ses::Complex<double> rot =
+            ses::Complex<double>{keep[static_cast<std::size_t>(anchor)].real(),
+                                 -keep[static_cast<std::size_t>(anchor)].imag()} /
+            mag;
+        atom_.collapse_onto(engine_, anchor);
+        engine_.scale(static_cast<float>(mag));
+        for (int s = 0; s < kNumStates; ++s) {
+            if (s == anchor) {
+                continue;
+            }
+            const ses::Complex<double> c =
+                rot * keep[static_cast<std::size_t>(s)];
+            if (ses::norm_sq(c) < 1e-14) {
+                continue;
+            }
+            const int buf = atom_.synth_transient(engine_, s);
+            if (buf >= 0) {
+                engine_.add_state_into_psi(buf, c.real(), c.imag());
+                engine_.release_state(buf);
+            }
+        }
+        const ses_vk::Engine::NormPeak np = engine_.norm_and_peak();
+        if (np.sum > 1e-12) {
+            engine_.scale(static_cast<float>(1.0 / std::sqrt(np.sum)));
+            peak_ = np.peak / np.sum;
+        }
+        norm_display_ = 1.0;
+        reset_ionized_tally();
+        cpu_is_truth_ = false;
+        write_display_texture();
     }
 
     // MCWF no-jump damping: psi += (e^{-gamma_n dt/2} - 1) c_n |n> for each
@@ -1341,6 +1558,10 @@ private:
     double uploaded_e0_ = 0.0;
     double uploaded_b_ = 0.0;
     int uploaded_axis_ = 2;
+
+    // Partial-measurement bookkeeping (n-shell / l / m buttons).
+    PartialBasis pending_partial_ = PartialBasis::None;
+    int last_partial_outcome_ = -99;  // sampled n, l, or m; -1 = continuum
 
     // Quantum-jump bookkeeping.
     std::string last_jump_;

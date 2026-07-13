@@ -63,11 +63,35 @@ void draw_hydrogen_panel(ShellT& shell, UiState& ui) {
 
     if (ImGui::Button("Measure (M)")) shell.measure_now();
     ImGui::SameLine();
-    if (ImGui::Button("Measure E (E)")) shell.measure_energy_now();
+    // Honest label: sampling a SINGLE eigenstate is the maximal (n,l,m)
+    // measurement, not a bare energy measurement (2s vs 2p are degenerate).
+    if (ImGui::Button("Measure nlm (E)")) shell.measure_energy_now();
     ImGui::SameLine();
     if (ImGui::Button("Reset (R)")) shell.reset_simulation();
     ImGui::SameLine();
     if (ImGui::Button("Pause (Space)")) shell.toggle_pause();
+
+    // Partial projective measurements: one quantum number, one degenerate
+    // subspace -- superpositions inside it survive the collapse.
+    if (ImGui::Button("Measure n")) shell.measure_n_shell_now();
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("True energy measurement: project onto one n "
+                          "SHELL.\nDegenerate l,m superpositions inside the "
+                          "shell survive (2s+2p stays 2s+2p).");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Measure l")) shell.measure_l_now();
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Measure L^2: project onto one l.\nSuperpositions "
+                          "across n and m survive (partial collapse).");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Measure m")) shell.measure_m_now();
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Measure L_z: project onto one signed m.\nA p_x "
+                          "lobe collapses to a rotating |m|=1 ring -- and a "
+                          "repeat measurement agrees with certainty.");
+    }
 
     if (ImGui::Button("Real time (1)")) shell.set_real_time();
     ImGui::SameLine();

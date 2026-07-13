@@ -271,6 +271,74 @@ void register_verification_arcs(ShellT* shell) {
         });
     }
 
+    // Partial-measurement arc: (2s+2p_z)/sqrt(2) is a DEGENERATE shell
+    // superposition -- a true n-shell measurement must return n=2 with BOTH
+    // populations intact (intra-shell coherence survives); a following l
+    // measurement picks one l and must leave a pure subspace. Then L_z on a
+    // prepared p_x: outcome +-1 with equal cos/sin populations (a ring),
+    // and an immediate repeat must agree (projective repeatability).
+    if (shell->has_arg("--selftest-partial")) {
+        run_when_manifold_ready(shell, [shell] {
+            shell->toggle_decay();  // OFF: jumps would race the assertions
+            shell->debug_prepare_superposition(kS2, kP2Z);
+            shell->measure_n_shell_now();
+            shell->sched().after(800, [shell] {
+                const double ps = shell->probe_population(kS2);
+                const double pz = shell->probe_population(kP2Z);
+                const bool n_ok = shell->last_partial_outcome() == 2 &&
+                                  ps > 0.35 && ps < 0.65 && pz > 0.35 &&
+                                  pz < 0.65;
+                std::fprintf(stderr,
+                             "selftest-partial: n-shell -> %d, P(2s)=%.2f "
+                             "P(2pz)=%.2f  [%s]\n",
+                             shell->last_partial_outcome(), ps, pz,
+                             n_ok ? "PASS" : "FAIL");
+                shell->measure_l_now();
+                shell->sched().after(800, [shell, n_ok] {
+                    const int l = shell->last_partial_outcome();
+                    const double ps = shell->probe_population(kS2);
+                    const double pz = shell->probe_population(kP2Z);
+                    const bool l_ok = (l == 0 && ps > 0.98) ||
+                                      (l == 1 && pz > 0.98);
+                    std::fprintf(stderr,
+                                 "selftest-partial: l -> %d, P(2s)=%.2f "
+                                 "P(2pz)=%.2f  [%s]\n",
+                                 l, ps, pz, l_ok ? "PASS" : "FAIL");
+                    shell->debug_prepare_state(kP2X);
+                    shell->measure_m_now();
+                    shell->sched().after(800, [shell, n_ok, l_ok] {
+                        const int m1 = shell->last_partial_outcome();
+                        const double px = shell->probe_population(kP2X);
+                        const double py = shell->probe_population(kP2Y);
+                        const bool ring_ok =
+                            (m1 == 1 || m1 == -1) && px > 0.35 && px < 0.65 &&
+                            py > 0.35 && py < 0.65;
+                        std::fprintf(stderr,
+                                     "selftest-partial: m -> %+d, "
+                                     "P(px)=%.2f P(py)=%.2f  [%s]\n",
+                                     m1, px, py, ring_ok ? "PASS" : "FAIL");
+                        shell->measure_m_now();
+                        shell->sched().after(800, [shell, n_ok, l_ok, ring_ok,
+                                                   m1] {
+                            const bool rep_ok =
+                                shell->last_partial_outcome() == m1;
+                            const bool pass =
+                                n_ok && l_ok && ring_ok && rep_ok;
+                            std::fprintf(
+                                stderr,
+                                "selftest-partial: repeat m -> %+d "
+                                "(repeatability %s)  [%s]\n",
+                                shell->last_partial_outcome(),
+                                rep_ok ? "PASS" : "FAIL",
+                                pass ? "PASS" : "FAIL");
+                            shell->request_exit(pass ? 0 : 1);
+                        });
+                    });
+                });
+            });
+        });
+    }
+
     // Tunneling arc (main forces --scene=tunnel): the packet launched at
     // x = -30 with v = 0.5 reaches the slab at ~60 au; the transmitted lobe
     // is fully past it well before ~150 au (~2.5 min at ~1 au/s). Assert a

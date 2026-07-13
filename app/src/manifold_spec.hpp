@@ -74,6 +74,12 @@ inline constexpr StateSpec kStateSpec[kNumStates] = {
     {20, 5, 4, "6h_+4"}, {20, 5, 5, "6h_+5"},
 };
 
+// Principal quantum number of a tracked state: n = l + k + 1.
+inline constexpr int state_n(int idx) {
+    return kLevelSpec[kStateSpec[idx].level].l +
+           kLevelSpec[kStateSpec[idx].level].k + 1;
+}
+
 struct ShellChannel {
     int from;
     int to;

@@ -103,6 +103,34 @@ inline std::vector<double> povm_outcome_density(const Field3D& psi,
     return d;
 }
 
+// L_z bookkeeping for one real-harmonic pair. Convention (harmonics.hpp,
+// pinned by tests): Y_{l,+|m|} ~ cos(m phi), Y_{l,-|m|} ~ sin(m phi), so
+// |l, +-m> = (|cos> +- i |sin>)/sqrt(2) and the signed-m amplitudes of
+// psi = c_cos|cos> + c_sin|sin> are a_+- = (c_cos -+ i c_sin)/sqrt(2).
+struct SignedM {
+    Complex<double> plus;
+    Complex<double> minus;
+};
+inline SignedM signed_m_amplitudes(Complex<double> c_cos,
+                                   Complex<double> c_sin) {
+    const double inv = 1.0 / std::sqrt(2.0);
+    const Complex<double> i{0.0, 1.0};
+    return SignedM{inv * (c_cos - i * c_sin), inv * (c_cos + i * c_sin)};
+}
+
+// Real-pair coefficients of a kept signed-m component a|l, sign*|m|>:
+// cos = a/sqrt(2), sin = sign * i a/sqrt(2). Keeping both outcomes and
+// summing reconstructs the original pair (projector completeness).
+struct RealPair {
+    Complex<double> c_cos;
+    Complex<double> c_sin;
+};
+inline RealPair pair_from_signed_m(Complex<double> a, int sign) {
+    const double inv = 1.0 / std::sqrt(2.0);
+    const Complex<double> i{0.0, 1.0};
+    return RealPair{inv * a, static_cast<double>(sign) * inv * (i * a)};
+}
+
 // First flat index whose cumulative POVM outcome probability exceeds
 // u * total: detector-consistent sampling (outcomes CAN land on a node of
 // raw |psi|^2 that a sigma_m-resolution detector cannot resolve).

@@ -307,6 +307,21 @@ public:
     void measure_energy_now() {
         if (hydrogen_) hydrogen_->measure_energy_now();
     }
+    void measure_n_shell_now() {
+        if (hydrogen_) hydrogen_->measure_n_shell_now();
+    }
+    void measure_l_now() {
+        if (hydrogen_) hydrogen_->measure_l_now();
+    }
+    void measure_m_now() {
+        if (hydrogen_) hydrogen_->measure_m_now();
+    }
+    int last_partial_outcome() const {
+        return hydrogen_ ? hydrogen_->last_partial_outcome() : -99;
+    }
+    void debug_prepare_superposition(int a, int b) {
+        if (hydrogen_) hydrogen_->debug_prepare_superposition(a, b);
+    }
     void toggle_view_mode() {
         director_->toggle_view_mode();
         refresh_status();
