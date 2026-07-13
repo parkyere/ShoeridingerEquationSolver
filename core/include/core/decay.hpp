@@ -81,7 +81,9 @@ struct JumpResult {
 // One Poisson decay trial over an interval dt: jump probability
 // p = 1 - exp(-gamma * P_e * dt) with P_e = |<excited|psi>|^2. On a jump the
 // state collapses onto the ground state (the photon carries the rest away);
-// on survival psi is untouched. u in [0,1) is the caller's uniform draw.
+// on survival psi is untouched HERE -- callers add the MCWF no-jump H_eff
+// damping separately (the app's GPU path does). u in [0,1) is the caller's
+// uniform draw.
 inline JumpResult quantum_jump(Field3D& psi, const Field3D& excited, const Field3D& ground,
                                double gamma, double dt, double u) {
     const double p_e = norm_sq(inner_product(excited, psi));

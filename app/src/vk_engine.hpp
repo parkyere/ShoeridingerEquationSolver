@@ -421,7 +421,8 @@ public:
 
     // psi <- (halfV . IFFT . kin . FFT . halfV)^nsteps psi. One submission;
     // a compute-to-compute barrier precedes every psi-aliasing dispatch.
-    // mask_handle >= 0 records the absorbing-mask multiply and bridge=true
+    // absorb=true damps psi by the absorbing mask after EVERY step (so the
+    // absorption rate is independent of batch length); bridge=true records
     // the psi -> volume store into the SAME submission (no extra fences).
     void step(int nsteps, bool absorb = false, bool bridge = false) {
         OneShot shot;
@@ -431,8 +432,9 @@ public:
         Recorder r{shot.cb(), true};
         for (int s = 0; s < nsteps; ++s) {
             run_step_body(r, half_mul_, halfv_set_, kin_mul_, kin3_set_);
+            record_absorb(r, absorb);
         }
-        record_batch_tail(shot.cb(), absorb, bridge);
+        record_bridge_tail(shot.cb(), bridge);
         shot.submit_and_wait(*ctx_);
         shot.destroy(*ctx_);
     }
@@ -473,8 +475,9 @@ public:
             run_step_body(r, half_mul_, halfv_set_, kin_mul_, kin3_set_);
             r.dispatch_dyn(kick_, kick_set_, mul_groups_,
                            static_cast<std::uint32_t>(2 * s + 1) * kick_stride_);
+            record_absorb(r, absorb);
         }
-        record_batch_tail(shot.cb(), absorb, bridge);
+        record_bridge_tail(shot.cb(), bridge);
         shot.submit_and_wait(*ctx_);
         shot.destroy(*ctx_);
     }
@@ -552,8 +555,9 @@ public:
             record_rotation(r, b, c);
             run_step_body(r, half_mul_, halfv_set_, kin_mul_, kin3_set_);
             record_rotation(r, b, c);
+            record_absorb(r, absorb);
         }
-        record_batch_tail(shot.cb(), absorb, bridge);
+        record_bridge_tail(shot.cb(), bridge);
         shot.submit_and_wait(*ctx_);
         shot.destroy(*ctx_);
     }
@@ -765,15 +769,19 @@ public:
         shot.destroy(*ctx_);
     }
 
-    // psi <- psi * state (elementwise): the absorbing-boundary damp.
-    // Record the real-time batch tail: the absorbing-mask multiply and/or
-    // the psi -> volume bridge into an ALREADY-recording command buffer.
-    void record_batch_tail(VkCommandBuffer cb, bool absorb, bool bridge) {
+    struct Recorder;  // defined below (batch-recording helper)
+
+    // psi <- psi * mask: the absorbing-boundary damp, recorded once PER STEP
+    // so the absorption rate cannot depend on how steps are batched.
+    void record_absorb(Recorder& r, bool absorb) {
         if (absorb && damp_set_ != VK_NULL_HANDLE) {
-            barrier_compute_to_compute(cb);
-            damp_.bind(cb, damp_set_);
-            vkCmdDispatch(cb, mul_groups_, 1, 1);
+            r.dispatch(damp_, damp_set_, mul_groups_);
         }
+    }
+
+    // Record the real-time batch tail: the psi -> volume bridge into an
+    // ALREADY-recording command buffer.
+    void record_bridge_tail(VkCommandBuffer cb, bool bridge) {
         // store_set_ (not ensure_volume): lazy creation submits its own
         // OneShot, which must never run while THIS cb is recording (the
         // shared OneShot pool would be reset under it). The first bridge

@@ -53,12 +53,12 @@ public:
         relaxer_->relax(psi_, nsteps);
     }
 
-    // Soft position measurement: sample a collapse cell from |psi|^2 using
-    // the injected uniform draw u, collapse psi onto a Gaussian of width
-    // sigma_m there, and return the collapse center. Instantaneous: real
-    // time does not advance.
+    // Soft position measurement: sample a collapse cell from the sigma_m-
+    // blurred POVM outcome density (detector-consistent Born rule) using the
+    // injected uniform draw u, collapse psi onto a Gaussian of width sigma_m
+    // there, and return the collapse center. Instantaneous.
     Vec3d measure(double u, double sigma_m) {
-        const int idx = sample_collapse_index(psi_, u);
+        const int idx = sample_povm_index(psi_, sigma_m, u);
         const int i = idx % grid_.x.n;
         const int j = (idx / grid_.x.n) % grid_.y.n;
         const int k = idx / (grid_.x.n * grid_.y.n);

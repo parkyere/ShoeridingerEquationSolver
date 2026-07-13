@@ -228,7 +228,7 @@ public:
             }
             // Projective ENERGY measurement (Key E): sample n from
             // P_n = |<phi_n|psi>|^2 and collapse; the deficit 1 - sum(P_n) is
-            // the continuum outcome (n = -1, psi left alone). Works paused.
+            // the continuum outcome (n = -1, manifold projected OUT).
             if (pending_energy_measure_) {
                 pending_energy_measure_ = false;
                 engine_.project_psi();
@@ -241,12 +241,46 @@ public:
                 last_measured_index_ = n;  // >=0 eigenstate, -1 outside manifold
                 if (n >= 0) {
                     atom_.collapse_onto(engine_, n);
+                    reset_ionized_tally();
                     write_display_texture();
                     last_measure_ = strf(
                         "%s (E %.3f eV)",
                         kStateSpec[static_cast<std::size_t>(n)].name,
                         atom_.state_energy(n) * kHaToEv);
                 } else {
+                    // A continuum verdict must not leave bound populations
+                    // behind: psi <- (1 - P)|psi>, renormalized. Estimate the
+                    // residual BEFORE mutating psi -- renormalizing an
+                    // fp32-noise remnant would amplify garbage ~1000x into a
+                    // "physical" cloud, so below the floor psi stays as is.
+                    double bound = 0.0;
+                    for (double p : pop) {
+                        bound += p;
+                    }
+                    const double residual = engine_.norm_and_peak().sum - bound;
+                    if (residual > 1e-4) {
+                        for (int s = 0; s < kNumStates; ++s) {
+                            if (pop[static_cast<std::size_t>(s)] < 1e-9) {
+                                continue;
+                            }
+                            const ses::Complex<double> c =
+                                atom_.project_state_amplitude(engine_, s);
+                            const int buf = atom_.synth_transient(engine_, s);
+                            if (buf >= 0) {
+                                engine_.add_state_into_psi(buf, -c.real(),
+                                                           -c.imag());
+                                engine_.release_state(buf);
+                            }
+                        }
+                        const ses_vk::Engine::NormPeak np =
+                            engine_.norm_and_peak();
+                        if (np.sum > 1e-12) {
+                            engine_.scale(
+                                static_cast<float>(1.0 / std::sqrt(np.sum)));
+                        }
+                        reset_ionized_tally();
+                        write_display_texture();
+                    }
                     last_measure_ = "outside tracked manifold";
                 }
                 title_dirty_ = true;
@@ -325,6 +359,9 @@ public:
     // ---- controls (the shell's key/toolbar entry points) ----
 
     void set_real_time() override {
+        if (stepping_ != Stepping::RealTime) {
+            reset_ionized_tally();  // manual relax exit = fresh preparation
+        }
         stepping_ = Stepping::RealTime;
         drop_relax_tables();
     }
@@ -373,6 +410,7 @@ public:
         laser_pol_ = LaserPol::Off;  // reset returns to the vanilla packet demo
         bfield_b_ = 0.0;             // and to no magnetic field
         upload_field_tables();    // restore the base half-potential
+        reset_ionized_tally();
         cpu_is_truth_ = true;  // GPU state discarded with the reset
         gpu_time_ = 0.0;
         pending_gpu_steps_ = 0;
@@ -391,6 +429,7 @@ public:
         ensure_cpu_current();
         std::uniform_real_distribution<double> uniform(0.0, 1.0);
         sim_.measure(uniform(rng_), kMeasureSigma);
+        reset_ionized_tally();  // the electron was FOUND: nothing escaped
         stepping_ = Stepping::RealTime;
         stage_active_view();
     }
@@ -473,6 +512,7 @@ public:
         static constexpr int kCycle[] = {k3DZ0, k4F0, k3S, k4S};
         const int idx = kCycle[excite_cycle_++ % 4];
         atom_.collapse_onto(engine_, idx);
+        reset_ionized_tally();
         cpu_is_truth_ = false;  // the GPU state is ahead now
         stepping_ = Stepping::RealTime;
     }
@@ -571,6 +611,10 @@ public:
     bool manifold_ready() const { return atlas_done_ && !atom_.channels().empty(); }
     double state_energy(int idx) const { return atom_.state_energy(idx); }
     long long photon_count() const { return photon_count_; }
+    // Cumulative absorbed (ionized) fraction since the last collapse/prep.
+    double ionized_fraction() const {
+        return std::max(0.0, 1.0 - bound_survival_);
+    }
     // Result of the most recent energy measurement: eigenstate index, -1 for
     // the outside-the-manifold outcome, -2 if none has run yet.
     int last_measured_index() const { return last_measured_index_; }
@@ -589,6 +633,7 @@ public:
             return;
         }
         atom_.collapse_onto(engine_, idx);
+        reset_ionized_tally();
         cpu_is_truth_ = false;
         stepping_ = Stepping::RealTime;
     }
@@ -703,6 +748,9 @@ public:
                       bfield_axis_ == 2 ? "z" : (bfield_axis_ == 0 ? "x" : "y"),
                       bfield_b_, 0.5 * bfield_b_);
         }
+        if (absorber_on_ && 1.0 - bound_survival_ > 5e-4) {
+            s += strf("  ionized %.1f%%", (1.0 - bound_survival_) * 100.0);
+        }
         if (!last_measure_.empty()) {
             s += strf("  measured %s", last_measure_.c_str());
         }
@@ -722,6 +770,13 @@ private:
     ses::Vec3d laser_axis() const {
         return laser_pol_ == LaserPol::X ? ses::Vec3d{1.0, 0.0, 0.0}
                                          : ses::Vec3d{0.0, 0.0, 1.0};
+    }
+
+    // A collapse or a fresh preparation resolves the absorbed-flux record:
+    // the electron was found bound, so the tally restarts from norm 1.
+    void reset_ionized_tally() {
+        bound_survival_ = 1.0;
+        norm_baseline_ = 1.0;
     }
 
     // MCWF no-jump damping: psi += (e^{-gamma_n dt/2} - 1) c_n |n> for each
@@ -758,6 +813,7 @@ private:
                                      pop[static_cast<std::size_t>(b)];
                           });
         bool damped = false;
+        double damp_loss = 0.0;  // norm removed by H_eff (NOT the absorber)
         for (int i = 0; i < std::min(n_cand, kMcwfMaxStates); ++i) {
             const int s = order[static_cast<std::size_t>(i)];
             const double f =
@@ -769,14 +825,21 @@ private:
             if (buf >= 0) {
                 engine_.add_state_into_psi(buf, d.real(), d.imag());
                 engine_.release_state(buf);
+                damp_loss += pop[static_cast<std::size_t>(s)] * (1.0 - f * f);
                 damped = true;
             }
         }
         if (damped) {
             const ses_vk::Engine::NormPeak np = engine_.norm_and_peak();
+            // Ionization tally: back out the analytically known H_eff loss
+            // so this renorm only launders the damping, not absorbed flux.
+            if (absorber_on_ && norm_baseline_ > 0.0) {
+                bound_survival_ *= (np.sum + damp_loss) / norm_baseline_;
+            }
             if (np.sum > 0.0) {
                 engine_.scale(static_cast<float>(1.0 / std::sqrt(np.sum)));
             }
+            norm_baseline_ = 1.0;
         }
     }
 
@@ -791,10 +854,19 @@ private:
             if (np.peak > 0.0) {
                 peak_ = np.peak;  // brightness tracks the cloud
             }
+            // Absorbed (ionized) flux tally BEFORE the renorm below, which
+            // would otherwise silently pump the lost norm back into the
+            // cloud. Signed ratio: fp32 drift cancels as a zero-mean walk.
+            if (absorber_on_ && np.sum > 0.0 && norm_baseline_ > 0.0) {
+                bound_survival_ *= np.sum / norm_baseline_;
+            }
             // fp32 drift renormalization: the split-operator is unitary in
             // exact arithmetic; pinning norm = 1 removes numerical decay.
             if (np.sum > 0.0 && std::abs(np.sum - 1.0) > 1e-4) {
                 engine_.scale(static_cast<float>(1.0 / std::sqrt(np.sum)));
+                norm_baseline_ = 1.0;
+            } else if (np.sum > 0.0) {
+                norm_baseline_ = np.sum;
             }
             // Semiclassical radiated power via the GPU mean-force reduction
             // (4 KB readback); ~0 for a stationary eigenstate.
@@ -816,8 +888,8 @@ private:
         } else {
             // The static E-field (if any) is folded into the half-potential,
             // so a plain step polarizes / field-ionizes correctly. The
-            // absorbing mask and the display bridge record into the same
-            // submission (batch tail).
+            // absorbing mask damps after every step; the display bridge
+            // records into the same submission.
             engine_.step(pending_gpu_steps_, absorber_on_, true);
         }
         // Time is credited where steps EXECUTE, so a stalled or
@@ -857,6 +929,7 @@ private:
                     const ShellChannel& ch =
                         atom_.channels()[static_cast<std::size_t>(pick.channel)];
                     atom_.collapse_onto(engine_, ch.to);
+                    reset_ionized_tally();
                     flash_ticks_ = 25;
                     ++photon_count_;
                     last_jump_ = strf("%s->%s", kStateSpec[ch.from].name,
@@ -920,6 +993,7 @@ private:
                              "relax: auto-complete -> real time (E=%.6f Ha, "
                              "t=%.1f au)\n",
                              stats.energy, sim_.time() + gpu_time_);
+                reset_ionized_tally();  // fresh preparation
                 free_deflation_buffers();  // converged -> free the phi
                 drop_relax_tables();
             }
@@ -982,29 +1056,38 @@ private:
         if (!gpu_ok_) {
             return;
         }
-        if (efield_e0_ > 0.0 || bfield_b_ > 0.0) {
+        // Memo: sliders re-fire on every drag frame and reset always calls
+        // with 0/0 -- skip the two 67 MB uploads when nothing changed.
+        if (efield_e0_ == uploaded_e0_ && bfield_b_ == uploaded_b_ &&
+            bfield_axis_ == uploaded_axis_) {
+            return;
+        }
+        uploaded_e0_ = efield_e0_;
+        uploaded_b_ = bfield_b_;
+        uploaded_axis_ = bfield_axis_;
+        std::vector<double> v = sim_.potential();
+        if (efield_e0_ > 0.0) {
             const ses::Grid3D& g = sim_.grid();
-            std::vector<double> v = sim_.potential();
-            if (efield_e0_ > 0.0) {
-                for (int k = 0; k < g.z.n; ++k) {
-                    const double ez = efield_e0_ * g.z.coord(k);
-                    for (int j = 0; j < g.y.n; ++j) {
-                        for (int i = 0; i < g.x.n; ++i) {
-                            v[static_cast<std::size_t>(g.flat(i, j, k))] += ez;
-                        }
+            for (int k = 0; k < g.z.n; ++k) {
+                const double ez = efield_e0_ * g.z.coord(k);
+                for (int j = 0; j < g.y.n; ++j) {
+                    for (int i = 0; i < g.x.n; ++i) {
+                        v[static_cast<std::size_t>(g.flat(i, j, k))] += ez;
                     }
                 }
             }
-            if (bfield_b_ > 0.0) {
-                // Reuse the core diamagnetic (perpendicular to the field axis).
-                const ses::MagneticPropagator3D mprop{g, v, sim_.dt(), bfield_b_,
-                                                      bfield_axis_};
-                v = mprop.effective_potential();
-            }
-            engine_.set_potential(v);
-        } else {
-            engine_.set_potential(sim_.potential());
         }
+        if (bfield_b_ > 0.0) {
+            // Reuse the core diamagnetic (perpendicular to the field axis).
+            const ses::MagneticPropagator3D mprop{sim_.grid(), v, sim_.dt(),
+                                                  bfield_b_, bfield_axis_};
+            v = mprop.effective_potential();
+        }
+        engine_.set_potential(v);
+        // Ehrenfest mean force must differentiate the SAME V psi evolves
+        // under: a stationary state of the FULL Hamiltonian reads
+        // <grad V> = 0 (no fake Larmor power with fields on).
+        engine_.set_potential_gradient(v);
     }
 
     // Free the OWNED transient deflation buffers (synthesized at relax-start).
@@ -1138,6 +1221,7 @@ private:
             peak_ = np.peak / np.sum;
         }
         norm_display_ = 1.0;
+        reset_ionized_tally();  // fresh preparation
         cpu_is_truth_ = false;  // the GPU state is the seed
         write_display_texture();
         volume_dirty_ = false;
@@ -1246,6 +1330,17 @@ private:
     // engine-backed calls pass engine_ explicitly.
     ses_shell::AtomModel atom_;
     bool proj_ready_ = false;  // static projection index uploaded
+
+    // Absorbed-flux (ionization) bookkeeping: 1 - bound_survival_ is the
+    // cumulative escaped fraction; any collapse/preparation resolves it.
+    double bound_survival_ = 1.0;
+    double norm_baseline_ = 1.0;  // norm at the last tally/renorm point
+
+    // Last field values whose tables reached the GPU (upload memo). The
+    // engine starts with the bare potential + gradient (init), i.e. 0/0.
+    double uploaded_e0_ = 0.0;
+    double uploaded_b_ = 0.0;
+    int uploaded_axis_ = 2;
 
     // Quantum-jump bookkeeping.
     std::string last_jump_;

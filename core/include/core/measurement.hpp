@@ -2,8 +2,10 @@
 
 // Soft position measurement (Gaussian POVM): collapse to a Gaussian packet,
 // not a delta. Randomness stays OUT of core: callers supply u in [0,1) and
-// the samplers invert the discrete CDF of |psi|^2 in flat-index order (the
-// uniform cell-volume factor cancels).
+// the samplers invert a discrete CDF in flat-index order (the uniform
+// cell-volume factor cancels). POVM consistency: the outcome density for the
+// Kraus mask e^{-(r-c)^2/(4 s^2)} is |psi|^2 BLURRED by a Gaussian of std
+// sigma_m (E_c = M_c^dag M_c), not raw |psi|^2 -- see sample_povm_index.
 
 #include <core/complex.hpp>
 #include <core/field.hpp>
@@ -19,7 +21,8 @@ namespace ses {
 // Projective energy measurement over populations P_n = |<phi_n|psi>|^2.
 // The tracked manifold is incomplete, so sum(P) <= 1: returns the collapsed
 // index n (project psi onto phi_n), or -1 for the 1 - sum(P) deficit
-// (continuum / untracked outcome: leave psi as is).
+// (continuum / untracked outcome: the caller projects the manifold OUT,
+// psi <- (1 - P)|psi>, so bound populations do not survive the verdict).
 inline int sample_energy_eigenstate(const std::vector<double>& populations, double u) {
     double cum = 0.0;
     for (std::size_t n = 0; n < populations.size(); ++n) {
@@ -47,6 +50,77 @@ inline int sample_collapse_index(const Field3D& psi, double u) {
         }
     }
     return static_cast<int>(n - 1);  // u ~ 1 with rounding: last occupied cell
+}
+
+// |psi|^2 convolved per axis with a normalized Gaussian of std sigma_m
+// (truncated at 4 sigma, periodic wrap -- the grid's FFT topology): the
+// Born-rule outcome density of the Gaussian POVM below.
+inline std::vector<double> povm_outcome_density(const Field3D& psi,
+                                                double sigma_m) {
+    const Grid3D& g = psi.grid();
+    const int nx = g.x.n;
+    const int ny = g.y.n;
+    const int nz = g.z.n;
+    std::vector<double> d(psi.data().size());
+    for (std::size_t i = 0; i < d.size(); ++i) {
+        d[i] = norm_sq(psi.data()[i]);
+    }
+    std::vector<double> tmp(d.size());
+    const Grid1D* axes[3] = {&g.x, &g.y, &g.z};
+    const int strides[3] = {1, nx, nx * ny};
+    for (int a = 0; a < 3; ++a) {
+        const int n = axes[a]->n;
+        const double h = axes[a]->spacing();
+        const int radius = static_cast<int>(std::ceil(4.0 * sigma_m / h));
+        std::vector<double> w(static_cast<std::size_t>(2 * radius + 1));
+        double sum = 0.0;
+        for (int t = -radius; t <= radius; ++t) {
+            const double x = t * h / sigma_m;
+            sum += w[static_cast<std::size_t>(t + radius)] = std::exp(-0.5 * x * x);
+        }
+        for (double& v : w) {
+            v /= sum;
+        }
+        const int stride = strides[a];
+        const int lines = nx * ny * nz / n;
+#pragma omp parallel for schedule(static)
+        for (int line = 0; line < lines; ++line) {
+            // Base index of this axis-a line: reinsert the axis dimension
+            // into the flattened remaining-dims counter.
+            const int base = line % stride + (line / stride) * stride * n;
+            for (int p = 0; p < n; ++p) {
+                double acc = 0.0;
+                for (int t = -radius; t <= radius; ++t) {
+                    const int q = (p + t % n + n) % n;
+                    acc += w[static_cast<std::size_t>(t + radius)] *
+                           d[static_cast<std::size_t>(base + q * stride)];
+                }
+                tmp[static_cast<std::size_t>(base + p * stride)] = acc;
+            }
+        }
+        d.swap(tmp);
+    }
+    return d;
+}
+
+// First flat index whose cumulative POVM outcome probability exceeds
+// u * total: detector-consistent sampling (outcomes CAN land on a node of
+// raw |psi|^2 that a sigma_m-resolution detector cannot resolve).
+inline int sample_povm_index(const Field3D& psi, double sigma_m, double u) {
+    const std::vector<double> d = povm_outcome_density(psi, sigma_m);
+    double total = 0.0;
+    for (double p : d) {
+        total += p;
+    }
+    const double target = u * total;
+    double cum = 0.0;
+    for (std::size_t i = 0; i < d.size(); ++i) {
+        cum += d[i];
+        if (cum > target) {
+            return static_cast<int>(i);
+        }
+    }
+    return static_cast<int>(d.size() - 1);  // u ~ 1 with rounding
 }
 
 // psi <- psi * exp(-|r - center|^2 / (4 sigma_m^2)), renormalized. Same

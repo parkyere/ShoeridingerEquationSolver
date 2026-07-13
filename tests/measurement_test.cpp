@@ -153,6 +153,63 @@ TEST(CollapseWavepacket, SharperMeasurementRespreadsFaster) {
     EXPECT_GT(sharp, broad * 1.5);  // decisively faster, not marginally
 }
 
+TEST(PovmOutcomeDensity, IsRawDensityBlurredByTheKrausWidth) {
+    // POVM consistency: E_c = M_c^dag M_c with M_c = e^{-(r-c)^2/(4 s^2)}
+    // means P(c) ~ |psi|^2 convolved with e^{-(r-c)^2/(2 s^2)} -- a Gaussian
+    // of std sigma_m. A single occupied cell gives the separable kernel
+    // itself: exact per-cell oracles.
+    const Grid1D axis{0.0, 16.0, 16};
+    const Grid3D g{axis, axis, axis};
+    Field3D psi{g};
+    psi(8, 8, 8) = Complex<double>{1.0, 0.0};
+
+    const std::vector<double> d = ses::povm_outcome_density(psi, 1.0);
+
+    // Per-axis taps t = -4..4 (radius 4 sigma), w_t = e^{-t^2/2} / S.
+    double s = 1.0;
+    for (int t = 1; t <= 4; ++t) {
+        s += 2.0 * std::exp(-0.5 * t * t);
+    }
+    const auto at = [&](int i, int j, int k) {
+        return d[static_cast<std::size_t>(g.flat(i, j, k))];
+    };
+    EXPECT_NEAR(at(8, 8, 8), 1.0 / (s * s * s), 1e-12);
+    EXPECT_NEAR(at(9, 8, 8) / at(8, 8, 8), std::exp(-0.5), 1e-12);
+
+    // The blur conserves total probability (periodic, normalized kernel).
+    double total = 0.0;
+    for (double p : d) {
+        total += p;
+    }
+    EXPECT_NEAR(total, 1.0, 1e-12);
+}
+
+TEST(SamplePovmIndex, CanLandWhereRawDensityHasANode) {
+    // Two occupied cells straddle an empty one. Raw CDF sampling can never
+    // return the node cell; a detector of resolution sigma_m ~ h must be
+    // able to (its outcome density there is nonzero).
+    const Grid1D axis{0.0, 16.0, 16};
+    const Grid3D g{axis, axis, axis};
+    Field3D psi{g};
+    psi(7, 8, 8) = Complex<double>{1.0, 0.0};
+    psi(9, 8, 8) = Complex<double>{1.0, 0.0};
+
+    const int node = g.flat(8, 8, 8);
+    const std::vector<double> d = ses::povm_outcome_density(psi, 1.0);
+    EXPECT_GT(d[static_cast<std::size_t>(node)], 0.0);
+
+    bool raw_hits_node = false;
+    bool povm_hits_node = false;
+    const int kDraws = 2000;
+    for (int k = 0; k < kDraws; ++k) {
+        const double u = (k + 0.5) / kDraws;
+        raw_hits_node |= ses::sample_collapse_index(psi, u) == node;
+        povm_hits_node |= ses::sample_povm_index(psi, 1.0, u) == node;
+    }
+    EXPECT_FALSE(raw_hits_node);
+    EXPECT_TRUE(povm_hits_node);
+}
+
 TEST(SimulationMeasure, CollapsesAtTheSampledCellAndKeepsTime) {
     const Grid1D axis{-8.0, 8.0, 16};
     const Grid3D g{axis, axis, axis};
@@ -168,8 +225,9 @@ TEST(SimulationMeasure, CollapsesAtTheSampledCellAndKeepsTime) {
     const double t_before = sim.time();
 
     // The center the sim reports must be the coordinate of exactly the cell
-    // that the tested CDF inversion picks for the same draw.
-    const int expected_idx = ses::sample_collapse_index(sim.psi(), 0.37);
+    // the POVM-consistent inversion picks for the same draw and detector
+    // width (outcomes sample the sigma_m-blurred density, not raw |psi|^2).
+    const int expected_idx = ses::sample_povm_index(sim.psi(), 0.6, 0.37);
     const Vec3d c = sim.measure(0.37, 0.6);
 
     const int nx = g.x.n;

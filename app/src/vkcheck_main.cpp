@@ -1215,9 +1215,9 @@ bool check_engine_step(ses_vk::DeviceContext& ctx) {
     return all_pass;
 }
 
-// Real-absorber batch tail: step(5, absorb) vs CPU 5 Strang steps followed
-// by ONE elementwise mask multiply (the tail damps once per batch). fp32
-// step tolerance; the mask itself multiplies exactly.
+// Real absorber, per-step: step(5, absorb) vs CPU {Strang step, elementwise
+// mask multiply} x5 -- the damp interleaves with every step, so absorption
+// cannot depend on batch length. fp32 step tolerance.
 bool check_engine_absorber(ses_vk::DeviceContext& ctx) {
     const ses::Grid1D axis{-4.0, 4.0, 8};
     const ses::Grid3D g{axis, axis, axis};
@@ -1232,19 +1232,21 @@ bool check_engine_absorber(ses_vk::DeviceContext& ctx) {
     ses_vk::Engine engine;
     if (!engine.initialize(ctx, g, engine_blobs_8(), v, dt, psi0.data()) ||
         !engine.set_absorber(mask)) {
-        std::printf("engine absorber tail: init FAIL\n");
+        std::printf("engine absorber per-step: init FAIL\n");
         return false;
     }
     engine.step(5, /*absorb=*/true);
     std::vector<float> gpu_out;
     if (!engine.readback(gpu_out)) {
-        std::printf("engine absorber tail: readback FAIL\n");
+        std::printf("engine absorber per-step: readback FAIL\n");
         return false;
     }
     ses::Field3D cpu = psi0;
-    cpu_prop.step(cpu, 5);
-    for (std::size_t i = 0; i < cpu.data().size(); ++i) {
-        cpu.data()[i] = cpu.data()[i] * ses::Complex<double>{mask[i], 0.0};
+    for (int s = 0; s < 5; ++s) {
+        cpu_prop.step(cpu, 1);
+        for (std::size_t i = 0; i < cpu.data().size(); ++i) {
+            cpu.data()[i] = cpu.data()[i] * ses::Complex<double>{mask[i], 0.0};
+        }
     }
     double max_err = 0.0;
     double max_mag = 0.0;
@@ -1259,8 +1261,8 @@ bool check_engine_absorber(ses_vk::DeviceContext& ctx) {
     const double tol = 1e-4 + 1e-5 * max_mag;
     const bool pass = max_err < tol;
     std::printf(
-        "engine absorber tail (real mask): max |gpu - cpu| = %.3e (tol %.3e)  "
-        "[%s]\n",
+        "engine absorber per-step (real mask): max |gpu - cpu| = %.3e "
+        "(tol %.3e)  [%s]\n",
         max_err, tol, pass ? "PASS" : "FAIL");
     return pass;
 }
