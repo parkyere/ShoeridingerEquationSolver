@@ -131,12 +131,29 @@ inline std::vector<double> absorbing_mask(const Grid3D& g, double width) {
         const double s = std::sin(0.5 * 3.14159265358979323846 * t);
         return s * s;  // smooth cos^2 ramp
     };
+    // Per-axis ramp tables (3n sin calls instead of 3n^3); the cell value is
+    // the same x*y*z product of identically computed factors -- bitwise
+    // identical to the former per-cell evaluation.
+    std::vector<double> mx(static_cast<std::size_t>(g.x.n));
+    std::vector<double> my(static_cast<std::size_t>(g.y.n));
+    std::vector<double> mz(static_cast<std::size_t>(g.z.n));
+    for (int i = 0; i < g.x.n; ++i) {
+        mx[static_cast<std::size_t>(i)] = axis(g.x, i);
+    }
+    for (int j = 0; j < g.y.n; ++j) {
+        my[static_cast<std::size_t>(j)] = axis(g.y, j);
+    }
+    for (int k = 0; k < g.z.n; ++k) {
+        mz[static_cast<std::size_t>(k)] = axis(g.z, k);
+    }
     std::vector<double> m(static_cast<std::size_t>(g.size()));
     for (int k = 0; k < g.z.n; ++k) {
         for (int j = 0; j < g.y.n; ++j) {
             for (int i = 0; i < g.x.n; ++i) {
                 m[static_cast<std::size_t>(g.flat(i, j, k))] =
-                    axis(g.x, i) * axis(g.y, j) * axis(g.z, k);
+                    mx[static_cast<std::size_t>(i)] *
+                    my[static_cast<std::size_t>(j)] *
+                    mz[static_cast<std::size_t>(k)];
             }
         }
     }
