@@ -1026,23 +1026,57 @@ private:
                               return pop[static_cast<std::size_t>(a)] >
                                      pop[static_cast<std::size_t>(b)];
                           });
-        bool damped = false;
-        double damp_loss = 0.0;  // norm removed by H_eff (NOT the absorber)
-        if (mcwf_scratch_ < 0) {
-            mcwf_scratch_ = engine_.create_scratch_state();
-        }
-        for (int i = 0; i < std::min(n_cand, kMcwfMaxStates); ++i) {
+        const int n_apply = std::min(n_cand, kMcwfMaxStates);
+        std::vector<ses::Complex<double>> dvals(
+            static_cast<std::size_t>(n_apply));
+        std::vector<double> loss(static_cast<std::size_t>(n_apply));
+        std::vector<ses_vk::Engine::McwfTerm> terms;
+        terms.reserve(static_cast<std::size_t>(n_apply));
+        bool fused_ok = true;
+        for (int i = 0; i < n_apply; ++i) {
             const int s = order[static_cast<std::size_t>(i)];
             const double f =
                 std::exp(-0.5 * gamma_out[static_cast<std::size_t>(s)] * dt);
             const ses::Complex<double> c =
                 atom_.project_state_amplitude(engine_, s);
-            const ses::Complex<double> d = (f - 1.0) * c;
-            if (mcwf_scratch_ >= 0 &&
-                atom_.synth_over(engine_, mcwf_scratch_, s)) {
-                engine_.add_state_into_psi(mcwf_scratch_, d.real(), d.imag());
-                damp_loss += pop[static_cast<std::size_t>(s)] * (1.0 - f * f);
-                damped = true;
+            dvals[static_cast<std::size_t>(i)] = (f - 1.0) * c;
+            loss[static_cast<std::size_t>(i)] =
+                pop[static_cast<std::size_t>(s)] * (1.0 - f * f);
+            ses_vk::Engine::McwfTerm t{};
+            if (fused_ok &&
+                atom_.mcwf_term(s, dvals[static_cast<std::size_t>(i)], &t)) {
+                terms.push_back(t);
+            } else {
+                fused_ok = false;
+            }
+        }
+        bool damped = false;
+        double damp_loss = 0.0;  // norm removed by H_eff (NOT the absorber)
+        if (n_apply > 0 && fused_ok &&
+            engine_.mcwf_axpy(terms, atom_.radial_grid().h(),
+                              atom_.radial_grid().rmax,
+                              atom_.radial_grid().n)) {
+            // Fused fast path: one dispatch for the whole damp set.
+            damped = true;
+            for (int i = 0; i < n_apply; ++i) {
+                damp_loss += loss[static_cast<std::size_t>(i)];
+            }
+        } else {
+            // Fallback: the per-state synth -> axpy chain (scratch reuse).
+            if (mcwf_scratch_ < 0) {
+                mcwf_scratch_ = engine_.create_scratch_state();
+            }
+            for (int i = 0; i < n_apply; ++i) {
+                const int s = order[static_cast<std::size_t>(i)];
+                const ses::Complex<double> d =
+                    dvals[static_cast<std::size_t>(i)];
+                if (mcwf_scratch_ >= 0 &&
+                    atom_.synth_over(engine_, mcwf_scratch_, s)) {
+                    engine_.add_state_into_psi(mcwf_scratch_, d.real(),
+                                               d.imag());
+                    damp_loss += loss[static_cast<std::size_t>(i)];
+                    damped = true;
+                }
             }
         }
         if (damped) {
@@ -1114,6 +1148,12 @@ private:
         // occluded paint cannot desync the clock from the state.
         gpu_time_ += pending_gpu_steps_ * sim_.dt();
 
+        // The title-cadence readouts below consume POST-step psi and submit
+        // on the batch's own queue: host-wait the async batch first --
+        // same-queue submission order alone carries no memory dependency.
+        if (gpu_title_due_) {
+            engine_.wait_async();
+        }
         // Orbital-free populations: ONE deposit pass on the post-step psi,
         // shared by the decay and laser readouts this title tick.
         if (gpu_title_due_ && proj_ready_ &&

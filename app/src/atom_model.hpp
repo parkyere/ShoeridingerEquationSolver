@@ -168,6 +168,22 @@ public:
                                        radial_grid_.n, out_peak, &state_norm2_[s]);
     }
 
+    // Fused-MCWF term for tracked state idx with coefficient d: radial table
+    // + (l, m) + the cached grid-norm normalizer (a constant per state).
+    // False when the cache is cold -- the caller falls back to synth_over.
+    bool mcwf_term(int idx, ses::Complex<double> d,
+                   ses_vk::Engine::McwfTerm* out) const {
+        const std::size_t s = static_cast<std::size_t>(idx);
+        const StateSpec& sp = kStateSpec[s];
+        const double n2 = state_norm2_[s];
+        if (n2 <= 0.0) {
+            return false;
+        }
+        *out = {&radial_u_[static_cast<std::size_t>(sp.level)], sp.l, sp.m,
+                d.real(), d.imag(), 1.0 / std::sqrt(n2)};
+        return true;
+    }
+
     // Re-synthesize eigenstate idx into an existing scratch buffer (the MCWF
     // path refills one buffer 8x per title tick; fresh transients would
     // device-idle + reallocate each time). Bookkeeping = synth_transient.

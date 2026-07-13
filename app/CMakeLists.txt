@@ -68,6 +68,7 @@ foreach(_k IN ITEMS phase_multiply scale norm_peak inner_product
         bridge_store bridge_load
         accum bloom_down bloom_up compose particles
         occupancy occ_dilate shadow half_mul kin_mul damp_mul phase_damp_mul
+        mcwf_axpy
         fft_line8 fft_line64 fft_line256)
     set(_src "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/${_k}.comp")
     set(_spv "${_ses_vk_spv_dir}/${_k}.spv")

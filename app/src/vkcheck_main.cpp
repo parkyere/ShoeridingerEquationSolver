@@ -43,6 +43,7 @@
 #include <kin_mul_spv.h>
 #include <damp_mul_spv.h>
 #include <phase_damp_mul_spv.h>
+#include <mcwf_axpy_spv.h>
 #include <conj_scale_spv.h>
 #include <scale_spv.h>
 #include <norm_peak_spv.h>
@@ -1119,6 +1120,8 @@ ses_vk::EngineKernels engine_blobs_8() {
     b.damp_size = k_damp_mul_spv_size;
     b.pd = k_phase_damp_mul_spv;
     b.pd_size = k_phase_damp_mul_spv_size;
+    b.mcwf = k_mcwf_axpy_spv;
+    b.mcwf_size = k_mcwf_axpy_spv_size;
     b.conj = k_conj_scale_spv;
     b.conj_size = k_conj_scale_spv_size;
     b.fft = k_fft_line8_spv;
@@ -2078,6 +2081,81 @@ float f16_quantize_rtz(float x) {
     return f16_bits_to_f32(f32_to_f16_bits_rtz(x));
 }
 
+// Fused MCWF axpy vs the sequential synthesize -> add_state_into_psi chain:
+// the same operator sum evaluated in one dispatch (in-register) vs three
+// psi round-trips per state -- identical math, small fp32 reorder tolerance.
+bool check_engine_mcwf_axpy(ses_vk::DeviceContext& ctx) {
+    const ses::Grid1D axis{-4.0, 4.0, 8};
+    const ses::Grid3D g{axis, axis, axis};
+    const std::vector<double> v =
+        ses::soft_coulomb_potential(g, 1.0, 1.0, ses::Vec3d{});
+    ses::Field3D psi0 = ses::gaussian_wavepacket(g, ses::Vec3d{1.0, 0.0, 0.0},
+                                                 ses::Vec3d{1.2, 1.2, 1.2},
+                                                 ses::Vec3d{});
+    ses_vk::Engine engine;
+    if (!engine.initialize(ctx, g, engine_blobs_8(), v, 0.02, psi0.data())) {
+        std::printf("mcwf_axpy (raw Vulkan): engine init FAIL\n");
+        return false;
+    }
+    const ses::RadialGrid rg{4.0, 63};
+    std::vector<double> vr(static_cast<std::size_t>(rg.n));
+    for (int i = 0; i < rg.n; ++i) {
+        vr[static_cast<std::size_t>(i)] = -1.0 / rg.r(i);
+    }
+    const ses::RadialState s0 =
+        ses::radial_eigenstate(rg, ses::radial_hamiltonian(rg, vr, 0), 0);
+    const ses::RadialState p0 =
+        ses::radial_eigenstate(rg, ses::radial_hamiltonian(rg, vr, 1), 0);
+    double n2s = 0.0;
+    double n2p = 0.0;
+    const int hs =
+        engine.synthesize_state(s0.u, 0, 0, rg.h(), rg.rmax, rg.n, nullptr,
+                                &n2s);
+    const int hp =
+        engine.synthesize_state(p0.u, 1, 0, rg.h(), rg.rmax, rg.n, nullptr,
+                                &n2p);
+    if (hs < 0 || hp < 0 || n2s <= 0.0 || n2p <= 0.0) {
+        std::printf("mcwf_axpy (raw Vulkan): synthesize FAIL\n");
+        return false;
+    }
+    // Chain path.
+    engine.upload_state(psi0.data());
+    engine.add_state_into_psi(hs, 0.03, -0.01);
+    engine.add_state_into_psi(hp, -0.02, 0.04);
+    std::vector<float> chain;
+    if (!engine.readback(chain)) {
+        std::printf("mcwf_axpy (raw Vulkan): readback FAIL\n");
+        return false;
+    }
+    // Fused path (same coefficients, cached-norm normalizers).
+    engine.upload_state(psi0.data());
+    const std::vector<ses_vk::Engine::McwfTerm> terms{
+        {&s0.u, 0, 0, 0.03, -0.01, 1.0 / std::sqrt(n2s)},
+        {&p0.u, 1, 0, -0.02, 0.04, 1.0 / std::sqrt(n2p)},
+    };
+    if (!engine.mcwf_axpy(terms, rg.h(), rg.rmax, rg.n)) {
+        std::printf("mcwf_axpy (raw Vulkan): fused dispatch FAIL\n");
+        return false;
+    }
+    std::vector<float> fused;
+    if (!engine.readback(fused) || fused.size() != chain.size()) {
+        std::printf("mcwf_axpy (raw Vulkan): fused readback FAIL\n");
+        return false;
+    }
+    double max_err = 0.0;
+    for (std::size_t i = 0; i < chain.size(); ++i) {
+        max_err = std::max(
+            max_err, static_cast<double>(std::abs(fused[i] - chain[i])));
+    }
+    const double tol = 1e-5;  // fp32 reorder between the two evaluations
+    const bool pass = max_err < tol;
+    std::printf(
+        "mcwf_axpy fused vs chain (raw Vulkan): max |diff| = %.3e (tol "
+        "%.0e)  [%s]\n",
+        max_err, tol, pass ? "PASS" : "FAIL");
+    return pass;
+}
+
 // SSBO -> 3D volume image bridge: copy psi into the RG16F volume via
 // imageStore, read it back through an SSBO (imageLoad). The store quantizes
 // to fp16 (display-only precision), so the oracle is the CPU-side fp16
@@ -2186,6 +2264,7 @@ int main() {
     failures += check_engine_project(ctx) ? 0 : 1;
     failures += check_engine_dipole_between(ctx) ? 0 : 1;
     failures += check_engine_fp16_consumers(ctx) ? 0 : 1;
+    failures += check_engine_mcwf_axpy(ctx) ? 0 : 1;
     failures += check_engine_bridge(ctx) ? 0 : 1;
     failures += check_engine_step_async(ctx) ? 0 : 1;
 #ifdef SES_HAVE_VKFFT

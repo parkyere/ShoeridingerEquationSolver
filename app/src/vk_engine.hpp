@@ -60,6 +60,8 @@ struct EngineKernels {
     std::size_t damp_size = 0;
     const unsigned char* pd = nullptr;  // phase_damp_mul.comp (fused V+mask;
     std::size_t pd_size = 0;            // optional: absent => separate passes)
+    const unsigned char* mcwf = nullptr;  // mcwf_axpy.comp (fused multi-state
+    std::size_t mcwf_size = 0;            // axpy; optional => per-state chain)
     std::size_t mul_size = 0;
     const unsigned char* conj = nullptr;   // conj_scale.comp
     std::size_t conj_size = 0;
@@ -102,6 +104,21 @@ struct HalfMulParams {
     float coef;  // -dt/2
     float pad0;
     float pad1;
+};
+// std140 mirror of mcwf_axpy.comp's Params (16-byte array strides).
+struct alignas(16) McwfParams {
+    std::uint32_t n;
+    std::int32_t nx;
+    std::int32_t ny;
+    std::int32_t n_states;
+    float box_min[4];
+    float cell_h[4];
+    std::int32_t n_radial;
+    float h_radial;
+    float rmax;
+    float pad0;
+    std::int32_t lm[8][4];  // [s] = {l, m, 0, 0}
+    float coef[8][4];       // [s] = {cre, cim, inv_norm, 0}
 };
 struct KinMulParams {
     std::uint32_t n;
@@ -284,6 +301,16 @@ public:
                 return false;
             }
             pd_kernel_ok_ = true;
+        }
+        // Optional fused multi-state axpy (the MCWF damping fast path).
+        if (blobs.mcwf != nullptr) {
+            if (!mcwf_.create(ctx, blobs.mcwf, blobs.mcwf_size,
+                              {{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+                               {1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER},
+                               {5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}})) {
+                return false;
+            }
+            mcwf_kernel_ok_ = true;
         }
 
         // std140 parameter blocks, written once into host-mapped UBOs (every
@@ -899,6 +926,121 @@ public:
     // instead of per-call create + release (release_state device-idles).
     int create_scratch_state() { return create_state_buffer_uninit(); }
 
+    static constexpr int kMcwfSlots = 8;
+    struct McwfTerm {
+        const std::vector<double>* u;  // radial table (n_radial entries)
+        int l;
+        int m;
+        double cre;
+        double cim;
+        double inv_norm;  // 1 / sqrt(cached grid norm2 of the raw synth)
+    };
+
+    // psi += sum_s (cre + i cim)_s * (normalized eigenstate s), evaluated
+    // fused in ONE dispatch -- the per-state synth -> normalize -> axpy
+    // chain moved 3 full psi round-trips per state. Same math; fp32
+    // rounding differs only by in-register order. inv_norm comes from the
+    // caller's cache (the grid norm of a fixed radial table is a constant).
+    // False = kernel absent / slot overflow / setup failure: caller falls
+    // back to the per-state chain.
+    bool mcwf_axpy(const std::vector<McwfTerm>& terms, double h_radial,
+                   double rmax, int n_radial) {
+        if (!mcwf_kernel_ok_ || terms.empty() ||
+            static_cast<int>(terms.size()) > kMcwfSlots || n_radial <= 0) {
+            return false;
+        }
+        const std::size_t slot = static_cast<std::size_t>(n_radial);
+        const VkDeviceSize rbytes =
+            static_cast<VkDeviceSize>(kMcwfSlots) * slot * sizeof(float);
+        if (mcwf_radial_.buf == VK_NULL_HANDLE ||
+            mcwf_radial_bytes_ != rbytes) {
+            vkDeviceWaitIdle(ctx_->device);
+            ctx_->destroy_buffer(&mcwf_radial_);
+            if (!ctx_->create_device_buffer(rbytes, &mcwf_radial_)) {
+                return false;
+            }
+            mcwf_radial_bytes_ = rbytes;
+            if (mcwf_set_ != VK_NULL_HANDLE) {
+                arena_.write_buffer(*ctx_, mcwf_set_, 5,
+                                    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                    mcwf_radial_.buf);
+            }
+        }
+        McwfParams mp{};
+        mp.n = static_cast<std::uint32_t>(cells_);
+        mp.nx = grid_.x.n;
+        mp.ny = grid_.y.n;
+        mp.n_states = static_cast<std::int32_t>(terms.size());
+        mp.box_min[0] = static_cast<float>(grid_.x.xmin);
+        mp.box_min[1] = static_cast<float>(grid_.y.xmin);
+        mp.box_min[2] = static_cast<float>(grid_.z.xmin);
+        mp.cell_h[0] = static_cast<float>(grid_.x.spacing());
+        mp.cell_h[1] = static_cast<float>(grid_.y.spacing());
+        mp.cell_h[2] = static_cast<float>(grid_.z.spacing());
+        mp.n_radial = n_radial;
+        mp.h_radial = static_cast<float>(h_radial);
+        mp.rmax = static_cast<float>(rmax);
+        std::vector<float> slots(static_cast<std::size_t>(kMcwfSlots) * slot,
+                                 0.0f);
+        for (std::size_t s = 0; s < terms.size(); ++s) {
+            const McwfTerm& t = terms[s];
+            if (t.u == nullptr || t.inv_norm <= 0.0) {
+                return false;
+            }
+            const std::size_t nsrc = std::min(t.u->size(), slot);
+            for (std::size_t j = 0; j < nsrc; ++j) {
+                slots[s * slot + j] = static_cast<float>((*t.u)[j]);
+            }
+            mp.lm[s][0] = t.l;
+            mp.lm[s][1] = t.m;
+            mp.coef[s][0] = static_cast<float>(t.cre);
+            mp.coef[s][1] = static_cast<float>(t.cim);
+            mp.coef[s][2] = static_cast<float>(t.inv_norm);
+        }
+        if (mcwf_ubo_.buf == VK_NULL_HANDLE) {
+            if (!write_ubo(&mcwf_ubo_, &mp, sizeof(mp))) {
+                return false;
+            }
+        } else {
+            std::memcpy(mcwf_ubo_.mapped, &mp, sizeof(mp));
+            vmaFlushAllocation(ctx_->allocator, mcwf_ubo_.alloc, 0,
+                               VK_WHOLE_SIZE);
+        }
+        if (mcwf_set_ == VK_NULL_HANDLE) {
+            mcwf_set_ = arena_.allocate(*ctx_, mcwf_.set_layout());
+            if (mcwf_set_ == VK_NULL_HANDLE) {
+                return false;
+            }
+            arena_.write_buffer(*ctx_, mcwf_set_, 0,
+                                VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, psi_.buf);
+            arena_.write_buffer(*ctx_, mcwf_set_, 1,
+                                VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                mcwf_ubo_.buf, sizeof(McwfParams));
+            arena_.write_buffer(*ctx_, mcwf_set_, 5,
+                                VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                mcwf_radial_.buf);
+        }
+        if (!ensure_staging(rbytes)) {
+            return false;
+        }
+        std::memcpy(staging_.mapped, slots.data(),
+                    static_cast<std::size_t>(rbytes));
+        vmaFlushAllocation(ctx_->allocator, staging_.alloc, 0, VK_WHOLE_SIZE);
+        OneShot shot;
+        if (!shot.begin_compute(*ctx_)) {
+            return false;
+        }
+        const VkBufferCopy up{0, 0, rbytes};
+        vkCmdCopyBuffer(shot.cb(), staging_.buf, mcwf_radial_.buf, 1, &up);
+        barrier_transfer_to_compute(shot.cb());
+        barrier_compute_to_compute(shot.cb());  // psi vs earlier submissions
+        mcwf_.bind(shot.cb(), mcwf_set_);
+        vkCmdDispatch(shot.cb(), mul_groups_, 1, 1);
+        const bool ok = shot.submit_and_wait(*ctx_);
+        shot.destroy(*ctx_);
+        return ok;
+    }
+
     // Re-synthesize into an existing fp32 state buffer (see scratch note).
     bool synthesize_state_over(int handle, const std::vector<double>& u,
                                int l, int m, double h_radial, double rmax,
@@ -1501,6 +1643,9 @@ public:
         kin_mul_.destroy(*ctx_);
         damp_.destroy(*ctx_);
         phase_damp_.destroy(*ctx_);
+        mcwf_.destroy(*ctx_);
+        ctx_->destroy_buffer(&mcwf_radial_);
+        ctx_->destroy_buffer(&mcwf_ubo_);
         ctx_->destroy_buffer(&relax_kin_);
         ctx_->destroy_buffer(&relax_half_);
         ctx_->destroy_buffer(&decode_scratch_[1]);
@@ -2449,6 +2594,7 @@ private:
     Kernel kin_mul_;
     Kernel damp_;
     Kernel phase_damp_;  // fused V+mask (optional; pd_kernel_ok_)
+    Kernel mcwf_;        // fused multi-state axpy (optional; mcwf_kernel_ok_)
     Kernel conj_;
     Kernel fft_;
     Kernel norm_;
@@ -2536,6 +2682,11 @@ private:
     VkDescriptorSet pd_full_set_ = VK_NULL_HANDLE;  // fused V+mask, coef -dt
     VkDescriptorSet pd_half_set_ = VK_NULL_HANDLE;  // fused V+mask, coef -dt/2
     bool pd_kernel_ok_ = false;
+    Buffer mcwf_radial_{};  // kMcwfSlots x n_radial floats (slotted tables)
+    VkDeviceSize mcwf_radial_bytes_ = 0;
+    Buffer mcwf_ubo_{};
+    VkDescriptorSet mcwf_set_ = VK_NULL_HANDLE;
+    bool mcwf_kernel_ok_ = false;
     VkDescriptorSet conj1_set_ = VK_NULL_HANDLE;
     VkDescriptorSet conjN_set_ = VK_NULL_HANDLE;
     VkDescriptorSet fft_set_[3] = {VK_NULL_HANDLE, VK_NULL_HANDLE,

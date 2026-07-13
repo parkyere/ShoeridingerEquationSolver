@@ -45,6 +45,9 @@ protected:
         if (!gpu_title_due_ || ++probe_phase_ % 3 != 0) {
             return;
         }
+        // The readback consumes POST-step psi: host-wait the async batch
+        // (same-queue submission order carries no memory dependency).
+        engine_.wait_async();
         engine_.readback(readback_buf_);
         const ses::Grid3D& g = sim_.grid();
         const double dv = g.cell_volume();
