@@ -195,8 +195,11 @@ public:
     }
 
     // Downward pairs worth a dipole integral: gap > 1e-3 skips degenerate
-    // m-splittings and sub-mHa channels; |dl| = 1 applies the E1 selection
-    // rule analytically (else thousands of forbidden integrals).
+    // m-splittings and sub-mHa channels; |dl| = 1 and the real-basis m rule
+    // apply the E1 selection rules analytically. In the tesseral basis the
+    // phi integral makes z couple m' == m only and x/y couple
+    // ||m'| - |m|| == 1 only -- everything else (including m' == -m) is
+    // EXACTLY zero, so those integrals never reach the GPU.
     void collect_channel_pairs() {
         pair_queue_.clear();
         for (int from = 0; from < kNumStates; ++from) {
@@ -205,9 +208,13 @@ public:
                     state_energy_[static_cast<std::size_t>(from)] -
                         state_energy_[static_cast<std::size_t>(to)] >
                     1e-3;
-                const bool e1_allowed =
+                const bool dl_allowed =
                     std::abs(kStateSpec[from].l - kStateSpec[to].l) == 1;
-                if (downward && e1_allowed) {
+                const int mf = kStateSpec[from].m;
+                const int mt = kStateSpec[to].m;
+                const bool dm_allowed =
+                    mt == mf || std::abs(std::abs(mt) - std::abs(mf)) == 1;
+                if (downward && dl_allowed && dm_allowed) {
                     pair_queue_.push_back({from, to});
                 }
             }
