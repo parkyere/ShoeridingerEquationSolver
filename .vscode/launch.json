@@ -2,20 +2,26 @@
     "version": "0.2.0",
     "configurations": [
         {
-            // F5: build the active preset, then launch/debug the CMake launch
-            // target. Select `sesolver_app` as the launch target once in the
-            // CMake Tools status bar; thereafter F5 just works.
-            "name": "sesolver_app (build + run)",
+            // F5 (VS Code on Linux): build sesolver_app for the active
+            // preset, then debug under gdb. The program path derives from the
+            // active configure preset, so no launch-target prompt appears.
+            //
+            // Windows uses Visual Studio directly (CMakePresets.json): set
+            // the startup item to the sesolver_app.exe CMake target -- VS's
+            // native debugger needs no config here. If VS surfaces THIS
+            // entry in its startup dropdown, ignore it (gdb cannot debug
+            // MSVC binaries).
+            "name": "sesolver_app (Linux/gdb)",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${command:cmake.launchTargetPath}",
+            "program": "${workspaceFolder}/out/build/${command:cmake.activeConfigurePresetName}/app/sesolver_app",
             "args": [],
             "stopAtEntry": false,
-            "cwd": "${command:cmake.launchTargetDirectory}",
+            "cwd": "${workspaceFolder}/out/build/${command:cmake.activeConfigurePresetName}/app",
             "environment": [],
             "MIMode": "gdb",
             "miDebuggerPath": "gdb",
-            "preLaunchTask": "cmake-build",
+            "preLaunchTask": "cmake-build-app",
             "setupCommands": [
                 {
                     "description": "Enable pretty-printing for gdb",
