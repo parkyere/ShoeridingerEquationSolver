@@ -48,6 +48,13 @@ public:
     // Camera start distance framing this scene's box (Bohr).
     virtual double default_camera_distance() const { return 150.0; }
 
+    // Visualized time scale: multiply the steps SUPPLIED per wall tick (and
+    // the per-frame consumption cap). dt is untouched -- more integrator
+    // steps per rendered frame, never larger ones -- so accuracy is
+    // preserved and the GPU saturating just lowers fps honestly.
+    virtual void set_time_scale(int scale) { (void)scale; }
+    virtual int time_scale() const { return 1; }
+
     // ---- display accessors (FrameInput assembly + title) ----
     virtual bool cloud() const = 0;
     virtual double peak() const = 0;

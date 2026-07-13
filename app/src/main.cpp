@@ -257,10 +257,10 @@ public:
             if (hydrogen_ != nullptr) {
                 ses_shell::draw_hydrogen_panel(*this, ui_);
             } else if (tunneling_ != nullptr) {
-                ses_shell::draw_generic_panel(*this, {});
+                ses_shell::draw_generic_panel(*this, ui_, {});
             } else {
                 ses_shell::draw_generic_panel(
-                    *this, {{"Relax to ground (2)", '2'}});
+                    *this, ui_, {{"Relax to ground (2)", '2'}});
             }
             ImGui::Render();
             ImDrawData* dd = ImGui::GetDrawData();
@@ -335,6 +335,10 @@ public:
         refresh_status();
     }
     int bfield_axis() const { return hydrogen_ ? hydrogen_->bfield_axis() : 2; }
+    void set_time_scale(int scale) {
+        director_->set_time_scale(scale);
+        refresh_status();
+    }
 
     // ImGui panel entry point: feed a scenario key as if typed.
     void press(char ch) {

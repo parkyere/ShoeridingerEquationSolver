@@ -275,18 +275,26 @@ public:
         if (use_gpu_path()) {
             // Steps execute in run_frame (once per paint); cap the backlog.
             // The laser demo steps hotter so a flop fits in wall seconds.
+            // time_scale_ multiplies the SUPPLY and the cap together (same
+            // dt, more steps per rendered frame): visualized time runs Nx
+            // while the GPU keeps up, then saturates into a lower fps -- a
+            // bounded backlog, never a UI freeze.
             const int per_tick =
-                (stepping_ == Stepping::RealTime && laser_pol_ != LaserPol::Off)
-                    ? kLaserStepsPerTick
-                    : kStepsPerTick;
+                ((stepping_ == Stepping::RealTime && laser_pol_ != LaserPol::Off)
+                     ? kLaserStepsPerTick
+                     : kStepsPerTick) *
+                time_scale_;
             pending_gpu_steps_ =
-                std::min(pending_gpu_steps_ + per_tick, kMaxPendingGpuSteps);
+                std::min(pending_gpu_steps_ + per_tick,
+                         std::max(kMaxPendingGpuSteps, 2 * time_scale_));
             if (++ticks_ % 10 == 0) {
                 gpu_title_due_ = true;
             }
             return;
         }
         ensure_cpu_current();
+        // CPU fallback: deliberately NOT time-scaled -- steps run
+        // synchronously inside the tick, so scaling would stall the UI.
         if (stepping_ == Stepping::RealTime) {
             sim_.advance(kStepsPerTick);
         } else {
@@ -298,6 +306,12 @@ public:
             title_dirty_ = true;
         }
     }
+
+    // Visualized time scale (see scenario.hpp): steps per tick, not dt.
+    void set_time_scale(int scale) override {
+        time_scale_ = std::clamp(scale, 1, 16);
+    }
+    int time_scale() const override { return time_scale_; }
 
     // ---- controls (the shell's key/toolbar entry points) ----
 
@@ -781,6 +795,10 @@ private:
                     ++photon_count_;
                     last_jump_ = strf("%s->%s", kStateSpec[ch.from].name,
                                       kStateSpec[ch.to].name);
+                    std::fprintf(stderr,
+                                 "decay: jump %s (photon #%lld, t=%.1f au)\n",
+                                 last_jump_.c_str(), photon_count_,
+                                 sim_.time() + gpu_time_);
                     title_dirty_ = true;
                 }
             }
@@ -824,6 +842,10 @@ private:
             if (relax_plateau_ >= 12) {  // ~2 s of stable readout
                 relax_plateau_ = 0;
                 stepping_ = Stepping::RealTime;
+                std::fprintf(stderr,
+                             "relax: auto-complete -> real time (E=%.6f Ha, "
+                             "t=%.1f au)\n",
+                             stats.energy, sim_.time() + gpu_time_);
                 free_deflation_buffers();  // converged -> free the phi
                 drop_relax_tables();
             }
@@ -1135,6 +1157,7 @@ private:
     bool gpu_ok_ = false;
     bool cpu_is_truth_ = true;
     int pending_gpu_steps_ = 0;
+    int time_scale_ = 1;  // steps-per-tick multiplier (dt untouched)
     bool pending_energy_measure_ = false;  // Key E: serviced in run_frame
     bool gpu_title_due_ = false;
     bool title_dirty_ = false;

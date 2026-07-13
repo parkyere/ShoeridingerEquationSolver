@@ -17,9 +17,25 @@ namespace ses_shell {
 
 // Shared UI state the sliders edit between frames (owned by the shell).
 struct UiState {
-    float efield = 0.0f;   // au; 0 = off (max 0.1)
-    float bfield = 0.0f;   // au; 0 = off (max 0.2)
+    float efield = 0.0f;    // au; 0 = off (max 0.1)
+    float bfield = 0.0f;    // au; 0 = off (max 0.2)
+    int time_scale = 1;     // steps-per-frame multiplier (dt untouched)
 };
+
+// The visualized-time slider, shared by every scenario panel: multiplies the
+// integrator steps per rendered frame (dt and accuracy untouched); past the
+// GPU's headroom the fps drops honestly instead of skipping physics.
+template <typename ShellT>
+void draw_time_scale(ShellT& shell, UiState& ui) {
+    if (ImGui::SliderInt("Time scale", &ui.time_scale, 1, 16, "x%d")) {
+        shell.set_time_scale(ui.time_scale);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Run N integrator steps per rendered frame (same "
+                          "dt -- accuracy is unchanged).\nWhen the GPU "
+                          "saturates, the frame rate drops instead.");
+    }
+}
 
 template <typename ShellT>
 void draw_hydrogen_panel(ShellT& shell, UiState& ui) {
@@ -84,6 +100,8 @@ void draw_hydrogen_panel(ShellT& shell, UiState& ui) {
                           "precess about z.");
     }
 
+    draw_time_scale(shell, ui);
+
     ImGui::Separator();
     ImGui::PushTextWrapPos(0.0f);
     ImGui::TextUnformatted(shell.status_text().c_str());
@@ -92,7 +110,7 @@ void draw_hydrogen_panel(ShellT& shell, UiState& ui) {
 }
 
 template <typename ShellT>
-void draw_generic_panel(ShellT& shell,
+void draw_generic_panel(ShellT& shell, UiState& ui,
                         std::initializer_list<std::pair<const char*, char>>
                             scene_keys) {
     ImGui::SetNextWindowPos(ImVec2(8, 8), ImGuiCond_FirstUseEver);
@@ -110,6 +128,7 @@ void draw_generic_panel(ShellT& shell,
     if (ImGui::Button("Cloud/Surface (Tab)")) shell.toggle_view_mode();
     ImGui::SameLine();
     if (ImGui::Button("Pause (Space)")) shell.toggle_pause();
+    draw_time_scale(shell, ui);
     ImGui::Separator();
     ImGui::PushTextWrapPos(0.0f);
     ImGui::TextUnformatted(shell.status_text().c_str());

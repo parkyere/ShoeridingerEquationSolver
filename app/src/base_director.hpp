@@ -125,14 +125,18 @@ public:
 
     void tick() override {
         if (use_gpu_path()) {
-            pending_gpu_steps_ = std::min(pending_gpu_steps_ + steps_per_tick(),
-                                          kBaseMaxPendingSteps);
+            // time_scale_ multiplies the supply AND the cap (same dt, more
+            // steps per rendered frame -- see scenario.hpp).
+            pending_gpu_steps_ =
+                std::min(pending_gpu_steps_ + steps_per_tick() * time_scale_,
+                         std::max(kBaseMaxPendingSteps, 2 * time_scale_));
             if (++ticks_ % 10 == 0) {
                 gpu_title_due_ = true;
             }
             return;
         }
         ensure_cpu_current();
+        // CPU fallback: not time-scaled (synchronous steps would stall the UI).
         if (stepping_ == BaseStepping::RealTime) {
             sim_.advance(kBaseStepsPerTick);
         } else {
@@ -144,6 +148,12 @@ public:
             title_dirty_ = true;
         }
     }
+
+    // Visualized time scale (see scenario.hpp): steps per tick, not dt.
+    void set_time_scale(int scale) override {
+        time_scale_ = std::clamp(scale, 1, 16);
+    }
+    int time_scale() const override { return time_scale_; }
 
     // ---- generic controls ----
 
@@ -399,6 +409,7 @@ protected:
     bool gpu_ok_ = false;
     bool cpu_is_truth_ = true;  // the same single sync invariant as hydrogen
     int pending_gpu_steps_ = 0;
+    int time_scale_ = 1;  // steps-per-tick multiplier (dt untouched)
     bool gpu_title_due_ = false;
     bool title_dirty_ = false;
     double gpu_time_ = 0.0;

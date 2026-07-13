@@ -62,15 +62,19 @@ void register_verification_arcs(ShellT* shell) {
         });
     }
 
-    // Decay arc: prepare 2p, return to real time, require >= 1 quantum jump
-    // (after the jump the atom sits in 1s, so one photon is the expected
-    // outcome). Photon verdicts count from a baseline at the arc's start.
+    // Decay arc: prepare 2p WITH DECAY OFF (relaxation auto-completes into
+    // real time, and an armed 2p would fire its one photon BEFORE the
+    // baseline -- the n<=5 seed converges fast enough to lose that race
+    // most runs), then arm decay exactly when the counting window opens.
+    // >= 1 jump expected: tau_display ~ 8 au vs a ~75 au window.
     if (shell->has_arg("--selftest-decay")) {
         run_when_manifold_ready(shell, [shell] {
+            shell->toggle_decay();      // OFF: hold the prepared 2p
             shell->relax_to_excited();  // caches ready: no block
             shell->sched().after(13500, [shell] {
                 const long long baseline = shell->photon_count();
-                shell->set_real_time();  // decay is already armed
+                shell->set_real_time();
+                shell->toggle_decay();  // ON: the window starts NOW
                 shell->sched().after(30000, [shell, baseline] {
                     const long long fresh = shell->photon_count() - baseline;
                     std::fprintf(stderr, "selftest-decay: photons = %lld  [%s]\n",
@@ -165,10 +169,14 @@ void register_verification_arcs(ShellT* shell) {
 
     // Cascade arc: excite 3d_z2 and require >= 2 photons -- 3d cannot reach
     // 1s directly (dl = 2), so two photons prove 3d -> 2p -> 1s fired.
+    // 3d's display lifetime is ~80 au (10x the 2p, as in real hydrogen), so
+    // a 1x 90 s window is only ~2.8 lifetimes -- a ~6% Poisson false-fail.
+    // Time-scale 4x packs ~11 lifetimes into the same wall window (~2e-5).
     if (shell->has_arg("--selftest-cascade")) {
         run_when_manifold_ready(shell, [shell] {
             const long long baseline = shell->photon_count();
             shell->excite_n3();  // first in the cycle: 3d_z2
+            shell->set_time_scale(4);
             shell->sched().after(90000, [shell, baseline] {
                 const long long fresh = shell->photon_count() - baseline;
                 std::fprintf(stderr, "selftest-cascade: photons = %lld  [%s]\n",
