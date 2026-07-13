@@ -4,10 +4,12 @@
 // STANDARD LIBRARY -- only third-party libraries (FFTW, GLM, ...) are
 // hand-rolled (user decision; see docs/ARCHITECTURE.md).
 //
-// The build adds -fcx-limited-range on GCC/Clang so complex multiply/divide
-// compile to the naive formulas (no C99 Annex G NaN/inf fixup calls): the
-// exact arithmetic the test oracles are pinned against, and free of
-// __muldc3 branches in the FFT hot loop.
+// The build adds -fcx-limited-range (GCC) / -fcomplex-arithmetic=basic
+// (Clang 18+) where supported, so complex multiply/divide compile to the
+// naive formulas (no C99 Annex G NaN/inf fixup calls): the exact arithmetic
+// the test oracles are pinned against, and free of __muldc3 branches in the
+// FFT hot loop. Compilers with neither flag keep Annex G -- finite results
+// are identical (the fixup only patches NaN/inf), just with the libcall.
 
 #include <complex>
 

@@ -62,7 +62,8 @@ research-grade mean-field (DFT) project. We stay single-electron on purpose.
 
 The boundary applies to THIRD-PARTY libraries only. The **C++ standard
 library is always fair game** (user decision): `ses::Complex` is an alias of
-`std::complex` (built with `-fcx-limited-range` so multiply/divide use the
+`std::complex` (built with `-fcx-limited-range` / Clang's
+`-fcomplex-arithmetic=basic` where supported, so multiply/divide use the
 naive formulas the exact-value test oracles pin), and `std::vector`,
 `<cmath>`, `<numbers>`, `<random>` etc. are used freely.
 

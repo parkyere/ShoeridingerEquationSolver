@@ -100,7 +100,25 @@ if(NOT MSVC)
     # formulas (no C99 Annex G NaN/inf fixups, no __muldc3 branches in the
     # FFT hot loop) -- bitwise identical to the arithmetic the exact-value
     # test oracles were pinned against. (MSVC never emits Annex G fixups.)
-    target_compile_options(ses_arch INTERFACE -fcx-limited-range)
+    # GCC spells the flag -fcx-limited-range; Clang 18+ spells it
+    # -fcomplex-arithmetic=basic; older Clang has neither, which is SAFE to
+    # omit: __mulsc3 computes the same naive formula for finite values and
+    # only patches NaN/inf afterward, so the oracles still hold -- the flag
+    # only removes the libcall from the hot loop.
+    include(CheckCXXCompilerFlag)
+    check_cxx_compiler_flag("-fcx-limited-range" SES_HAS_FCX_LIMITED_RANGE)
+    if(SES_HAS_FCX_LIMITED_RANGE)
+        target_compile_options(ses_arch INTERFACE -fcx-limited-range)
+    else()
+        check_cxx_compiler_flag("-fcomplex-arithmetic=basic"
+                                SES_HAS_FCOMPLEX_ARITH_BASIC)
+        if(SES_HAS_FCOMPLEX_ARITH_BASIC)
+            target_compile_options(ses_arch INTERFACE -fcomplex-arithmetic=basic)
+        else()
+            message(STATUS "complex limited-range flag unsupported -- "
+                "std::complex keeps Annex G (finite results identical).")
+        endif()
+    endif()
 endif()
 # SES_NATIVE (host-CPU tuning) takes precedence over the portable AVX2 flags.
 # It keeps -ffp-contract=off AND pins the vector width to 256 (see below), so
