@@ -87,6 +87,14 @@ struct DeviceContext {
     VkQueue compute_queue = VK_NULL_HANDLE;
     VmaAllocator allocator = VK_NULL_HANDLE;
     bool validation_active = false;
+    // Item 0a: forward-safe feature negotiation results. create_device probes
+    // phys_dev and enables ONLY the supported subset; downstream fast paths
+    // gate on these (never assume Pascal limits -- newer NVIDIA must run this
+    // unchanged). adopt() leaves them false (the owner enabled its features).
+    bool feat_timeline_semaphore = false;
+    bool feat_synchronization2 = false;
+    bool feat_host_query_reset = false;
+    bool feat_storage16 = false;
     char device_name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE] = {};
 
     DeviceContext() = default;
@@ -302,6 +310,43 @@ struct DeviceContext {
             dci.enabledExtensionCount = 1;
             dci.ppEnabledExtensionNames = &kSwapchainExt;
         }
+
+        // Forward-safe feature negotiation (Item 0a). PROBE what phys_dev
+        // actually supports, then ENABLE only that subset -- Pascal is the
+        // floor but newer NVIDIA must run this unchanged, so never assume, ask.
+        // pEnabledFeatures stays null; features ride the pNext chain of core
+        // VkPhysicalDeviceVulkan1{1,2,3}Features (the Vulkan 1.4 idiom).
+        VkPhysicalDeviceVulkan13Features probe13{};
+        probe13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+        VkPhysicalDeviceVulkan12Features probe12{};
+        probe12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+        probe12.pNext = &probe13;
+        VkPhysicalDeviceVulkan11Features probe11{};
+        probe11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+        probe11.pNext = &probe12;
+        VkPhysicalDeviceFeatures2 probe{};
+        probe.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        probe.pNext = &probe11;
+        vkGetPhysicalDeviceFeatures2(phys_dev, &probe);
+        feat_timeline_semaphore = probe12.timelineSemaphore == VK_TRUE;
+        feat_host_query_reset = probe12.hostQueryReset == VK_TRUE;
+        feat_synchronization2 = probe13.synchronization2 == VK_TRUE;
+        feat_storage16 = probe11.storageBuffer16BitAccess == VK_TRUE;
+
+        VkPhysicalDeviceVulkan13Features en13{};
+        en13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+        en13.synchronization2 = feat_synchronization2 ? VK_TRUE : VK_FALSE;
+        VkPhysicalDeviceVulkan12Features en12{};
+        en12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+        en12.timelineSemaphore = feat_timeline_semaphore ? VK_TRUE : VK_FALSE;
+        en12.hostQueryReset = feat_host_query_reset ? VK_TRUE : VK_FALSE;
+        en12.pNext = &en13;
+        VkPhysicalDeviceVulkan11Features en11{};
+        en11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+        en11.storageBuffer16BitAccess = feat_storage16 ? VK_TRUE : VK_FALSE;
+        en11.pNext = &en12;
+        dci.pNext = &en11;
+
         if (vkCreateDevice(phys_dev, &dci, nullptr, &device) != VK_SUCCESS) {
             return Boot::error;
         }

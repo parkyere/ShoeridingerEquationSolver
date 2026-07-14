@@ -2502,6 +2502,26 @@ bool check_engine_bridge(ses_vk::DeviceContext& ctx) {
     return pass;
 }
 
+// Item 0a: the forward-safe feature negotiation in create_device must ENABLE
+// (not merely advertise) the bits the Pascal-baseline optimization ladder
+// builds on -- timeline semaphores, synchronization2, host query reset, 16-bit
+// storage. On the Pascal floor (P5000 = 1.4.312) all four are supported, so
+// all four must read back enabled. RED before create_device gained the
+// probe-and-enable chain (every bit false); GREEN once it enables the
+// supported subset. A device that genuinely lacks one would fail here loudly
+// rather than fault later when a fast path uses it.
+bool check_device_features(const ses_vk::DeviceContext& ctx) {
+    const bool pass = ctx.feat_timeline_semaphore && ctx.feat_synchronization2 &&
+                      ctx.feat_host_query_reset && ctx.feat_storage16;
+    std::printf("device feature negotiation (Pascal floor): timeline=%d "
+                "sync2=%d hostQueryReset=%d storage16=%d  [%s]\n",
+                ctx.feat_timeline_semaphore ? 1 : 0,
+                ctx.feat_synchronization2 ? 1 : 0,
+                ctx.feat_host_query_reset ? 1 : 0, ctx.feat_storage16 ? 1 : 0,
+                pass ? "PASS" : "FAIL");
+    return pass;
+}
+
 }  // namespace
 
 int main() {
@@ -2522,6 +2542,7 @@ int main() {
                 ctx.validation_active ? " [validation ON]" : "");
 
     int failures = 0;
+    failures += check_device_features(ctx) ? 0 : 1;
     failures += check_phase_multiply(ctx) ? 0 : 1;
     failures += check_scale(ctx) ? 0 : 1;
     failures += check_norm_peak(ctx) ? 0 : 1;
