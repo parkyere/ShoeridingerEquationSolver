@@ -1347,9 +1347,9 @@ bool check_engine_absorber(ses_vk::DeviceContext& ctx) {
 // SAME fp32-quantized density against the SAME float-rounded iso, so the
 // triangle COUNT must match exactly; the GPU emits block-major, the CPU
 // row-major, so both meshes are canonicalized by a grid-rounded triangle key
-// before the per-vertex compare (position/normal tight; phase colour skipped
-// only at its wheel seams, where a sub-ULP atan2 diff legitimately flips a
-// channel -- see the loop).
+// before the per-vertex compare (position/normal tight; phase colour compared
+// as a CYCLIC hue distance -- the wheel is discontinuous in RGB at its seams,
+// where fp32/fp64 atan2 disagree, so a raw channel diff is the wrong metric).
 bool check_engine_marching_cubes(ses_vk::DeviceContext& ctx) {
     const ses::Grid1D axis{-8.0, 8.0, 64};
     const ses::Grid3D g{axis, axis, axis};
@@ -1428,7 +1428,6 @@ bool check_engine_marching_cubes(ses_vk::DeviceContext& ctx) {
         // lexicographically via std::array -- a VALID strict-weak-ordering,
         // unlike an abs()<eps compare (that is std::sort UB and can pair
         // triangles differently across platforms/STLs).
-        const double kPi = 3.14159265358979323846;
         const auto q = [](double x) {
             return static_cast<long long>(std::llround(x * 1000.0));
         };
@@ -1458,7 +1457,28 @@ bool check_engine_marching_cubes(ses_vk::DeviceContext& ctx) {
         const auto less = [](const Key& a, const Key& b) { return a.k < b.k; };
         std::sort(ck.begin(), ck.end(), less);
         std::sort(gk.begin(), gk.end(), less);
-        int col_skipped = 0;
+        // The vertex colour is the cyclic HSV phase wheel (S=V=1), which is
+        // DISCONTINUOUS in RGB at its six seams: near a seam the fp32-GPU and
+        // fp64-CPU atan2 land in adjacent sextants and a raw channel diff
+        // jumps to ~1.0 -- a coordinate artifact, not a colour error. So
+        // compare the HUE ANGLE recovered from RGB, cyclically (a seam flip
+        // is ~0 hue distance; a real wheel/sampling bug is large). Both sides
+        // are pure wheel outputs, so the standard hexagon inversion is exact.
+        const auto hue01 = [](double r, double g, double b) {
+            const double mx = std::max({r, g, b});
+            const double mn = std::min({r, g, b});
+            const double d = mx - mn;
+            if (d < 1e-6) return -1.0;  // gray: wheel never emits it
+            double h;
+            if (mx == r) {
+                h = std::fmod((g - b) / d + 6.0, 6.0);
+            } else if (mx == g) {
+                h = (b - r) / d + 2.0;
+            } else {
+                h = (r - g) / d + 4.0;
+            }
+            return h / 6.0;  // [0, 1)
+        };
         for (int t = 0; t < cpu_tris; ++t) {
             const int ci = ck[static_cast<std::size_t>(t)].idx;
             const float* tv =
@@ -1474,39 +1494,23 @@ bool check_engine_marching_cubes(ses_vk::DeviceContext& ctx) {
                 max_nrm = std::max({max_nrm, std::abs(gv[3] - n.x),
                                     std::abs(gv[4] - n.y),
                                     std::abs(gv[5] - n.z)});
-                // The phase colour wheel is DISCONTINUOUS at its six hue
-                // seams: a vertex whose sampled phase lands on a seam gets
-                // one sextant's colour on the CPU (fp64 atan2) and the
-                // neighbour's on the GPU (fp32 atan2) -- a legitimate ~1.0
-                // channel flip, not a bug. Skip the colour assertion within
-                // a thin band of each seam (geometry is still enforced; the
-                // wheel formula itself is pinned by colormap_test and by the
-                // thousands of non-seam vertices here).
-                const ses::Complex<double> sv =
-                    ses::sample_trilinear(psi, ses::Vec3d{p.x, p.y, p.z});
-                double h6 = (std::atan2(sv.imag(), sv.real()) + kPi) /
-                            (2.0 * kPi) * 6.0;
-                h6 -= 6.0 * std::floor(h6 / 6.0);
-                const double frac = h6 - std::floor(h6);
-                if (frac < 1e-3 || frac > 1.0 - 1e-3) {
-                    ++col_skipped;
-                    continue;
+                const double hg = hue01(gv[6], gv[7], gv[8]);
+                const double hc = hue01(col.r, col.g, col.b);
+                if (hg < 0.0 || hc < 0.0) {
+                    continue;  // degenerate gray (unreachable on the wheel)
                 }
-                max_col = std::max({max_col, std::abs(gv[6] - col.r),
-                                    std::abs(gv[7] - col.g),
-                                    std::abs(gv[8] - col.b)});
+                double dh = std::abs(hg - hc);
+                dh = std::min(dh, 1.0 - dh);  // cyclic
+                max_col = std::max(max_col, dh);
             }
         }
+        // max_col is now a cyclic hue distance in [0, 0.5]; 2e-2 = 7.2 deg,
+        // far above fp32 seam jitter, far below any real colour bug.
         pass = max_pos < 1e-3 && max_nrm < 2e-2 && max_col < 2e-2;
-        if (col_skipped > 0) {
-            std::printf("  (marching cubes: %d seam vertices skipped for "
-                        "colour)\n",
-                        col_skipped);
-        }
     }
     std::printf(
         "engine marching cubes (raw Vulkan): tris %d vs cpu %d, max |dpos| = "
-        "%.3e, |dnrm| = %.3e, |dcol| = %.3e  [%s]\n",
+        "%.3e, |dnrm| = %.3e, cyclic dhue = %.3e  [%s]\n",
         gpu_tris, cpu_tris, max_pos, max_nrm, max_col, pass ? "PASS" : "FAIL");
     return pass;
 }
