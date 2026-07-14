@@ -1140,11 +1140,16 @@ public:
                                         &mc_tables_) ||
             !ctx_->create_device_buffer(blk_bytes, &mc_block_sums_) ||
             !ctx_->create_device_buffer(blk_bytes, &mc_block_offsets_) ||
+            // vbuf + indirect are written on the compute queue (mc_emit) and
+            // read on the graphics queue (vertex / draw-indirect): CONCURRENT
+            // so no queue-family ownership transfer is needed.
             !ctx_->create_device_buffer(vb_bytes, &mc_vbuf_,
-                                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT) ||
+                                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                        /*share_across_queues=*/true) ||
             !ctx_->create_device_buffer(6 * sizeof(std::uint32_t),
                                         &mc_indirect_,
-                                        VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT)) {
+                                        VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                                        /*share_across_queues=*/true)) {
             release_mc();
             return false;
         }
@@ -1427,6 +1432,10 @@ public:
         if (!shot.begin_compute(*ctx_)) {
             return out;
         }
+        // Self-contained: depend on any prior compute (a possibly-unwaited
+        // async step batch) writing psi, so a caller that forgot wait_async
+        // still reads current psi, not stale.
+        barrier_compute_to_compute(shot.cb());
         norm_.bind(shot.cb(), norm_set_);
         vkCmdDispatch(shot.cb(), kGroups, 1, 1);
         record_partials_readback(shot.cb());
@@ -1818,6 +1827,7 @@ public:
         if (!shot.begin_compute(*ctx_)) {
             return;
         }
+        barrier_compute_to_compute(shot.cb());  // see norm_and_peak
         project_.bind(shot.cb(), proj_set_);
         vkCmdDispatch(shot.cb(), static_cast<std::uint32_t>(proj_nr_), 1, 1);
         record_buffer_readback(shot.cb(), glm_buf_, glm_bytes);
@@ -1875,6 +1885,7 @@ public:
         if (!shot.begin_compute(*ctx_)) {
             return;
         }
+        barrier_compute_to_compute(shot.cb());  // see norm_and_peak
         scale_.bind(shot.cb(), scale_set_);
         vkCmdDispatch(shot.cb(), mul_groups_, 1, 1);
         shot.submit_and_wait(*ctx_);
@@ -2001,11 +2012,50 @@ public:
         ctx_->destroy_buffer(&kinp_ubo_);
         ctx_->destroy_buffer(&damp_buf_);
         ctx_->destroy_buffer(&psi_);
+        reset_lazy_state();  // a second initialize() re-creates from scratch
         ctx_ = nullptr;
     }
 
 private:
     static constexpr std::uint32_t kGroups = 256;
+
+    // Null the lazily-created descriptor-set handles + the *_ok_ / cache-size
+    // memos after destroy(): the arena that owned the sets is gone, so a
+    // second initialize() on this object must re-allocate and re-wire them
+    // (the `if (set != NULL) return` lazy guards would otherwise bind freed
+    // sets). Eager sets are re-assigned by initialize() regardless; nulling
+    // them too is harmless and keeps this exhaustive.
+    void reset_lazy_state() {
+        for (VkDescriptorSet* s :
+             {&halfv_set_, &fullv_set_, &kin3_set_, &damp_set_, &pd_full_set_,
+              &pd_half_set_, &mcwf_set_, &mc_den_set_, &mc_classify_set_,
+              &mc_scan_set_, &mc_emit_set_, &conj1_set_, &conjN_set_,
+              &norm_set_, &scale_set_, &conjA_set_, &kick_set_,
+              &relax_half_set_, &relax_kin_set_, &force_set_, &dipole_set_,
+              &proj_set_, &pack_set_, &unpack_set_, &inner_any_set_,
+              &synth_any_set_, &norm_any_set_, &scale_any_set_, &load_set_[0],
+              &load_set_[1], &store_set_[0], &store_set_[1], &fft_set_[0],
+              &fft_set_[1], &fft_set_[2], &shear_set_[0], &shear_set_[1]}) {
+            *s = VK_NULL_HANDLE;
+        }
+        pd_kernel_ok_ = false;
+        mcwf_kernel_ok_ = false;
+        mc_kernel_ok_ = false;
+        mc_buffers_ok_ = false;
+        mc_overflow_warned_ = false;
+        async_pending_ = false;
+        async_bridged_ = false;
+        mcwf_radial_bytes_ = 0;
+        radial_bytes_ = 0;
+        staging_bytes_ = 0;
+        mc_max_tris_ = 0;
+        mc_nblocks_ = 0;
+        mc_nblk_[0] = mc_nblk_[1] = mc_nblk_[2] = 0;
+        vol_write_ = 0;
+        vol_display_ = -1;
+        volume_layout_[0] = VK_IMAGE_LAYOUT_UNDEFINED;
+        volume_layout_[1] = VK_IMAGE_LAYOUT_UNDEFINED;
+    }
 
     struct alignas(16) MulParams {
         std::uint32_t n, p0, p1, p2;

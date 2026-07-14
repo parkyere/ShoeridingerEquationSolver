@@ -2269,6 +2269,57 @@ float f16_quantize_rtz(float x) {
     return f16_bits_to_f32(f32_to_f16_bits_rtz(x));
 }
 
+// initialize -> destroy -> initialize on the SAME Engine object: the second
+// run must re-create every lazily-wired descriptor set (reset_lazy_state),
+// so a step matches the CPU oracle. Without the reset the stale handles bind
+// freed sets (validation error / garbage). SES_VK_VALIDATION=1 also asserts
+// zero layer errors across the re-init.
+bool check_engine_reinit(ses_vk::DeviceContext& ctx) {
+    const ses::Grid1D axis{-4.0, 4.0, 8};
+    const ses::Grid3D g{axis, axis, axis};
+    const std::vector<double> v =
+        ses::soft_coulomb_potential(g, 1.0, 1.0, ses::Vec3d{});
+    const double dt = 0.02;
+    const ses::SplitOperator3D cpu_prop{g, v, dt};
+    ses::Field3D psi0 = ses::gaussian_wavepacket(g, ses::Vec3d{1.0, 0.0, 0.0},
+                                                 ses::Vec3d{1.2, 1.2, 1.2},
+                                                 ses::Vec3d{0.0, 0.5, 0.0});
+    ses_vk::Engine engine;
+    if (!engine.initialize(ctx, g, engine_blobs_8(), v, dt, psi0.data())) {
+        std::printf("engine reinit (raw Vulkan): first init FAIL\n");
+        return false;
+    }
+    engine.step(3);                  // touch lazy volume/absorber paths...
+    (void)engine.norm_and_peak();
+    engine.destroy();                // ...then tear down and rebuild
+    if (!engine.initialize(ctx, g, engine_blobs_8(), v, dt, psi0.data())) {
+        std::printf("engine reinit (raw Vulkan): second init FAIL\n");
+        return false;
+    }
+    ses::Field3D cpu = psi0;
+    cpu_prop.step(cpu, 20);
+    engine.step(20);
+    std::vector<float> gpu_out;
+    if (!engine.readback(gpu_out)) {
+        std::printf("engine reinit (raw Vulkan): readback FAIL\n");
+        return false;
+    }
+    double max_err = 0.0;
+    for (std::size_t i = 0; i < cpu.data().size(); ++i) {
+        max_err =
+            std::max(max_err, std::abs(gpu_out[2 * i] - cpu.data()[i].real()));
+        max_err = std::max(max_err,
+                           std::abs(gpu_out[2 * i + 1] - cpu.data()[i].imag()));
+    }
+    const double tol = 1e-4;
+    const bool pass = max_err < tol;
+    std::printf(
+        "engine reinit (init->destroy->init->step, raw Vulkan): max |gpu - "
+        "cpu| = %.3e (tol %.0e)  [%s]\n",
+        max_err, tol, pass ? "PASS" : "FAIL");
+    return pass;
+}
+
 // Fused MCWF axpy vs the sequential synthesize -> add_state_into_psi chain:
 // the same operator sum evaluated in one dispatch (in-register) vs three
 // psi round-trips per state -- identical math, small fp32 reorder tolerance.
@@ -2464,6 +2515,7 @@ int main() {
     failures += check_engine_dipole_between(ctx) ? 0 : 1;
     failures += check_engine_fp16_consumers(ctx) ? 0 : 1;
     failures += check_engine_mcwf_axpy(ctx) ? 0 : 1;
+    failures += check_engine_reinit(ctx) ? 0 : 1;
     failures += check_engine_marching_cubes(ctx) ? 0 : 1;
     failures += check_engine_bridge(ctx) ? 0 : 1;
     failures += check_engine_step_async(ctx) ? 0 : 1;

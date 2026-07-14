@@ -332,14 +332,27 @@ struct DeviceContext {
     // Device-local buffer (storage + transfer both ways); `extra` adds
     // consumer-specific usage (vertex / indirect for the GPU mesh path).
     bool create_device_buffer(VkDeviceSize size, Buffer* out,
-                              VkBufferUsageFlags extra = 0) {
+                              VkBufferUsageFlags extra = 0,
+                              bool share_across_queues = false) {
         VkBufferCreateInfo bci{};
         bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bci.size = size;
         bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                     VK_BUFFER_USAGE_TRANSFER_DST_BIT | extra;
-        bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        // Written by the engine's compute queue, read on the graphics queue
+        // (marching-cubes vertex/indirect buffers): CONCURRENT skips the
+        // queue-family ownership transfer -- host fences already order the
+        // accesses. EXCLUSIVE when the families coincide (no dedicated
+        // compute queue) or the buffer never crosses.
+        const std::uint32_t families[2] = {queue_family, compute_family};
+        if (share_across_queues && compute_family != queue_family) {
+            bci.sharingMode = VK_SHARING_MODE_CONCURRENT;
+            bci.queueFamilyIndexCount = 2;
+            bci.pQueueFamilyIndices = families;
+        } else {
+            bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        }
         VmaAllocationCreateInfo alc{};
         alc.usage = VMA_MEMORY_USAGE_AUTO;
         return vmaCreateBuffer(allocator, &bci, &alc, &out->buf, &out->alloc,
