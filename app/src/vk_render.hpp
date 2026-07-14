@@ -3,13 +3,13 @@
 // ses_vk::SceneRenderer: the whole scene -- isosurface mesh, proton marker,
 // axes gizmo, billboarded z label, and the front-to-back |psi|^2 volume
 // raymarch -- rendered by raw Vulkan into an OFFSCREEN color image the
-// presentation shell samples. No Qt anywhere: the GLSL sources are baked
-// offline to SPIR-V, the camera's GL clip conventions are corrected to
-// Vulkan by a fixed matrix (store_corrected_mvp), and every frame ends with
-// the composite image handed over in SHADER_READ_ONLY.
+// presentation shell samples. The GLSL sources are baked offline to SPIR-V,
+// the camera's GL clip conventions are corrected to Vulkan by a fixed matrix
+// (store_corrected_mvp), and every frame ends with the composite image handed
+// over in SHADER_READ_ONLY.
 //
-// The presentation contract (what any shell -- Qt today, GLFW/SDL tomorrow
-// -- must do): give render() the per-frame camera/staging inputs, then draw
+// The presentation contract (what any shell must do): give render() the
+// per-frame camera/staging inputs, then draw
 // color_image()/color_view() as one textured quad. That is the ENTIRE
 // remaining rendering responsibility of the framework.
 

@@ -1,7 +1,7 @@
 // sesolver_vkcheck: framework-free Vulkan verification harness.
 //
-// NO Qt anywhere in this binary: volk loads the loader, VMA allocates, and
-// the kernels are the production Vulkan-GLSL sources compiled offline by
+// volk loads the loader, VMA allocates, and the kernels are the production
+// Vulkan-GLSL sources compiled offline by
 // glslangValidator to plain SPIR-V and embedded as C arrays
 // (tools/cmake/bin2h.cmake). Every check runs a GPU kernel or an
 // ses_vk::Engine path against a CPU double-precision oracle (core/ code or

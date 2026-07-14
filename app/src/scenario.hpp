@@ -1,9 +1,9 @@
 #pragma once
 
-// The scenario seam: everything a demo IS, behind one Qt-free interface.
-// The Qt shell owns exactly one ScenarioDirector (chosen by --scene=) and
-// talks to it through this contract; scenario-specific keys go through
-// handle_key (plain ASCII, shell translates Qt codes). No Qt type crosses.
+// The scenario seam: everything a demo IS, behind one framework-neutral
+// interface. The shell owns exactly one ScenarioDirector (chosen by --scene=)
+// and talks to it through this contract; scenario-specific keys go through
+// handle_key (plain ASCII -- the shell maps its own key codes down to this).
 
 #include "vk_device.hpp"
 

@@ -3,7 +3,7 @@
 // The hydrogen scenario (ScenarioDirector implementation): the CPU truth
 // session, the ses_vk engine, the AtomModel, and the atom demo state machine
 // (atlas build, decay, laser, fields, measurement, relaxation), plus the
-// cpu_is_truth_ sync invariant. Qt-free.
+// cpu_is_truth_ sync invariant.
 
 #include "atom_model.hpp"
 #include "manifold_spec.hpp"
@@ -463,7 +463,7 @@ public:
             if (gpu_ok_ && engine_.mc_prepare(kMcMaxTris)) {
                 mc_dirty_ = true;  // GPU meshing: stepping/laser/decay stay live
             } else {
-                ensure_cpu_current();  // legacy CPU meshing path
+                ensure_cpu_current();  // CPU meshing (no-GPU fallback)
                 if (stepping_ == Stepping::RelaxingExcited) {
                     stepping_ = Stepping::Relaxing;  // deflation is GPU-only
                 }
@@ -556,6 +556,14 @@ public:
             laser_omega_ = atom_.state_energy(kP2Z) - e_1s;
             laser_e0_ = atom_.dipole_z() > 0.0 ? kRabiTargetOmega / atom_.dipole_z() : 0.0;
             rabi_peak_ = 0.0;
+            // Laser and B are mutually exclusive: driven_step applies the
+            // diamagnetic fold but NOT the paramagnetic Larmor rotation, so
+            // running both is an inconsistent Hamiltonian. Drop B (E stays --
+            // it coexists correctly as a static potential term).
+            if (bfield_b_ > 0.0) {
+                bfield_b_ = 0.0;
+                upload_field_tables();
+            }
             laser_pol_ = LaserPol::Z;
             stepping_ = Stepping::RealTime;  // the drive lives in real time
         } else if (laser_pol_ == LaserPol::Z) {
@@ -580,6 +588,9 @@ public:
     // the per-frame magnetic_step adds only the paramagnetic rotation.
     void set_bfield_b(double b) {
         bfield_b_ = b;
+        if (b > 0.0) {
+            laser_pol_ = LaserPol::Off;  // mutually exclusive (see toggle_laser)
+        }
         upload_field_tables();
         if (b > 0.0 && !solving()) {
             stepping_ = Stepping::RealTime;
@@ -739,7 +750,7 @@ public:
     const ses::Mesh& mesh() const override { return mesh_; }
     const std::vector<ses::Rgb>& colors() const override { return colors_; }
 
-    // The full window-title readout, composed Qt-free.
+    // The full window-title readout (rendered into the ImGui status block).
     std::string title_text() override {
         // While relaxing: exact <H> on the CPU session, or the free ITP
         // estimator on the GPU path.

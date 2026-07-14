@@ -207,7 +207,7 @@ public:
             if (gpu_ok_ && engine_.mc_prepare(kMcMaxTris)) {
                 mc_dirty_ = true;  // GPU meshing: stepping stays live
             } else {
-                ensure_cpu_current();  // legacy CPU meshing path
+                ensure_cpu_current();  // CPU meshing (no-GPU fallback)
             }
         } else {
             engine_.release_mc();

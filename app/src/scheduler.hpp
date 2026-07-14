@@ -1,9 +1,9 @@
 #pragma once
 
-// Wall-clock callback scheduler for the SDL main loop -- what QTimer did for
-// the Qt shell. after() = QTimer::singleShot; every() = a repeating QTimer
-// (cancel() stops it). poll(now_ms) runs due callbacks on the loop thread;
-// callbacks may schedule further work (the selftest arcs chain this way).
+// Wall-clock callback scheduler for the SDL main loop. after() fires once;
+// every() repeats until cancel(). poll(now_ms) runs due callbacks on the loop
+// thread; callbacks may schedule further work (the selftest arcs chain this
+// way).
 
 #include <cstdint>
 #include <functional>

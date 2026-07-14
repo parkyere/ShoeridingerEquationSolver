@@ -1,7 +1,7 @@
 #pragma once
 
-// The discoverable-controls panel, in Dear ImGui -- what shell_ui.hpp's Qt
-// toolbar was. Buttons mirror the hotkeys (which stay live: the shell only
+// The discoverable-controls panel, in Dear ImGui: a clickable mirror of the
+// hotkeys. Buttons mirror the hotkeys (which stay live: the shell only
 // routes keys here when ImGui wants capture); the two field sliders drive the
 // proper Hamiltonian terms; the director's title_text() readout is rendered
 // as a wrapped status block (it long outgrew a window title). Templated on

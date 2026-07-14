@@ -2,7 +2,7 @@
 
 // ses_vk compute infrastructure: the thin, owned layer between raw Vulkan
 // and the kernels -- descriptor/pipeline-layout construction, one-shot frame
-// lifecycle, barrier placement. No Qt.
+// lifecycle, barrier placement.
 //
 //   Kernel          shader module + set layout + pipeline layout + pipeline,
 //                   built from an embedded SPIR-V blob and a binding spec.

@@ -1,8 +1,8 @@
 #pragma once
 
-// The shell's OWN presentation layer -- what Qt/QRhi used to do, now raw
-// Vulkan: a swapchain over the SDL window's surface, one fullscreen-triangle
-// pass sampling the SceneRenderer's finished image (which is handed off in
+// The shell's OWN presentation layer, raw Vulkan: a swapchain over the SDL
+// window's surface, one fullscreen-triangle pass sampling the SceneRenderer's
+// finished image (which is handed off in
 // SHADER_READ_ONLY_OPTIMAL with fragment-read barriers -- exactly this), and
 // a UI-record callback riding the same pass (ImGui draws there). Frame model
 // matches the renderer's synchronous style: one frame in flight, fence-waited.
@@ -596,7 +596,7 @@ private:
 
 // --dump-frame verification: read the SceneRenderer's finished image (RGBA8,
 // SHADER_READ_ONLY_OPTIMAL -- transitioned round-trip here) back to the host
-// and write a bottom-up 24-bit BMP. Replaces Qt's grabFramebuffer.
+// and write a bottom-up 24-bit BMP.
 inline bool dump_scene_bmp(ses_vk::DeviceContext& ctx, VkImage img,
                            std::uint32_t w, std::uint32_t h,
                            const char* path) {

@@ -13,8 +13,8 @@
 
 // ses_vk first: volk (inside) defines VK_NO_PROTOTYPES and must own the
 // vulkan.h inclusion before SDL/ImGui pull their own Vulkan declarations.
-// This TU carries the app's VMA implementation (vkcheck has its own; the old
-// Qt shell rode the copy embedded in static Qt's QRhi backend).
+// This TU owns the app's single VMA implementation (vkcheck has its own); no
+// other TU may define VMA_IMPLEMENTATION.
 #define VMA_IMPLEMENTATION
 #include "vk_blobs.hpp"
 
@@ -57,9 +57,9 @@ namespace {
 
 constexpr std::uint64_t kTickMs = 16;
 
-// The shell: window + input + device + presentation + the main loop. The
-// same wrapper surface the Qt Viewport exposed, shared by the keyboard, the
-// ImGui panel (imgui_ui.hpp), and the selftest arcs (selftest_arcs.hpp).
+// The shell: window + input + device + presentation + the main loop. The one
+// wrapper surface shared by the keyboard, the ImGui panel (imgui_ui.hpp), and
+// the selftest arcs (selftest_arcs.hpp).
 class Shell {
 public:
     Shell(std::unique_ptr<ses_shell::ScenarioDirector> director,
@@ -159,8 +159,7 @@ public:
         refresh_status();
         // COMPUTE init is deferred into the loop: engine init (VkFFT plan
         // compile) + the radial atom solve block for seconds, and the window
-        // must show a presented frame FIRST (the Qt shell's paint order) --
-        // not sit black behind them.
+        // must show a presented frame FIRST -- not sit black behind them.
     }
 
     void shutdown() {
@@ -201,8 +200,8 @@ public:
                 presenter_.acquire();
             }
             const std::uint64_t now = SDL_GetTicks();
-            // Fixed-cadence ticks (the Qt shell's 16 ms QTimer), coalescing
-            // after stalls instead of spiraling.
+            // Fixed-cadence 16 ms ticks, coalescing after stalls instead of
+            // spiraling.
             if (now - last_tick_ > 8 * kTickMs) {
                 last_tick_ = now - kTickMs;
             }
@@ -220,7 +219,7 @@ public:
             // Deferred compute init: headless arcs go immediately; the
             // windowed app first PRESENTS one frame (clear + panel) so the
             // seconds of engine init + radial solve show a live window, then
-            // initializes on the next iteration (the Qt shell's paint order).
+            // initializes on the next iteration.
             if (!compute_init_done_ && (headless_ || presented_once_)) {
                 director_->init_compute(
                     vk_ctx_, true,
@@ -526,7 +525,8 @@ private:
                     break;
                 case SDL_EVENT_MOUSE_WHEEL:
                     if (!io.WantCaptureMouse) {
-                        // One notch = Qt's angleDelta 120 (same zoom rate).
+                        // Per-notch zoom: SDL delivers ~1 unit/notch; the
+                        // 120 factor sets a brisk step (~11% per notch).
                         distance_ *=
                             std::pow(0.999, 120.0 * e.wheel.y);
                         distance_ = std::clamp(distance_, 4.0, 300.0);
@@ -709,7 +709,7 @@ private:
     long long frame_index_ = 0;
     bool flow_on_ = false;  // Key F: probability-current flow particles
     bool paused_ = false;
-    double absorbance_ = 0.68;  // lightened from 1.5 (default was too opaque)
+    double absorbance_ = 0.68;  // Beer-Lambert opacity of the |psi|^2 fog
 
     double azimuth_ = 0.6;
     double elevation_ = 0.4;

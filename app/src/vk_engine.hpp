@@ -1,7 +1,7 @@
 #pragma once
 
 // ses_vk::Engine: the split-operator Strang step and imaginary-time
-// relaxation, on raw Vulkan via the vk_compute.hpp layer. No Qt anywhere.
+// relaxation, on raw Vulkan via the vk_compute.hpp layer.
 // SPIR-V blobs are dependency-injected (EngineKernels), so the engine has
 // no resource system; the DeviceContext is passed in, so the same engine
 // runs on a self-created device (headless: checks, clusters) or on handles
@@ -869,15 +869,22 @@ public:
         return handle;
     }
 
-    // Free a resident state's buffer; the slot stays so handles remain
-    // stable (its pool sets are simply abandoned until the arena resets).
+    // Free a resident state's buffer. The slot and its (expensive) descriptor
+    // sets are RETAINED and the index recycled via free_full_states_ so a
+    // synth/release churn doesn't leak them. Contract: the handle is dead
+    // after this -- a reused slot may alias a later state (use-after-release
+    // is a caller bug, as before).
     void release_state(int handle) {
         State* st = state_at(handle);
         if (st == nullptr) {
             return;
         }
         vkDeviceWaitIdle(ctx_->device);
-        ctx_->destroy_buffer(&st->buf);
+        const bool full = !st->is_half && st->inner_set != VK_NULL_HANDLE;
+        ctx_->destroy_buffer(&st->buf);  // nulls st->buf -> state_at() == dead
+        if (full) {
+            free_full_states_.push_back(handle);
+        }
     }
 
     // <state|psi> = sum conj(state)*psi * dV (fp16 states decode to scratch).
@@ -1918,6 +1925,7 @@ public:
             ctx_->destroy_buffer(&st.buf);
         }
         states_.clear();
+        free_full_states_.clear();
         arena_.destroy(*ctx_);
         unpack_.destroy(*ctx_);
         pack_.destroy(*ctx_);
@@ -2188,22 +2196,10 @@ private:
         record_buffer_readback(cb, partials_, 2 * kGroups * sizeof(float));
     }
 
-    // Allocate a state's buffer + descriptor sets without uploading content
-    // (create_state_buffer fills it from the host; synthesize_state on GPU).
-    int create_state_buffer_uninit() {
-        State st;
-        if (!ctx_->create_device_buffer(field_bytes_, &st.buf)) {
-            return -1;
-        }
-        st.inner_set = arena_.allocate(*ctx_, inner_.set_layout());
-        st.axpy_set = arena_.allocate(*ctx_, axpy_.set_layout());
-        st.copy_set = arena_.allocate(*ctx_, copy_.set_layout());
-        st.mul_set = arena_.allocate(*ctx_, mul_.set_layout());
-        if (st.inner_set == VK_NULL_HANDLE || st.axpy_set == VK_NULL_HANDLE ||
-            st.copy_set == VK_NULL_HANDLE || st.mul_set == VK_NULL_HANDLE) {
-            ctx_->destroy_buffer(&st.buf);
-            return -1;
-        }
+    // (Re)point a full state's four descriptor sets: only the st.buf bindings
+    // vary; psi_/ubos/partials_ are stable but re-written idempotently so the
+    // same call serves a fresh alloc and a free-list reuse.
+    void wire_full_state_sets(State& st) {
         const auto storage = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         const auto uniform = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         arena_.write_buffer(*ctx_, st.inner_set, 0, storage, psi_.buf);
@@ -2223,6 +2219,39 @@ private:
         arena_.write_buffer(*ctx_, st.mul_set, 1, storage, st.buf.buf);
         arena_.write_buffer(*ctx_, st.mul_set, 2, uniform, muln_ubo_.buf,
                             sizeof(MulParams));
+    }
+
+    // Allocate a full state's buffer + descriptor sets without uploading
+    // content. A released full-state slot (free_full_states_) is REUSED --
+    // its four sets are re-pointed at the new buffer -- so a synth/release
+    // churn (Key-R reseed, partial measurement) does not leak sets or slots.
+    int create_state_buffer_uninit() {
+        if (!free_full_states_.empty()) {
+            const int idx = free_full_states_.back();
+            free_full_states_.pop_back();
+            State& st = states_[static_cast<std::size_t>(idx)];
+            if (!ctx_->create_device_buffer(field_bytes_, &st.buf)) {
+                free_full_states_.push_back(idx);  // still free; try again later
+                return -1;
+            }
+            st.is_half = false;
+            wire_full_state_sets(st);
+            return idx;
+        }
+        State st;
+        if (!ctx_->create_device_buffer(field_bytes_, &st.buf)) {
+            return -1;
+        }
+        st.inner_set = arena_.allocate(*ctx_, inner_.set_layout());
+        st.axpy_set = arena_.allocate(*ctx_, axpy_.set_layout());
+        st.copy_set = arena_.allocate(*ctx_, copy_.set_layout());
+        st.mul_set = arena_.allocate(*ctx_, mul_.set_layout());
+        if (st.inner_set == VK_NULL_HANDLE || st.axpy_set == VK_NULL_HANDLE ||
+            st.copy_set == VK_NULL_HANDLE || st.mul_set == VK_NULL_HANDLE) {
+            ctx_->destroy_buffer(&st.buf);
+            return -1;
+        }
+        wire_full_state_sets(st);
         states_.push_back(st);
         return static_cast<int>(states_.size()) - 1;
     }
@@ -2940,6 +2969,7 @@ private:
     int vol_display_ = -1;  // -1: nothing written yet (renderer falls back)
     Buffer decode_scratch_[2]{};
     std::vector<State> states_;
+    std::vector<int> free_full_states_;  // released full-state slots, reusable
     VkDeviceSize staging_bytes_ = 0;
     VkDeviceSize radial_bytes_ = 0;
     int proj_nr_ = 0;

@@ -3,7 +3,7 @@
 // Final composite: accumulated HDR scene + bloom, ACES-approx filmic
 // tonemap, and an interleaved-gradient-noise output dither that keeps the
 // 8-bit present image banding-free. This writes the ONE image the
-// presentation shell (Qt today) samples -- the shell stays a dumb blit.
+// presentation shell samples -- the shell stays a dumb blit.
 layout(local_size_x = 16, local_size_y = 16) in;
 
 layout(binding = 0, rgba16f) uniform readonly image2D accum;

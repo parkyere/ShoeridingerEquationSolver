@@ -4,8 +4,8 @@
 //
 // A DeviceContext either OWNS a self-created VkInstance/VkDevice (headless
 // path -- checks, future cluster runs) or ADOPTS externally supplied handles
-// (the GUI shell's Qt-provided device). No Qt anywhere in this header or its
-// includes:
+// (a host framework's device; the SDL3 shell here uses the create path).
+// Framework-neutral -- volk + VMA only:
 //   - volk is the loader: it defines VK_NO_PROTOTYPES itself, dlopens
 //     vulkan-1, and declares canonically named global function pointers, so
 //     downstream code (and later VkFFT) compiles and links unmodified.
@@ -79,7 +79,7 @@ struct DeviceContext {
     VkQueue queue = VK_NULL_HANDLE;
     // The engine's queue: a COMPUTE-only family when the hardware has one
     // (async compute -- physics overlaps the graphics queue's rendering),
-    // else aliases the main queue/family (serial, exactly the old behavior).
+    // else aliases the main queue/family (serial submission).
     // ALL engine submissions go here so engine resources never cross queue
     // families (EXCLUSIVE sharing stays legal); only the display volume is
     // created CONCURRENT across the two families.
@@ -94,11 +94,11 @@ struct DeviceContext {
     DeviceContext& operator=(const DeviceContext&) = delete;
     ~DeviceContext() { destroy(); }
 
-    // ADOPT externally supplied handles (a host framework's device; the Qt
-    // shell used this before the app owned its device via create_*): the
-    // core code stays framework-free -- these are Khronos-standard handles,
-    // dependency-injected. The context creates its OWN VmaAllocator on the
-    // shared device (never touch the owner's) and destroys only what it
+    // ADOPT externally supplied handles (a host framework's device, for a
+    // shell that owns Vulkan itself; the SDL3 shell instead uses create_*):
+    // the core code stays framework-free -- these are Khronos-standard
+    // handles, dependency-injected. The context creates its OWN VmaAllocator
+    // on the shared device (never touch the owner's) and destroys only what it
     // made. One device per process on this path (volkLoadDevice's global
     // table); a multi-device build would switch to volkLoadDeviceTable.
     Boot adopt(VkInstance inst, VkPhysicalDevice pd, VkDevice dev,
