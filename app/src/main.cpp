@@ -392,7 +392,7 @@ private:
                               "ImGui descriptor pool create failed");
         }
         ImGui_ImplVulkan_InitInfo info{};
-        info.ApiVersion = VK_API_VERSION_1_1;
+        info.ApiVersion = VK_API_VERSION_1_4;
         info.Instance = vk_ctx_.instance;
         info.PhysicalDevice = vk_ctx_.phys_dev;
         info.Device = vk_ctx_.device;

@@ -77,7 +77,7 @@ foreach(_k IN ITEMS phase_multiply scale norm_peak inner_product
     add_custom_command(
         OUTPUT "${_hdr}"
         BYPRODUCTS "${_spv}"
-        COMMAND "${SES_GLSLANG_VALIDATOR}" -V --target-env vulkan1.1
+        COMMAND "${SES_GLSLANG_VALIDATOR}" -V --target-env vulkan1.4
                 -o "${_spv}" "${_src}"
         COMMAND "${CMAKE_COMMAND}" "-DIN=${_spv}" "-DOUT=${_hdr}"
                 "-DNAME=k_${_k}_spv"
@@ -100,7 +100,7 @@ foreach(_k IN ITEMS mesh.vert mesh.frag volume.vert volume.frag
     add_custom_command(
         OUTPUT "${_hdr}"
         BYPRODUCTS "${_spv}"
-        COMMAND "${SES_GLSLANG_VALIDATOR}" -V --target-env vulkan1.1
+        COMMAND "${SES_GLSLANG_VALIDATOR}" -V --target-env vulkan1.4
                 -o "${_spv}" "${_src}"
         COMMAND "${CMAKE_COMMAND}" "-DIN=${_spv}" "-DOUT=${_hdr}"
                 "-DNAME=k_${_sym}_spv"

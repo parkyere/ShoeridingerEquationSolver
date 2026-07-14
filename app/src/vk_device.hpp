@@ -127,7 +127,7 @@ struct DeviceContext {
         aci.device = device;
         aci.instance = instance;
         aci.pVulkanFunctions = &fns;
-        aci.vulkanApiVersion = VK_API_VERSION_1_1;
+        aci.vulkanApiVersion = props.apiVersion;  // device's real version (VMA must not exceed it)
         if (vmaCreateAllocator(&aci, &allocator) != VK_SUCCESS) {
             return Boot::error;
         }
@@ -179,7 +179,7 @@ struct DeviceContext {
         VkApplicationInfo ai{};
         ai.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
         ai.pApplicationName = "sesolver";
-        ai.apiVersion = VK_API_VERSION_1_1;
+        ai.apiVersion = VK_API_VERSION_1_4;
         VkInstanceCreateInfo ici{};
         ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
         ici.pApplicationInfo = &ai;
@@ -322,7 +322,7 @@ struct DeviceContext {
         aci.device = device;
         aci.instance = instance;
         aci.pVulkanFunctions = &fns;
-        aci.vulkanApiVersion = VK_API_VERSION_1_1;
+        aci.vulkanApiVersion = props.apiVersion;  // device's real version (VMA must not exceed it)
         if (vmaCreateAllocator(&aci, &allocator) != VK_SUCCESS) {
             return Boot::error;
         }
