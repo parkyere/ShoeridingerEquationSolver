@@ -17,9 +17,15 @@ void main() {
     if (i >= n) {
         return;
     }
-    int ix = int(i) % nx;
-    int iy = (int(i) / nx) % ny;
-    int iz = int(i) / (nx * ny);
+    // nx, ny are powers of two (FFT grid), so unflatten i -> (ix,iy,iz) with
+    // mask + shift, NOT a runtime integer div/mod: the divisor is a uniform,
+    // so the compiler cannot fold %/ into bit ops itself, and integer div/mod
+    // is ~20+ cycles on Pascal. Bitwise-identical indices to i%nx / i/nx.
+    int lx = findMSB(uint(nx));
+    int ly = findMSB(uint(ny));
+    uint ix = i & (uint(nx) - 1u);
+    uint iy = (i >> uint(lx)) & (uint(ny) - 1u);
+    uint iz = i >> uint(lx + ly);
     float a = coef * (kx2[ix] + ky2[iy] + kz2[iz]);
     float c = cos(a);
     float s = sin(a);
