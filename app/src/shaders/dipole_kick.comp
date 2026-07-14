@@ -23,9 +23,13 @@ void main() {
     if (idx >= n) {
         return;
     }
-    int i = int(idx) % nx;
-    int j = (int(idx) / nx) % ny;
-    int k = int(idx) / (nx * ny);
+    // nx, ny power-of-2 (FFT grid): unflatten with mask/shift, not a runtime
+    // integer div/mod by a uniform (~20+ cyc on Pascal). Same indices.
+    uint lx = uint(findMSB(uint(nx)));
+    uint ly = uint(findMSB(uint(ny)));
+    int i = int(idx & (uint(nx) - 1u));
+    int j = int((idx >> lx) & (uint(ny) - 1u));
+    int k = int(idx >> (lx + ly));
     vec3 r = box_min.xyz + vec3(float(i), float(j), float(k)) * cell_h.xyz;
     float ang = -theta * dot(axis.xyz, r);
     vec2 w = vec2(cos(ang), sin(ang));

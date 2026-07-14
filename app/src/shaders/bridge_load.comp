@@ -16,8 +16,12 @@ void main() {
     if (idx >= nx * ny * nz) {
         return;
     }
-    int i = idx % nx;
-    int j = (idx / nx) % ny;
-    int k = idx / (nx * ny);
+    // nx, ny power-of-2 (FFT grid): unflatten with mask/shift, not a runtime
+    // integer div/mod by a uniform (~20+ cyc on Pascal). Same indices.
+    int lx = findMSB(uint(nx));
+    int ly = findMSB(uint(ny));
+    int i = idx & (nx - 1);
+    int j = (idx >> lx) & (ny - 1);
+    int k = idx >> (lx + ly);
     outp[idx] = imageLoad(img, ivec3(i, j, k)).xy;
 }
