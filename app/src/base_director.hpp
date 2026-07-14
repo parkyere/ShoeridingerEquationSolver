@@ -32,7 +32,9 @@
 namespace ses_shell {
 
 enum class BaseViewMode { Cloud, Surface };
-enum class BaseStepping { RealTime, Relaxing };
+// RelaxingExcited is used only by HydrogenDirector (deflated relax); base's
+// own stepping code produces only RealTime/Relaxing.
+enum class BaseStepping { RealTime, Relaxing, RelaxingExcited };
 
 constexpr int kBaseStepsPerTick = 1;
 constexpr int kBaseRelaxStepsPerTick = 1;

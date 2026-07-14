@@ -6,6 +6,7 @@
 // cpu_is_truth_ sync invariant.
 
 #include "atom_model.hpp"
+#include "base_director.hpp"
 #include "manifold_spec.hpp"
 #include "scenario.hpp"
 #include "vk_engine.hpp"
@@ -39,8 +40,6 @@
 
 namespace ses_shell {
 
-enum class ViewMode { Cloud, Surface };
-enum class Stepping { RealTime, Relaxing, RelaxingExcited };
 enum class LaserPol { Off, Z, X };
 enum class PartialBasis { None, NShell, LTotal, MZ };
 
@@ -90,14 +89,10 @@ inline ses::WavepacketSimulation make_simulation() {
     }};
 }
 
-class HydrogenDirector final : public ScenarioDirector {
+class HydrogenDirector final : public BaseDirector {
 public:
-    HydrogenDirector() : sim_(make_simulation()) {
-        remesh();
-        stage_volume();
-    }
-
-    const ses::Grid3D& grid() const override { return sim_.grid(); }
+    // BaseDirector's ctor stages the initial mesh + volume from make_simulation().
+    HydrogenDirector() : BaseDirector(make_simulation()) {}
 
     // ---- lifecycle ----
 
@@ -178,18 +173,7 @@ public:
         }
     }
 
-    // The widget's device is about to go away: tear down everything the
-    // engine created on it. GPU simulation state dies with it.
-    void release_gpu() override {
-        engine_.destroy();
-        gpu_ok_ = false;
-    }
-
-    // GPU stepping covers BOTH views in real and imaginary time; only the
-    // display half is mode-aware (Cloud bridges psi -> volume, Surface
-    // extracts the GPU isosurface). Position measurement still runs on the
-    // CPU double session, synced through the single cpu_is_truth_ invariant.
-    bool use_gpu_path() const { return gpu_ok_; }
+    // release_gpu(), use_gpu_path(): inherited from BaseDirector (identical).
 
     // ---- the compute half of a frame ----
     // Engine stepping, atlas build, measurement service, decay/laser trials.
@@ -270,10 +254,10 @@ public:
                 title_dirty_ = true;
             }
             if (pending_gpu_steps_ > 0) {
-                if (stepping_ == Stepping::RealTime) {
+                if (stepping_ == BaseStepping::RealTime) {
                     // Mask + bridge ride the step submission (batch tail).
                     run_real_time_batch();
-                    if (mode_ == ViewMode::Cloud) {
+                    if (mode_ == BaseViewMode::Cloud) {
                         volume_written_ = true;
                     } else {
                         mc_dirty_ = true;  // psi advanced: re-extract below
@@ -292,7 +276,7 @@ public:
             // Surface display: re-extract the GPU isosurface after any psi
             // change (steps, collapses, uploads); kIsoFraction of the
             // tracked density peak mirrors marching_cubes_at_fraction.
-            if (mode_ == ViewMode::Surface && engine_.mc_ready() &&
+            if (mode_ == BaseViewMode::Surface && engine_.mc_ready() &&
                 mc_dirty_) {
                 engine_.mc_extract(kIsoFraction * peak_);
                 mc_dirty_ = false;
@@ -310,7 +294,7 @@ public:
             // Default = 1 step : 1 render; the laser demo and time_scale_
             // scale the batch exactly as dialed.
             const int per_tick =
-                ((stepping_ == Stepping::RealTime && laser_pol_ != LaserPol::Off)
+                ((stepping_ == BaseStepping::RealTime && laser_pol_ != LaserPol::Off)
                      ? kLaserStepsPerTick
                      : kStepsPerTick) *
                 time_scale_;
@@ -324,7 +308,7 @@ public:
         ensure_cpu_current();
         // CPU fallback: deliberately NOT time-scaled -- steps run
         // synchronously inside the tick, so scaling would stall the UI.
-        if (stepping_ == Stepping::RealTime) {
+        if (stepping_ == BaseStepping::RealTime) {
             sim_.advance(kStepsPerTick);
         } else {
             sim_.relax(kRelaxStepsPerTick, kRelaxDtau);
@@ -336,16 +320,8 @@ public:
         }
     }
 
-    // Visualized time scale (see scenario.hpp): steps per tick, not dt.
-    void set_time_scale(int scale) override {
-        time_scale_ = std::clamp(scale, 1, 16);
-    }
-    int time_scale() const override { return time_scale_; }
-
-    // Simulated clock for the shell's au/s readout (same expression the
-    // title and the jump log use).
-    double sim_time() const override { return sim_.time() + gpu_time_; }
-    double sim_dt() const override { return sim_.dt(); }
+    // set_time_scale(), time_scale(), sim_time(), sim_dt(): inherited from
+    // BaseDirector (identical).
 
     // MCWF no-jump damping toggle (panel checkbox; see apply_mcwf_damping).
     void set_mcwf_damping(bool on) { mcwf_damping_ = on; }
@@ -354,10 +330,10 @@ public:
     // ---- controls (the shell's key/toolbar entry points) ----
 
     void set_real_time() override {
-        if (stepping_ != Stepping::RealTime) {
+        if (stepping_ != BaseStepping::RealTime) {
             reset_ionized_tally();  // manual relax exit = fresh preparation
         }
-        stepping_ = Stepping::RealTime;
+        stepping_ = BaseStepping::RealTime;
         drop_relax_tables();
     }
 
@@ -365,7 +341,7 @@ public:
         if (use_gpu_path() && !ensure_relax_tables()) {
             return;  // no tables, no imaginary time
         }
-        stepping_ = Stepping::Relaxing;
+        stepping_ = BaseStepping::Relaxing;
         relax_plateau_ = 0;
         relax_prev_energy_ = 0.0;
         if (!use_gpu_path()) {
@@ -399,7 +375,7 @@ public:
             return;  // the startup atlas build owns the GPU state
         }
         sim_ = make_simulation();
-        stepping_ = Stepping::RealTime;
+        stepping_ = BaseStepping::RealTime;
         free_deflation_buffers();  // drop any owned deflation phi
         drop_relax_tables();
         laser_pol_ = LaserPol::Off;  // reset returns to the vanilla packet demo
@@ -425,7 +401,7 @@ public:
         std::uniform_real_distribution<double> uniform(0.0, 1.0);
         sim_.measure(uniform(rng_), kMeasureSigma);
         reset_ionized_tally();  // the electron was FOUND: nothing escaped
-        stepping_ = Stepping::RealTime;
+        stepping_ = BaseStepping::RealTime;
         stage_active_view();
     }
 
@@ -437,7 +413,7 @@ public:
             return;
         }
         pending_energy_measure_ = true;
-        stepping_ = Stepping::RealTime;  // observe, then let H evolve it
+        stepping_ = BaseStepping::RealTime;  // observe, then let H evolve it
         laser_pol_ = LaserPol::Off;
     }
 
@@ -456,16 +432,16 @@ public:
         if (solving()) {
             return;
         }
-        mode_ = (mode_ == ViewMode::Cloud) ? ViewMode::Surface : ViewMode::Cloud;
+        mode_ = (mode_ == BaseViewMode::Cloud) ? BaseViewMode::Surface : BaseViewMode::Cloud;
         // Re-stage for the newly selected mode: its data may be stale (tick
         // only stages the active mode, and we may be paused).
-        if (mode_ == ViewMode::Surface) {
+        if (mode_ == BaseViewMode::Surface) {
             if (gpu_ok_ && engine_.mc_prepare(kMcMaxTris)) {
                 mc_dirty_ = true;  // GPU meshing: stepping/laser/decay stay live
             } else {
                 ensure_cpu_current();  // CPU meshing (no-GPU fallback)
-                if (stepping_ == Stepping::RelaxingExcited) {
-                    stepping_ = Stepping::Relaxing;  // deflation is GPU-only
+                if (stepping_ == BaseStepping::RelaxingExcited) {
+                    stepping_ = BaseStepping::Relaxing;  // deflation is GPU-only
                 }
                 laser_pol_ = LaserPol::Off;  // the drive is GPU-only too
                 decay_on_ = false;  // so are the jump trials
@@ -502,8 +478,8 @@ public:
             return;
         }
         if (!decay_on_) {
-            if (mode_ != ViewMode::Cloud) {
-                mode_ = ViewMode::Cloud;  // jump trials run on the GPU path only
+            if (mode_ != BaseViewMode::Cloud) {
+                mode_ = BaseViewMode::Cloud;  // jump trials run on the GPU path only
             }
             if (!atom_.prepare_manifold_cache(engine_, kDecayGammaDisplay)) {
                 return;
@@ -518,8 +494,8 @@ public:
         if (!gpu_ok_ || solving()) {
             return;
         }
-        if (mode_ != ViewMode::Cloud) {
-            mode_ = ViewMode::Cloud;
+        if (mode_ != BaseViewMode::Cloud) {
+            mode_ = BaseViewMode::Cloud;
         }
         if (!atom_.prepare_manifold_cache(engine_, kDecayGammaDisplay)) {
             return;
@@ -529,7 +505,7 @@ public:
         atom_.collapse_onto(engine_, idx);
         reset_ionized_tally();
         cpu_is_truth_ = false;  // the GPU state is ahead now
-        stepping_ = Stepping::RealTime;
+        stepping_ = BaseStepping::RealTime;
     }
 
     // Cycle the laser off -> Z -> X -> off. Carrier and E0 both come from
@@ -540,8 +516,8 @@ public:
             return;  // the drive runs on the GPU path only
         }
         if (laser_pol_ == LaserPol::Off) {
-            if (mode_ != ViewMode::Cloud) {
-                mode_ = ViewMode::Cloud;
+            if (mode_ != BaseViewMode::Cloud) {
+                mode_ = BaseViewMode::Cloud;
             }
             if (!manifold_ready()) {
                 return;
@@ -565,7 +541,7 @@ public:
                 upload_field_tables();
             }
             laser_pol_ = LaserPol::Z;
-            stepping_ = Stepping::RealTime;  // the drive lives in real time
+            stepping_ = BaseStepping::RealTime;  // the drive lives in real time
         } else if (laser_pol_ == LaserPol::Z) {
             laser_pol_ = LaserPol::X;
         } else {
@@ -579,7 +555,7 @@ public:
         efield_e0_ = e0;
         upload_field_tables();  // fold E*z into the half-potential (with diamag if B on)
         if (e0 > 0.0 && !solving()) {
-            stepping_ = Stepping::RealTime;  // let the field actually act
+            stepping_ = BaseStepping::RealTime;  // let the field actually act
         }
     }
 
@@ -593,7 +569,7 @@ public:
         }
         upload_field_tables();
         if (b > 0.0 && !solving()) {
-            stepping_ = Stepping::RealTime;
+            stepping_ = BaseStepping::RealTime;
         }
     }
 
@@ -661,7 +637,7 @@ public:
         atom_.collapse_onto(engine_, idx);
         reset_ionized_tally();
         cpu_is_truth_ = false;
-        stepping_ = Stepping::RealTime;
+        stepping_ = BaseStepping::RealTime;
     }
     double probe_population(int idx) {
         if (!manifold_ready() || idx < 0 || idx >= kNumStates) {
@@ -689,30 +665,14 @@ public:
         }
         reset_ionized_tally();
         cpu_is_truth_ = false;
-        stepping_ = Stepping::RealTime;
+        stepping_ = BaseStepping::RealTime;
     }
 
     // ---- display-facing accessors (the shell's FrameInput assembly) ----
 
-    bool cloud() const override { return mode_ == ViewMode::Cloud; }
-    // GPU surface mesh: non-null when Surface extracts on-GPU (the renderer
-    // then draws indirect and ignores mesh()/colors()).
-    VkBuffer surface_vbuf() const override {
-        return (mode_ == ViewMode::Surface && engine_.mc_ready())
-                   ? engine_.mc_vertex_buffer()
-                   : VK_NULL_HANDLE;
-    }
-    VkBuffer surface_indirect() const override {
-        return (mode_ == ViewMode::Surface && engine_.mc_ready())
-                   ? engine_.mc_indirect_buffer()
-                   : VK_NULL_HANDLE;
-    }
-    double peak() const override { return peak_; }
-    bool compute_attempted() const override { return compute_attempted_; }
-    bool gpu_ok() const override { return gpu_ok_; }
-    // The engine's bridge image on the GPU path; null lets the renderer fall
-    // back to its CPU-staged texture.
-    VkImageView psi_volume_view() override { return gpu_ok_ ? engine_.volume_view() : VK_NULL_HANDLE; }
+    // cloud(), surface_vbuf(), surface_indirect(), peak(), compute_attempted(),
+    // gpu_ok(), psi_volume_view(): inherited from BaseDirector (identical).
+
     // Photon flash: a brief warm background right after a quantum jump.
     float next_flash_intensity() override {
         if (flash_ticks_ <= 0) {
@@ -722,33 +682,9 @@ public:
         --flash_ticks_;
         return v;
     }
-    bool take_volume_written() override {
-        const bool w = volume_written_;
-        volume_written_ = false;
-        return w;
-    }
-    bool take_volume_dirty() override {
-        const bool d = volume_dirty_;
-        volume_dirty_ = false;
-        return d;
-    }
-    bool take_mesh_dirty() override {
-        const bool d = mesh_dirty_;
-        mesh_dirty_ = false;
-        return d;
-    }
-    void mark_display_dirty() override {  // shell resize / first frame
-        mesh_dirty_ = true;
-        volume_dirty_ = true;
-    }
-    bool take_title_dirty() override {
-        const bool t = title_dirty_;
-        title_dirty_ = false;
-        return t;
-    }
-    const std::vector<float>& psi_staging() const override { return psi_staging_; }
-    const ses::Mesh& mesh() const override { return mesh_; }
-    const std::vector<ses::Rgb>& colors() const override { return colors_; }
+    // take_volume_written(), take_volume_dirty(), take_mesh_dirty(),
+    // mark_display_dirty(), take_title_dirty(), psi_staging(), mesh(),
+    // colors(): inherited from BaseDirector (identical).
 
     // The full window-title readout (rendered into the ImGui status block).
     std::string title_text() override {
@@ -757,7 +693,7 @@ public:
         const double t_au = sim_.time() + gpu_time_;
         std::string s = "Electron near a hydrogen nucleus   t = " +
                         strf("%.2f au (%.3f fs)", t_au, t_au * kAuToFs) + "   ";
-        if (stepping_ != Stepping::RealTime) {
+        if (stepping_ != BaseStepping::RealTime) {
             s += cpu_is_truth_
                      ? strf("E = %.3f eV   ",
                             ses::mean_energy(sim_.psi(), sim_.potential()) * kHaToEv)
@@ -766,14 +702,14 @@ public:
         s += strf("norm = %.6f   [%s, %s, %s]  1=real 2=relax R=reset tab=view "
                   "[ ]=density M=pos E=energy",
                   norm_display_,
-                  mode_ == ViewMode::Cloud ? "cloud" : "surface",
-                  stepping_ == Stepping::RealTime
+                  mode_ == BaseViewMode::Cloud ? "cloud" : "surface",
+                  stepping_ == BaseStepping::RealTime
                       ? "real-time"
-                      : (stepping_ == Stepping::Relaxing
+                      : (stepping_ == BaseStepping::Relaxing
                              ? "relaxing->1s"
                              : strf("relaxing->%s", relax_label_.c_str()).c_str()),
                   use_gpu_path() ? "gpu 256^3" : "cpu 256^3");
-        if (stepping_ == Stepping::RealTime && !solving()) {
+        if (stepping_ == BaseStepping::RealTime && !solving()) {
             s += strf("  emit P = %.2e au", radiated_power_);
         }
         if (solving()) {
@@ -843,7 +779,7 @@ private:
             return;
         }
         pending_partial_ = b;
-        stepping_ = Stepping::RealTime;  // observe, then let H evolve it
+        stepping_ = BaseStepping::RealTime;  // observe, then let H evolve it
         laser_pol_ = LaserPol::Off;
     }
 
@@ -1275,7 +1211,7 @@ private:
     // states below the target.
     void run_relax_batch() {
         const ses_vk::Engine::RelaxStats stats =
-            (stepping_ == Stepping::RelaxingExcited &&
+            (stepping_ == BaseStepping::RelaxingExcited &&
              !relax_deflate_.empty())
                 ? engine_.relax_deflated_step(relax_deflate_,
                                               pending_gpu_steps_)
@@ -1297,7 +1233,7 @@ private:
             relax_prev_energy_ = stats.energy;
             if (relax_plateau_ >= 12) {  // ~2 s of stable readout
                 relax_plateau_ = 0;
-                stepping_ = Stepping::RealTime;
+                stepping_ = BaseStepping::RealTime;
                 std::fprintf(stderr,
                              "relax: auto-complete -> real time (E=%.6f Ha, "
                              "t=%.1f au)\n",
@@ -1317,8 +1253,8 @@ private:
         if (!gpu_ok_ || solving()) {
             return;  // deflation runs on the GPU path only
         }
-        if (mode_ != ViewMode::Cloud) {
-            mode_ = ViewMode::Cloud;
+        if (mode_ != BaseViewMode::Cloud) {
+            mode_ = BaseViewMode::Cloud;
         }
         if (!manifold_ready() || !ensure_relax_tables()) {
             return;
@@ -1338,7 +1274,7 @@ private:
         relax_label_ = label;
         relax_plateau_ = 0;
         relax_prev_energy_ = 0.0;
-        stepping_ = Stepping::RelaxingExcited;
+        stepping_ = BaseStepping::RelaxingExcited;
     }
 
     ses::Field3D make_axis_odd_seed(int axis) const {  // 0 = x, 1 = y, 2 = z
@@ -1559,96 +1495,25 @@ private:
     }
     void drop_relax_tables() { engine_.release_relax_tables(); }
 
-    // Pull the GPU-evolved state back into the CPU double session (fp32
-    // precision at the handoff).
-    void ensure_cpu_current() {
-        // Queued-but-unexecuted steps were never credited to gpu_time_;
-        // discard them so they cannot fire later against a different state.
-        pending_gpu_steps_ = 0;
-        if (cpu_is_truth_ || !gpu_ok_) {
-            return;
-        }
-        engine_.readback(readback_buf_);
-        ses::Field3D f{sim_.grid()};
-        for (std::size_t i = 0; i < f.data().size(); ++i) {
-            f.data()[i] = ses::Complex<double>{readback_buf_[2 * i], readback_buf_[2 * i + 1]};
-        }
-        sim_.set_psi(f);
-        cpu_is_truth_ = true;
+    // ensure_cpu_current(), stage_active_view(), remesh(), stage_volume(),
+    // write_display_texture(): inherited from BaseDirector (identical).
+
+    // remake_simulation()/scene_name() are BaseDirector pure-virtual hooks
+    // (used only by base's reset_simulation()/title_text(), both of which
+    // HydrogenDirector overrides -- so these are never actually called; they
+    // exist solely to make the class concrete).
+    ses::WavepacketSimulation remake_simulation() const override {
+        return make_simulation();
+    }
+    const char* scene_name() const override {
+        return "Electron near a hydrogen nucleus";
     }
 
-    void stage_active_view() {
-        if (mode_ == ViewMode::Cloud) {
-            if (use_gpu_path()) {
-                return;  // run_frame uploads the state and bridges the texture
-            }
-            stage_volume();
-            volume_dirty_ = true;
-        } else {
-            if (gpu_ok_) {
-                mc_dirty_ = true;  // run_frame re-extracts from the GPU psi
-                return;
-            }
-            remesh();
-            mesh_dirty_ = true;
-        }
-    }
-
-    // ---- CPU staging ----
-
-    void remesh() {
-        mesh_ = ses::marching_cubes_at_fraction(sim_.density(), sim_.grid(), kIsoFraction);
-        colors_ = ses::phase_colors(mesh_, sim_.psi());
-    }
-
-    // Pack complex psi into RG float pairs and track the density peak.
-    void stage_volume() {
-        const auto& field = sim_.psi().data();
-        psi_staging_.resize(field.size() * 2);
-        double peak = 0.0;
-        for (std::size_t i = 0; i < field.size(); ++i) {
-            psi_staging_[2 * i] = static_cast<float>(field[i].real());
-            psi_staging_[2 * i + 1] = static_cast<float>(field[i].imag());
-            peak = std::max(peak, ses::norm_sq(field[i]));
-        }
-        peak_ = peak;
-    }
-
-    // Bridge psi to the active display: Cloud -> the volume texture,
-    // Surface -> mark the GPU isosurface for re-extraction (run_frame).
-    void write_display_texture() {
-        if (mode_ == ViewMode::Surface && engine_.mc_ready()) {
-            mc_dirty_ = true;
-            return;
-        }
-        engine_.write_psi_to_volume();
-        volume_written_ = true;  // resets the temporal accumulation
-    }
-
-    ses::WavepacketSimulation sim_;
-    ses_vk::Engine engine_;
-    ViewMode mode_ = ViewMode::Cloud;
-    Stepping stepping_ = Stepping::RealTime;
-
-    // cpu_is_truth_ is the single sync invariant: true -> sim_.psi() is
-    // current, false -> the engine's psi buffer is ahead and must be read
-    // back before any CPU-side operation.
-    bool compute_attempted_ = false;
-    bool gpu_ok_ = false;
-    bool cpu_is_truth_ = true;
-    int pending_gpu_steps_ = 0;
-    int time_scale_ = 1;  // steps-per-tick multiplier (dt untouched)
+    // ---- hydrogen-only state (base holds the shared members) ----
     bool mcwf_damping_ = true;  // no-jump H_eff damping between jumps
-    bool mc_dirty_ = false;     // Surface: psi changed, re-extract the mesh
     int mcwf_scratch_ = -1;     // reused synthesis buffer (see synth_over)
     bool pending_energy_measure_ = false;  // Key E: serviced in run_frame
-    bool gpu_title_due_ = false;
-    bool title_dirty_ = false;
-    double gpu_time_ = 0.0;
-    double norm_display_ = 1.0;
-    double relax_energy_display_ = 0.0;
     double radiated_power_ = 0.0;  // semiclassical Larmor power (au)
-    std::vector<float> readback_buf_;
 
     // Tracked atom: radial solve, synthesis bookkeeping, E1 channel table;
     // engine-backed calls pass engine_ explicitly.
@@ -1677,8 +1542,7 @@ private:
     std::string relax_label_ = "2p";
     std::vector<int> relax_deflate_;        // live RelaxingExcited deflation set
     std::vector<int> relax_deflate_owned_;  // owned transient states to release
-    double relax_prev_energy_ = 0.0;     // relax auto-complete plateau tracking
-    int relax_plateau_ = 0;
+    // relax_prev_energy_/relax_plateau_: inherited from BaseDirector.
 
     // Startup atlas build (radial solve + synthesis, chunked in paint).
     std::vector<int> synth_queue_;
@@ -1705,18 +1569,9 @@ private:
     double pop_excited_ = 0.0;
     double rabi_peak_ = 0.0;  // max P(2pz) since the laser came on
 
-    // CPU staging for the renderer's fallback texture and the Surface mesh.
-    ses::Mesh mesh_;
-    std::vector<ses::Rgb> colors_;
-    std::vector<float> psi_staging_;
-    double peak_ = 0.0;
-    bool mesh_dirty_ = false;
-    bool volume_dirty_ = false;
-    bool volume_written_ = false;  // bridge wrote psi this frame
-    long long ticks_ = 0;
-
-    bool absorber_on_ = false;  // real R32 absorber uploaded (set_absorber)
-    std::mt19937 rng_{std::random_device{}()};
+    // CPU staging (mesh_/colors_/psi_staging_/peak_/mesh_dirty_/volume_dirty_/
+    // volume_written_/ticks_), absorber_on_, and rng_: inherited from
+    // BaseDirector.
 };
 
 }  // namespace ses_shell
