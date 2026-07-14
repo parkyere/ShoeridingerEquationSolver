@@ -2503,24 +2503,26 @@ bool check_engine_bridge(ses_vk::DeviceContext& ctx) {
 }
 
 // Item 0a: the forward-safe feature negotiation in create_device must ENABLE
-// (not merely advertise) the bits the Pascal-baseline optimization ladder
-// builds on -- timeline semaphores, synchronization2, host query reset, 16-bit
-// storage. On the Pascal floor (P5000 = 1.4.312) all four are supported, so
-// all four must read back enabled. RED before create_device gained the
-// probe-and-enable chain (every bit false); GREEN once it enables the
-// supported subset. A device that genuinely lacks one would fail here loudly
-// rather than fault later when a fast path uses it.
+// (not merely advertise) the bits the app builds on -- timeline semaphores,
+// synchronization2, dynamic rendering, host query reset, 16-bit storage, and
+// shaderDemoteToHelperInvocation (SPIR-V 1.6 lowers `discard` to it). On the
+// Pascal floor (P5000 = 1.4.312) every one is supported, so every one must
+// read back enabled. RED before create_device gained the probe-and-enable
+// chain (every bit false); GREEN once it enables the supported subset. A
+// device that genuinely lacks one would fail here loudly rather than fault
+// later when a fast path (or a render shader) uses it.
 bool check_device_features(const ses_vk::DeviceContext& ctx) {
     const bool pass = ctx.feat_timeline_semaphore && ctx.feat_synchronization2 &&
                       ctx.feat_dynamic_rendering && ctx.feat_host_query_reset &&
-                      ctx.feat_storage16;
+                      ctx.feat_storage16 && ctx.feat_demote_to_helper;
     std::printf("device feature negotiation (Pascal floor): timeline=%d "
-                "sync2=%d dynRender=%d hostQueryReset=%d storage16=%d  [%s]\n",
+                "sync2=%d dynRender=%d hostQueryReset=%d storage16=%d "
+                "demoteToHelper=%d  [%s]\n",
                 ctx.feat_timeline_semaphore ? 1 : 0,
                 ctx.feat_synchronization2 ? 1 : 0,
                 ctx.feat_dynamic_rendering ? 1 : 0,
                 ctx.feat_host_query_reset ? 1 : 0, ctx.feat_storage16 ? 1 : 0,
-                pass ? "PASS" : "FAIL");
+                ctx.feat_demote_to_helper ? 1 : 0, pass ? "PASS" : "FAIL");
     return pass;
 }
 

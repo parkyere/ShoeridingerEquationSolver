@@ -707,9 +707,13 @@ private:
 
 
     bool create_target() {
+        // COLOR_ATTACHMENT (scene draw) + STORAGE (compute post chain) +
+        // SAMPLED (bloom-down samples it with a linear filter, and the shell
+        // blit samples the finished image).
         if (!create_attachment(VK_FORMAT_R16G16B16A16_SFLOAT,
                                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                                   VK_IMAGE_USAGE_STORAGE_BIT,
+                                   VK_IMAGE_USAGE_STORAGE_BIT |
+                                   VK_IMAGE_USAGE_SAMPLED_BIT,
                                VK_IMAGE_ASPECT_COLOR_BIT, &color_, width_,
                                height_) ||
             !create_attachment(VK_FORMAT_D32_SFLOAT,

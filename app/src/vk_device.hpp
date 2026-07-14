@@ -96,6 +96,7 @@ struct DeviceContext {
     bool feat_dynamic_rendering = false;
     bool feat_host_query_reset = false;
     bool feat_storage16 = false;
+    bool feat_demote_to_helper = false;
     float timestamp_period = 1.0f;  // ns per timestamp tick (limits)
     std::uint32_t timestamp_valid_bits = 0;  // compute-queue width; 0 = no HW timestamps
     char device_name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE] = {};
@@ -336,6 +337,11 @@ struct DeviceContext {
         feat_synchronization2 = probe13.synchronization2 == VK_TRUE;
         feat_dynamic_rendering = probe13.dynamicRendering == VK_TRUE;
         feat_storage16 = probe11.storageBuffer16BitAccess == VK_TRUE;
+        // SPIR-V 1.6 (vulkan1.4 shader target) lowers `discard` to
+        // OpDemoteToHelperInvocation (slice/volume frag) -- declaring the
+        // DemoteToHelperInvocation capability needs this feature enabled.
+        feat_demote_to_helper =
+            probe13.shaderDemoteToHelperInvocation == VK_TRUE;
         timestamp_period = props.limits.timestampPeriod;
         timestamp_valid_bits = qf[compute_family].timestampValidBits;
 
@@ -343,6 +349,8 @@ struct DeviceContext {
         en13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
         en13.synchronization2 = feat_synchronization2 ? VK_TRUE : VK_FALSE;
         en13.dynamicRendering = feat_dynamic_rendering ? VK_TRUE : VK_FALSE;
+        en13.shaderDemoteToHelperInvocation =
+            feat_demote_to_helper ? VK_TRUE : VK_FALSE;
         VkPhysicalDeviceVulkan12Features en12{};
         en12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
         en12.timelineSemaphore = feat_timeline_semaphore ? VK_TRUE : VK_FALSE;
