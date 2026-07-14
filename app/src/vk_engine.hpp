@@ -1353,26 +1353,27 @@ public:
         r.dispatch(mc_classify_, mc_classify_set_, mc_nblocks_);
         r.dispatch(mc_scan_, mc_scan_set_, 1);
         r.dispatch(mc_emit_, mc_emit_set_, mc_nblocks_);
-        // Make the vertex/indirect writes visible to the render submission
-        // (same queue, later submit: execution order is queue order, memory
-        // needs this availability edge).
-        // sync2 lets each buffer carry its OWN dst stage instead of a shared
-        // OR'd mask (attribute-input for the vbuf, draw-indirect for the args).
+        // Make the mc writes available. mc_vbuf_ (vertex fetch) and
+        // mc_indirect_ (draw-indirect args) are read on the GRAPHICS queue in a
+        // LATER submission (cross-queue), and mc_indirect_ by the transfer
+        // readback just below. A COMPUTE-queue barrier CANNOT name graphics
+        // stages (VERTEX_ATTRIBUTE_INPUT is invalid here -- validation flagged
+        // it), so make the writes available broadly (ALL_COMMANDS + MEMORY_READ)
+        // and let the submit_and_wait fence + CONCURRENT buffer sharing carry
+        // the cross-queue visibility.
         VkBufferMemoryBarrier2 bmb[2]{};
+        const VkBuffer bufs[2] = {mc_vbuf_.buf, mc_indirect_.buf};
         for (int i = 0; i < 2; ++i) {
             bmb[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
             bmb[i].srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
             bmb[i].srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+            bmb[i].dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            bmb[i].dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT;
             bmb[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             bmb[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            bmb[i].buffer = bufs[i];
             bmb[i].size = VK_WHOLE_SIZE;
         }
-        bmb[0].dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT;
-        bmb[0].dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
-        bmb[0].buffer = mc_vbuf_.buf;
-        bmb[1].dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
-        bmb[1].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
-        bmb[1].buffer = mc_indirect_.buf;
         VkDependencyInfo dep{};
         dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
         dep.bufferMemoryBarrierCount = 2;
