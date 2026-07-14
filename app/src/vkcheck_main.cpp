@@ -71,6 +71,7 @@
 #include <fft_line256_spv.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -1345,8 +1346,10 @@ bool check_engine_absorber(ses_vk::DeviceContext& ctx) {
 // stitching is exercised, not just one workgroup). Both sides classify the
 // SAME fp32-quantized density against the SAME float-rounded iso, so the
 // triangle COUNT must match exactly; the GPU emits block-major, the CPU
-// row-major, so both meshes are canonicalized by (centroid, first vertex)
-// before the per-vertex compare (pos/normal/color: fp32 vs f64 tolerance).
+// row-major, so both meshes are canonicalized by a grid-rounded triangle key
+// before the per-vertex compare (position/normal tight; phase colour skipped
+// only at its wheel seams, where a sub-ULP atan2 diff legitimately flips a
+// channel -- see the loop).
 bool check_engine_marching_cubes(ses_vk::DeviceContext& ctx) {
     const ses::Grid1D axis{-8.0, 8.0, 64};
     const ses::Grid3D g{axis, axis, axis};
@@ -1419,19 +1422,27 @@ bool check_engine_marching_cubes(ses_vk::DeviceContext& ctx) {
     double max_nrm = 0.0;
     double max_col = 0.0;
     if (pass && gpu_tris > 0) {
-        // Canonical order: sort triangle indices by centroid, then first
-        // vertex (exact doubles on CPU, fp32 on GPU: quantize the key).
+        // Canonical order: sort by a triangle key rounded to a 1e-3 grid
+        // (positions agree to ~1e-6, so both sides round identically). The
+        // key is 12 integers (centroid + all three vertices) compared
+        // lexicographically via std::array -- a VALID strict-weak-ordering,
+        // unlike an abs()<eps compare (that is std::sort UB and can pair
+        // triangles differently across platforms/STLs).
+        const double kPi = 3.14159265358979323846;
+        const auto q = [](double x) {
+            return static_cast<long long>(std::llround(x * 1000.0));
+        };
         struct Key {
-            double k[6];
+            std::array<long long, 12> k;
             int idx;
         };
-        const auto key_less = [](const Key& a, const Key& b) {
-            for (int i = 0; i < 6; ++i) {
-                if (std::abs(a.k[i] - b.k[i]) > 1e-4) {
-                    return a.k[i] < b.k[i];
-                }
-            }
-            return false;
+        const auto make_key = [&q](double x0, double y0, double z0, double x1,
+                                   double y1, double z1, double x2, double y2,
+                                   double z2, int idx) {
+            return Key{{q((x0 + x1 + x2) / 3.0), q((y0 + y1 + y2) / 3.0),
+                        q((z0 + z1 + z2) / 3.0), q(x0), q(y0), q(z0), q(x1),
+                        q(y1), q(z1), q(x2), q(y2), q(z2)},
+                       idx};
         };
         std::vector<Key> ck(static_cast<std::size_t>(cpu_tris));
         std::vector<Key> gk(static_cast<std::size_t>(gpu_tris));
@@ -1439,17 +1450,15 @@ bool check_engine_marching_cubes(ses_vk::DeviceContext& ctx) {
             const ses::Vec3d& a = cpu_mesh.vertices[3 * t];
             const ses::Vec3d& b2 = cpu_mesh.vertices[3 * t + 1];
             const ses::Vec3d& c = cpu_mesh.vertices[3 * t + 2];
-            ck[t] = Key{{(a.x + b2.x + c.x) / 3.0, (a.y + b2.y + c.y) / 3.0,
-                         (a.z + b2.z + c.z) / 3.0, a.x, a.y, a.z},
-                        t};
+            ck[t] = make_key(a.x, a.y, a.z, b2.x, b2.y, b2.z, c.x, c.y, c.z, t);
             const float* tv = &gpu_v[static_cast<std::size_t>(t) * 27u];
-            gk[t] = Key{{(tv[0] + tv[9] + tv[18]) / 3.0,
-                         (tv[1] + tv[10] + tv[19]) / 3.0,
-                         (tv[2] + tv[11] + tv[20]) / 3.0, tv[0], tv[1], tv[2]},
-                        t};
+            gk[t] = make_key(tv[0], tv[1], tv[2], tv[9], tv[10], tv[11], tv[18],
+                             tv[19], tv[20], t);
         }
-        std::sort(ck.begin(), ck.end(), key_less);
-        std::sort(gk.begin(), gk.end(), key_less);
+        const auto less = [](const Key& a, const Key& b) { return a.k < b.k; };
+        std::sort(ck.begin(), ck.end(), less);
+        std::sort(gk.begin(), gk.end(), less);
+        int col_skipped = 0;
         for (int t = 0; t < cpu_tris; ++t) {
             const int ci = ck[static_cast<std::size_t>(t)].idx;
             const float* tv =
@@ -1465,12 +1474,35 @@ bool check_engine_marching_cubes(ses_vk::DeviceContext& ctx) {
                 max_nrm = std::max({max_nrm, std::abs(gv[3] - n.x),
                                     std::abs(gv[4] - n.y),
                                     std::abs(gv[5] - n.z)});
+                // The phase colour wheel is DISCONTINUOUS at its six hue
+                // seams: a vertex whose sampled phase lands on a seam gets
+                // one sextant's colour on the CPU (fp64 atan2) and the
+                // neighbour's on the GPU (fp32 atan2) -- a legitimate ~1.0
+                // channel flip, not a bug. Skip the colour assertion within
+                // a thin band of each seam (geometry is still enforced; the
+                // wheel formula itself is pinned by colormap_test and by the
+                // thousands of non-seam vertices here).
+                const ses::Complex<double> sv =
+                    ses::sample_trilinear(psi, ses::Vec3d{p.x, p.y, p.z});
+                double h6 = (std::atan2(sv.imag(), sv.real()) + kPi) /
+                            (2.0 * kPi) * 6.0;
+                h6 -= 6.0 * std::floor(h6 / 6.0);
+                const double frac = h6 - std::floor(h6);
+                if (frac < 1e-3 || frac > 1.0 - 1e-3) {
+                    ++col_skipped;
+                    continue;
+                }
                 max_col = std::max({max_col, std::abs(gv[6] - col.r),
                                     std::abs(gv[7] - col.g),
                                     std::abs(gv[8] - col.b)});
             }
         }
         pass = max_pos < 1e-3 && max_nrm < 2e-2 && max_col < 2e-2;
+        if (col_skipped > 0) {
+            std::printf("  (marching cubes: %d seam vertices skipped for "
+                        "colour)\n",
+                        col_skipped);
+        }
     }
     std::printf(
         "engine marching cubes (raw Vulkan): tris %d vs cpu %d, max |dpos| = "
