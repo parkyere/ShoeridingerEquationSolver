@@ -329,14 +329,16 @@ struct DeviceContext {
         return Boot::ok;
     }
 
-    // Device-local buffer (storage + transfer both ways).
-    bool create_device_buffer(VkDeviceSize size, Buffer* out) {
+    // Device-local buffer (storage + transfer both ways); `extra` adds
+    // consumer-specific usage (vertex / indirect for the GPU mesh path).
+    bool create_device_buffer(VkDeviceSize size, Buffer* out,
+                              VkBufferUsageFlags extra = 0) {
         VkBufferCreateInfo bci{};
         bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bci.size = size;
         bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                    VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT | extra;
         bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         VmaAllocationCreateInfo alc{};
         alc.usage = VMA_MEMORY_USAGE_AUTO;

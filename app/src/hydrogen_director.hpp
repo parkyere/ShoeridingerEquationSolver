@@ -185,10 +185,11 @@ public:
         gpu_ok_ = false;
     }
 
-    // GPU stepping covers the Cloud view in BOTH real and imaginary time;
-    // measure and surface meshing run on the CPU double session, synced
-    // through the single cpu_is_truth_ invariant.
-    bool use_gpu_path() const { return gpu_ok_ && mode_ == ViewMode::Cloud; }
+    // GPU stepping covers BOTH views in real and imaginary time; only the
+    // display half is mode-aware (Cloud bridges psi -> volume, Surface
+    // extracts the GPU isosurface). Position measurement still runs on the
+    // CPU double session, synced through the single cpu_is_truth_ invariant.
+    bool use_gpu_path() const { return gpu_ok_; }
 
     // ---- the compute half of a frame ----
     // Engine stepping, atlas build, measurement service, decay/laser trials.
@@ -272,7 +273,11 @@ public:
                 if (stepping_ == Stepping::RealTime) {
                     // Mask + bridge ride the step submission (batch tail).
                     run_real_time_batch();
-                    volume_written_ = true;
+                    if (mode_ == ViewMode::Cloud) {
+                        volume_written_ = true;
+                    } else {
+                        mc_dirty_ = true;  // psi advanced: re-extract below
+                    }
                 } else {
                     run_relax_batch();
                     write_display_texture();
@@ -283,6 +288,15 @@ public:
                     gpu_title_due_ = false;
                     title_dirty_ = true;
                 }
+            }
+            // Surface display: re-extract the GPU isosurface after any psi
+            // change (steps, collapses, uploads); kIsoFraction of the
+            // tracked density peak mirrors marching_cubes_at_fraction.
+            if (mode_ == ViewMode::Surface && engine_.mc_ready() &&
+                mc_dirty_) {
+                engine_.mc_extract(kIsoFraction * peak_);
+                mc_dirty_ = false;
+                volume_written_ = true;  // display changed: accumulation resets
             }
         }
     }
@@ -395,7 +409,7 @@ public:
         cpu_is_truth_ = true;  // GPU state discarded with the reset
         gpu_time_ = 0.0;
         pending_gpu_steps_ = 0;
-        if (gpu_ok_ && manifold_ready() && mode_ == ViewMode::Cloud) {
+        if (gpu_ok_ && manifold_ready()) {
             seed_bound_superposition();  // a fresh random draw each reset
         }
         stage_active_view();
@@ -446,12 +460,21 @@ public:
         // Re-stage for the newly selected mode: its data may be stale (tick
         // only stages the active mode, and we may be paused).
         if (mode_ == ViewMode::Surface) {
-            ensure_cpu_current();  // meshing reads the CPU field
-            if (stepping_ == Stepping::RelaxingExcited) {
-                stepping_ = Stepping::Relaxing;  // deflation is GPU-only
+            if (gpu_ok_ && engine_.mc_prepare(kMcMaxTris)) {
+                mc_dirty_ = true;  // GPU meshing: stepping/laser/decay stay live
+            } else {
+                ensure_cpu_current();  // legacy CPU meshing path
+                if (stepping_ == Stepping::RelaxingExcited) {
+                    stepping_ = Stepping::Relaxing;  // deflation is GPU-only
+                }
+                laser_pol_ = LaserPol::Off;  // the drive is GPU-only too
+                decay_on_ = false;  // so are the jump trials
             }
-            laser_pol_ = LaserPol::Off;  // the drive is GPU-only too
-            decay_on_ = false;  // so are the jump trials: OFF beats a lying title
+        } else {
+            engine_.release_mc();
+            if (gpu_ok_ && !cpu_is_truth_) {
+                write_display_texture();  // refresh the volume for Cloud
+            }
         }
         stage_active_view();
     }
@@ -661,6 +684,18 @@ public:
     // ---- display-facing accessors (the shell's FrameInput assembly) ----
 
     bool cloud() const override { return mode_ == ViewMode::Cloud; }
+    // GPU surface mesh: non-null when Surface extracts on-GPU (the renderer
+    // then draws indirect and ignores mesh()/colors()).
+    VkBuffer surface_vbuf() const override {
+        return (mode_ == ViewMode::Surface && engine_.mc_ready())
+                   ? engine_.mc_vertex_buffer()
+                   : VK_NULL_HANDLE;
+    }
+    VkBuffer surface_indirect() const override {
+        return (mode_ == ViewMode::Surface && engine_.mc_ready())
+                   ? engine_.mc_indirect_buffer()
+                   : VK_NULL_HANDLE;
+    }
     double peak() const override { return peak_; }
     bool compute_attempted() const override { return compute_attempted_; }
     bool gpu_ok() const override { return gpu_ok_; }
@@ -1314,6 +1349,9 @@ private:
         if (!gpu_ok_) {
             return;
         }
+        // An in-flight async batch reads v_buf_; upload_raw's copy has no
+        // transfer-vs-compute ordering against it -- drain first.
+        engine_.wait_async();
         // Memo: sliders re-fire on every drag frame and reset always calls
         // with 0/0 -- skip the two 67 MB uploads when nothing changed.
         if (efield_e0_ == uploaded_e0_ && bfield_b_ == uploaded_b_ &&
@@ -1531,6 +1569,10 @@ private:
             stage_volume();
             volume_dirty_ = true;
         } else {
+            if (gpu_ok_) {
+                mc_dirty_ = true;  // run_frame re-extracts from the GPU psi
+                return;
+            }
             remesh();
             mesh_dirty_ = true;
         }
@@ -1556,8 +1598,13 @@ private:
         peak_ = peak;
     }
 
-    // Bridge psi to the display texture (always the real wavefunction).
+    // Bridge psi to the active display: Cloud -> the volume texture,
+    // Surface -> mark the GPU isosurface for re-extraction (run_frame).
     void write_display_texture() {
+        if (mode_ == ViewMode::Surface && engine_.mc_ready()) {
+            mc_dirty_ = true;
+            return;
+        }
         engine_.write_psi_to_volume();
         volume_written_ = true;  // resets the temporal accumulation
     }
@@ -1576,6 +1623,7 @@ private:
     int pending_gpu_steps_ = 0;
     int time_scale_ = 1;  // steps-per-tick multiplier (dt untouched)
     bool mcwf_damping_ = true;  // no-jump H_eff damping between jumps
+    bool mc_dirty_ = false;     // Surface: psi changed, re-extract the mesh
     int mcwf_scratch_ = -1;     // reused synthesis buffer (see synth_over)
     bool pending_energy_measure_ = false;  // Key E: serviced in run_frame
     bool gpu_title_due_ = false;

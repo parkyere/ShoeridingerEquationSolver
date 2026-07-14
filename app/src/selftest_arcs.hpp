@@ -62,6 +62,22 @@ void register_verification_arcs(ShellT* shell) {
         });
     }
 
+    // Surface-mode render verification: toggle to the GPU-extracted
+    // isosurface and dump the finished frame -- mc_prepare/extract + the
+    // indirect draw, end to end.
+    if (shell->has_arg("--dump-frame-surface")) {
+        run_when_manifold_ready(shell, [shell] {
+            shell->toggle_view_mode();
+            shell->sched().after(2000, [shell] {
+                const bool ok = shell->dump_frame_bmp("frame_dump_surface.bmp");
+                std::fprintf(stderr, "dump-frame-surface: %ux%u  [%s]\n",
+                             shell->frame_width(), shell->frame_height(),
+                             ok ? "PASS" : "FAIL");
+                shell->request_exit(ok ? 0 : 1);
+            });
+        });
+    }
+
     // Decay arc: prepare 2p WITH DECAY OFF (relaxation auto-completes into
     // real time, and an armed 2p would fire its one photon BEFORE the
     // baseline -- the n<=6 seed converges fast enough to lose that race

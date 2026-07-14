@@ -84,7 +84,9 @@ public:
         gpu_ok_ = false;
     }
 
-    bool use_gpu_path() const { return gpu_ok_ && mode_ == BaseViewMode::Cloud; }
+    // GPU stepping covers BOTH views; only the display half is mode-aware
+    // (Cloud bridges psi -> volume, Surface extracts the GPU isosurface).
+    bool use_gpu_path() const { return gpu_ok_; }
 
     void run_frame() override {
         if (!use_gpu_path()) {
@@ -110,7 +112,11 @@ public:
             if (stepping_ == BaseStepping::RealTime) {
                 // Mask + bridge ride the step submission (batch tail).
                 run_real_time_batch();
-                volume_written_ = true;
+                if (mode_ == BaseViewMode::Cloud) {
+                    volume_written_ = true;
+                } else {
+                    mc_dirty_ = true;  // psi advanced: re-extract below
+                }
             } else {
                 run_relax_batch();
                 write_display_texture();
@@ -121,6 +127,14 @@ public:
                 gpu_title_due_ = false;
                 title_dirty_ = true;
             }
+        }
+        // Surface display: re-extract after any psi change (kBaseIsoFraction
+        // of the tracked peak mirrors marching_cubes_at_fraction).
+        if (mode_ == BaseViewMode::Surface && engine_.mc_ready() &&
+            mc_dirty_) {
+            engine_.mc_extract(kBaseIsoFraction * peak_);
+            mc_dirty_ = false;
+            volume_written_ = true;  // display changed: accumulation resets
         }
     }
 
@@ -190,7 +204,16 @@ public:
         mode_ = (mode_ == BaseViewMode::Cloud) ? BaseViewMode::Surface
                                                : BaseViewMode::Cloud;
         if (mode_ == BaseViewMode::Surface) {
-            ensure_cpu_current();  // meshing reads the CPU field
+            if (gpu_ok_ && engine_.mc_prepare(kMcMaxTris)) {
+                mc_dirty_ = true;  // GPU meshing: stepping stays live
+            } else {
+                ensure_cpu_current();  // legacy CPU meshing path
+            }
+        } else {
+            engine_.release_mc();
+            if (gpu_ok_ && !cpu_is_truth_) {
+                write_display_texture();  // refresh the volume for Cloud
+            }
         }
         stage_active_view();
     }
@@ -224,6 +247,16 @@ public:
     // ---- display accessors ----
 
     bool cloud() const override { return mode_ == BaseViewMode::Cloud; }
+    VkBuffer surface_vbuf() const override {
+        return (mode_ == BaseViewMode::Surface && engine_.mc_ready())
+                   ? engine_.mc_vertex_buffer()
+                   : VK_NULL_HANDLE;
+    }
+    VkBuffer surface_indirect() const override {
+        return (mode_ == BaseViewMode::Surface && engine_.mc_ready())
+                   ? engine_.mc_indirect_buffer()
+                   : VK_NULL_HANDLE;
+    }
     double peak() const override { return peak_; }
     bool compute_attempted() const override { return compute_attempted_; }
     bool gpu_ok() const override { return gpu_ok_; }
@@ -382,6 +415,10 @@ protected:
             stage_volume();
             volume_dirty_ = true;
         } else {
+            if (gpu_ok_) {
+                mc_dirty_ = true;  // run_frame re-extracts from the GPU psi
+                return;
+            }
             remesh();
             mesh_dirty_ = true;
         }
@@ -405,7 +442,13 @@ protected:
         peak_ = peak;
     }
 
+    // Bridge psi to the active display: Cloud -> the volume texture,
+    // Surface -> mark the GPU isosurface for re-extraction (run_frame).
     void write_display_texture() {
+        if (mode_ == BaseViewMode::Surface && engine_.mc_ready()) {
+            mc_dirty_ = true;
+            return;
+        }
         engine_.write_psi_to_volume();
         volume_written_ = true;  // resets the temporal accumulation
     }
@@ -428,6 +471,7 @@ protected:
     int relax_plateau_ = 0;
     std::vector<float> readback_buf_;
 
+    bool mc_dirty_ = false;  // Surface: psi changed, re-extract the mesh
     ses::Mesh mesh_;
     std::vector<ses::Rgb> colors_;
     std::vector<float> psi_staging_;

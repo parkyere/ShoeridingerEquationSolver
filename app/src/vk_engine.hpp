@@ -37,6 +37,7 @@
 #include <core/drive.hpp>
 #include <core/grid.hpp>
 #include <core/spectral.hpp>
+#include <core/marching_cubes_tables.hpp>
 #include <core/vec.hpp>
 
 #include <algorithm>
@@ -62,6 +63,14 @@ struct EngineKernels {
     std::size_t pd_size = 0;            // optional: absent => separate passes)
     const unsigned char* mcwf = nullptr;  // mcwf_axpy.comp (fused multi-state
     std::size_t mcwf_size = 0;            // axpy; optional => per-state chain)
+    const unsigned char* mc_density = nullptr;  // GPU marching cubes (all four
+    std::size_t mc_density_size = 0;            // present or the path is off)
+    const unsigned char* mc_classify = nullptr;
+    std::size_t mc_classify_size = 0;
+    const unsigned char* mc_scan = nullptr;
+    std::size_t mc_scan_size = 0;
+    const unsigned char* mc_emit = nullptr;
+    std::size_t mc_emit_size = 0;
     std::size_t mul_size = 0;
     const unsigned char* conj = nullptr;   // conj_scale.comp
     std::size_t conj_size = 0;
@@ -311,6 +320,32 @@ public:
                 return false;
             }
             mcwf_kernel_ok_ = true;
+        }
+        // Optional GPU marching cubes (Surface-mode isosurface extraction);
+        // buffers are transient (mc_prepare/release_mc), kernels bake here.
+        if (blobs.mc_density != nullptr && blobs.mc_classify != nullptr &&
+            blobs.mc_scan != nullptr && blobs.mc_emit != nullptr) {
+            const auto storage = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            const auto uniform = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            if (!mc_density_.create(ctx, blobs.mc_density,
+                                    blobs.mc_density_size,
+                                    {{0, storage}, {1, storage}, {2, uniform}}) ||
+                !mc_classify_.create(
+                    ctx, blobs.mc_classify, blobs.mc_classify_size,
+                    {{0, storage}, {1, storage}, {2, storage}, {3, uniform}}) ||
+                !mc_scan_.create(
+                    ctx, blobs.mc_scan, blobs.mc_scan_size,
+                    {{0, storage}, {1, storage}, {2, storage}, {3, uniform}}) ||
+                !mc_emit_.create(ctx, blobs.mc_emit, blobs.mc_emit_size,
+                                 {{0, storage},
+                                  {1, storage},
+                                  {2, storage},
+                                  {3, storage},
+                                  {4, storage},
+                                  {5, uniform}})) {
+                return false;
+            }
+            mc_kernel_ok_ = true;
         }
 
         // std140 parameter blocks, written once into host-mapped UBOs (every
@@ -1041,6 +1076,265 @@ public:
         return ok;
     }
 
+    // ---- GPU marching cubes (Surface mode) --------------------------------
+    // Buffers are TRANSIENT like the relax tables: directors mc_prepare() on
+    // Surface entry, release_mc() on exit. Determinism: every emit slot is
+    // an integer function of the field (block scan), never of dispatch
+    // order -- output is block-major cell-ordered; the vkcheck oracle
+    // canonicalizes both sides by triangle centroid.
+
+    bool mc_ready() const { return mc_buffers_ok_; }
+    VkBuffer mc_vertex_buffer() const { return mc_vbuf_.buf; }
+    VkBuffer mc_indirect_buffer() const { return mc_indirect_.buf; }
+
+    bool mc_prepare(int max_tris) {
+        if (!mc_kernel_ok_ || max_tris <= 0) {
+            return false;
+        }
+        if (mc_buffers_ok_ && mc_max_tris_ == max_tris) {
+            return true;
+        }
+        release_mc();
+        // One workgroup per 8^3-cell block, dispatched 1D.
+        const int nbx = (grid_.x.n - 1 + 7) / 8;
+        const int nby = (grid_.y.n - 1 + 7) / 8;
+        const int nbz = (grid_.z.n - 1 + 7) / 8;
+        mc_nblk_[0] = nbx;
+        mc_nblk_[1] = nby;
+        mc_nblk_[2] = nbz;
+        mc_nblocks_ = static_cast<std::uint32_t>(nbx * nby * nbz);
+        if (mc_nblocks_ == 0 || mc_nblocks_ > 65535) {
+            std::fprintf(stderr, "ses_vk: mc block count %u out of range\n",
+                         mc_nblocks_);
+            return false;
+        }
+        // Tables SSBO, uploaded from the core headers (single source of
+        // truth with the CPU oracle): [0,256) edge, [256,4352) tri 256x16,
+        // [4352,4608) per-case triangle counts.
+        std::vector<std::int32_t> tab(4608, 0);
+        for (int c = 0; c < 256; ++c) {
+            tab[static_cast<std::size_t>(c)] = ses::mc::kEdgeTable[c];
+            int count = 0;
+            for (int t = 0; t < 16; ++t) {
+                tab[static_cast<std::size_t>(256 + c * 16 + t)] =
+                    ses::mc::kTriTable[c][t];
+                if (ses::mc::kTriTable[c][t] != -1 && t % 3 == 0) {
+                    ++count;
+                }
+            }
+            tab[static_cast<std::size_t>(4352 + c)] = count;
+        }
+        const VkDeviceSize den_bytes = cells_ * sizeof(float);
+        const VkDeviceSize blk_bytes = mc_nblocks_ * sizeof(std::uint32_t);
+        const VkDeviceSize vb_bytes =
+            static_cast<VkDeviceSize>(max_tris) * 27u * sizeof(float);
+        if (!ctx_->create_device_buffer(den_bytes, &mc_den_) ||
+            !ctx_->create_device_buffer(tab.size() * sizeof(std::int32_t),
+                                        &mc_tables_) ||
+            !ctx_->create_device_buffer(blk_bytes, &mc_block_sums_) ||
+            !ctx_->create_device_buffer(blk_bytes, &mc_block_offsets_) ||
+            !ctx_->create_device_buffer(vb_bytes, &mc_vbuf_,
+                                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT) ||
+            !ctx_->create_device_buffer(6 * sizeof(std::uint32_t),
+                                        &mc_indirect_,
+                                        VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT)) {
+            release_mc();
+            return false;
+        }
+        if (!upload_raw(mc_tables_, tab.data(),
+                        tab.size() * sizeof(std::int32_t))) {
+            release_mc();
+            return false;
+        }
+        McParams mp{};
+        mp.npts[0] = grid_.x.n;
+        mp.npts[1] = grid_.y.n;
+        mp.npts[2] = grid_.z.n;
+        mp.nblk[0] = nbx;
+        mp.nblk[1] = nby;
+        mp.nblk[2] = nbz;
+        mp.box_min[0] = static_cast<float>(grid_.x.xmin);
+        mp.box_min[1] = static_cast<float>(grid_.y.xmin);
+        mp.box_min[2] = static_cast<float>(grid_.z.xmin);
+        mp.cell_h[0] = static_cast<float>(grid_.x.spacing());
+        mp.cell_h[1] = static_cast<float>(grid_.y.spacing());
+        mp.cell_h[2] = static_cast<float>(grid_.z.spacing());
+        mp.iso = 0.0f;  // rewritten by every mc_extract
+        mp.max_tris = max_tris;
+        const McScanParams sp{static_cast<std::int32_t>(mc_nblocks_),
+                              max_tris, 0, 0};
+        if ((mc_ubo_.buf == VK_NULL_HANDLE &&
+             !write_ubo(&mc_ubo_, &mp, sizeof(mp))) ||
+            (mc_scan_ubo_.buf == VK_NULL_HANDLE &&
+             !write_ubo(&mc_scan_ubo_, &sp, sizeof(sp)))) {
+            release_mc();
+            return false;
+        }
+        std::memcpy(mc_ubo_.mapped, &mp, sizeof(mp));
+        std::memcpy(mc_scan_ubo_.mapped, &sp, sizeof(sp));
+        vmaFlushAllocation(ctx_->allocator, mc_ubo_.alloc, 0, VK_WHOLE_SIZE);
+        vmaFlushAllocation(ctx_->allocator, mc_scan_ubo_.alloc, 0,
+                           VK_WHOLE_SIZE);
+        // Sets are allocated once and re-pointed on re-prepare (arena sets
+        // are never freed individually -- the relax-table pattern).
+        const auto storage = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        const auto uniform = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        if (mc_den_set_ == VK_NULL_HANDLE) {
+            mc_den_set_ = arena_.allocate(*ctx_, mc_density_.set_layout());
+            mc_classify_set_ =
+                arena_.allocate(*ctx_, mc_classify_.set_layout());
+            mc_scan_set_ = arena_.allocate(*ctx_, mc_scan_.set_layout());
+            mc_emit_set_ = arena_.allocate(*ctx_, mc_emit_.set_layout());
+            if (mc_den_set_ == VK_NULL_HANDLE ||
+                mc_classify_set_ == VK_NULL_HANDLE ||
+                mc_scan_set_ == VK_NULL_HANDLE ||
+                mc_emit_set_ == VK_NULL_HANDLE) {
+                release_mc();
+                return false;
+            }
+        }
+        arena_.write_buffer(*ctx_, mc_den_set_, 0, storage, psi_.buf);
+        arena_.write_buffer(*ctx_, mc_den_set_, 1, storage, mc_den_.buf);
+        arena_.write_buffer(*ctx_, mc_den_set_, 2, uniform, muln_ubo_.buf,
+                            sizeof(MulParams));
+        arena_.write_buffer(*ctx_, mc_classify_set_, 0, storage, mc_den_.buf);
+        arena_.write_buffer(*ctx_, mc_classify_set_, 1, storage,
+                            mc_tables_.buf);
+        arena_.write_buffer(*ctx_, mc_classify_set_, 2, storage,
+                            mc_block_sums_.buf);
+        arena_.write_buffer(*ctx_, mc_classify_set_, 3, uniform, mc_ubo_.buf,
+                            sizeof(McParams));
+        arena_.write_buffer(*ctx_, mc_scan_set_, 0, storage,
+                            mc_block_sums_.buf);
+        arena_.write_buffer(*ctx_, mc_scan_set_, 1, storage,
+                            mc_block_offsets_.buf);
+        arena_.write_buffer(*ctx_, mc_scan_set_, 2, storage,
+                            mc_indirect_.buf);
+        arena_.write_buffer(*ctx_, mc_scan_set_, 3, uniform,
+                            mc_scan_ubo_.buf, sizeof(McScanParams));
+        arena_.write_buffer(*ctx_, mc_emit_set_, 0, storage, mc_den_.buf);
+        arena_.write_buffer(*ctx_, mc_emit_set_, 1, storage, mc_tables_.buf);
+        arena_.write_buffer(*ctx_, mc_emit_set_, 2, storage,
+                            mc_block_offsets_.buf);
+        arena_.write_buffer(*ctx_, mc_emit_set_, 3, storage, mc_vbuf_.buf);
+        arena_.write_buffer(*ctx_, mc_emit_set_, 4, storage, psi_.buf);
+        arena_.write_buffer(*ctx_, mc_emit_set_, 5, uniform, mc_ubo_.buf,
+                            sizeof(McParams));
+        mc_max_tris_ = max_tris;
+        mc_buffers_ok_ = true;
+        return true;
+    }
+
+    void release_mc() {
+        if (mc_den_.buf == VK_NULL_HANDLE && mc_vbuf_.buf == VK_NULL_HANDLE) {
+            return;
+        }
+        vkDeviceWaitIdle(ctx_->device);  // the render may still read mc_vbuf_
+        ctx_->destroy_buffer(&mc_den_);
+        ctx_->destroy_buffer(&mc_tables_);
+        ctx_->destroy_buffer(&mc_block_sums_);
+        ctx_->destroy_buffer(&mc_block_offsets_);
+        ctx_->destroy_buffer(&mc_vbuf_);
+        ctx_->destroy_buffer(&mc_indirect_);
+        mc_buffers_ok_ = false;
+        mc_max_tris_ = 0;
+    }
+
+    // Extract the |psi|^2 isosurface at `iso` into the vertex buffer; one
+    // fenced submission (waits any async physics batch first -- reads psi).
+    // Returns the clamped triangle count, < 0 on failure.
+    int mc_extract(double iso) {
+        if (!mc_buffers_ok_) {
+            return -1;
+        }
+        wait_async();
+        // Per-call iso: rewrite the UBO between fenced submissions (the
+        // scale-UBO precedent).
+        McParams* mp = static_cast<McParams*>(mc_ubo_.mapped);
+        mp->iso = static_cast<float>(iso);
+        vmaFlushAllocation(ctx_->allocator, mc_ubo_.alloc, 0, VK_WHOLE_SIZE);
+        OneShot shot;
+        if (!shot.begin_compute(*ctx_)) {
+            return -1;
+        }
+        Recorder r{shot.cb(), true};
+        barrier_compute_to_compute(shot.cb());  // psi vs earlier submissions
+        r.first = false;
+        r.dispatch(mc_density_, mc_den_set_, mul_groups_);
+        r.dispatch(mc_classify_, mc_classify_set_, mc_nblocks_);
+        r.dispatch(mc_scan_, mc_scan_set_, 1);
+        r.dispatch(mc_emit_, mc_emit_set_, mc_nblocks_);
+        // Make the vertex/indirect writes visible to the render submission
+        // (same queue, later submit: execution order is queue order, memory
+        // needs this availability edge).
+        VkBufferMemoryBarrier bmb[2]{};
+        for (int i = 0; i < 2; ++i) {
+            bmb[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+            bmb[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            bmb[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            bmb[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            bmb[i].size = VK_WHOLE_SIZE;
+        }
+        bmb[0].dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+        bmb[0].buffer = mc_vbuf_.buf;
+        bmb[1].dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+        bmb[1].buffer = mc_indirect_.buf;
+        vkCmdPipelineBarrier(shot.cb(), VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_VERTEX_INPUT_BIT |
+                                 VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                             0, 0, nullptr, 2, bmb, 0, nullptr);
+        record_buffer_readback(shot.cb(), mc_indirect_,
+                               6 * sizeof(std::uint32_t));
+        const bool ok = shot.submit_and_wait(*ctx_);
+        shot.destroy(*ctx_);
+        if (!ok) {
+            return -1;
+        }
+        vmaInvalidateAllocation(ctx_->allocator, staging_.alloc, 0,
+                                VK_WHOLE_SIZE);
+        const std::uint32_t* draw =
+            static_cast<const std::uint32_t*>(staging_.mapped);
+        if (draw[4] > draw[5] && !mc_overflow_warned_) {
+            mc_overflow_warned_ = true;
+            std::fprintf(stderr,
+                         "ses_vk: mc surface clamped (%u > %u tris)\n",
+                         draw[4], draw[5]);
+        }
+        return static_cast<int>(draw[5]);
+    }
+
+    // vkcheck readback: the first tri_count triangles as interleaved floats
+    // (pos3 normal3 color3 per vertex).
+    bool mc_read_vertices(std::vector<float>& out, int tri_count) {
+        if (!mc_buffers_ok_ || tri_count < 0) {
+            return false;
+        }
+        const VkDeviceSize bytes =
+            static_cast<VkDeviceSize>(tri_count) * 27u * sizeof(float);
+        if (bytes == 0) {
+            out.clear();
+            return true;
+        }
+        if (!ensure_staging(bytes)) {
+            return false;
+        }
+        OneShot shot;
+        if (!shot.begin_compute(*ctx_)) {
+            return false;
+        }
+        record_buffer_readback(shot.cb(), mc_vbuf_, bytes);
+        const bool ok = shot.submit_and_wait(*ctx_);
+        shot.destroy(*ctx_);
+        if (!ok) {
+            return false;
+        }
+        vmaInvalidateAllocation(ctx_->allocator, staging_.alloc, 0,
+                                VK_WHOLE_SIZE);
+        const float* p = static_cast<const float*>(staging_.mapped);
+        out.assign(p, p + static_cast<std::size_t>(tri_count) * 27u);
+        return true;
+    }
+
     // Re-synthesize into an existing fp32 state buffer (see scratch note).
     bool synthesize_state_over(int handle, const std::vector<double>& u,
                                int l, int m, double h_radial, double rmax,
@@ -1164,6 +1458,10 @@ public:
         if (!ensure_volume()) {
             return false;
         }
+        // Immediate flip below: drain any in-flight async batch first, or a
+        // caller inside the async-pending window (Key-R reseed) double-flips
+        // and the renderer samples the stale pre-reset cloud for a frame.
+        wait_async();
         OneShot shot;
         if (!shot.begin_compute(*ctx_)) {
             return false;
@@ -1644,6 +1942,13 @@ public:
         damp_.destroy(*ctx_);
         phase_damp_.destroy(*ctx_);
         mcwf_.destroy(*ctx_);
+        release_mc();
+        mc_density_.destroy(*ctx_);
+        mc_classify_.destroy(*ctx_);
+        mc_scan_.destroy(*ctx_);
+        mc_emit_.destroy(*ctx_);
+        ctx_->destroy_buffer(&mc_ubo_);
+        ctx_->destroy_buffer(&mc_scan_ubo_);
         ctx_->destroy_buffer(&mcwf_radial_);
         ctx_->destroy_buffer(&mcwf_ubo_);
         ctx_->destroy_buffer(&relax_kin_);
@@ -2595,6 +2900,10 @@ private:
     Kernel damp_;
     Kernel phase_damp_;  // fused V+mask (optional; pd_kernel_ok_)
     Kernel mcwf_;        // fused multi-state axpy (optional; mcwf_kernel_ok_)
+    Kernel mc_density_;  // GPU marching cubes (optional; mc_kernel_ok_)
+    Kernel mc_classify_;
+    Kernel mc_scan_;
+    Kernel mc_emit_;
     Kernel conj_;
     Kernel fft_;
     Kernel norm_;
@@ -2687,6 +2996,42 @@ private:
     Buffer mcwf_ubo_{};
     VkDescriptorSet mcwf_set_ = VK_NULL_HANDLE;
     bool mcwf_kernel_ok_ = false;
+
+    // GPU marching cubes: std140 param mirrors + transient buffers.
+    struct McParams {
+        std::int32_t npts[4];
+        std::int32_t nblk[4];
+        float box_min[4];
+        float cell_h[4];
+        float iso;
+        std::int32_t max_tris;
+        float pad0;
+        float pad1;
+    };
+    struct McScanParams {
+        std::int32_t nblocks;
+        std::int32_t max_tris;
+        std::int32_t pad0;
+        std::int32_t pad1;
+    };
+    Buffer mc_den_{};        // |psi|^2 scalar field (R32, cells_)
+    Buffer mc_tables_{};     // edge/tri/count tables (core headers verbatim)
+    Buffer mc_block_sums_{};
+    Buffer mc_block_offsets_{};
+    Buffer mc_vbuf_{};       // interleaved pos3 normal3 color3 (+VERTEX)
+    Buffer mc_indirect_{};   // VkDrawIndirectCommand + raw/clamped totals
+    Buffer mc_ubo_{};
+    Buffer mc_scan_ubo_{};
+    VkDescriptorSet mc_den_set_ = VK_NULL_HANDLE;
+    VkDescriptorSet mc_classify_set_ = VK_NULL_HANDLE;
+    VkDescriptorSet mc_scan_set_ = VK_NULL_HANDLE;
+    VkDescriptorSet mc_emit_set_ = VK_NULL_HANDLE;
+    bool mc_kernel_ok_ = false;
+    bool mc_buffers_ok_ = false;
+    bool mc_overflow_warned_ = false;
+    int mc_max_tris_ = 0;
+    int mc_nblk_[3] = {0, 0, 0};
+    std::uint32_t mc_nblocks_ = 0;
     VkDescriptorSet conj1_set_ = VK_NULL_HANDLE;
     VkDescriptorSet conjN_set_ = VK_NULL_HANDLE;
     VkDescriptorSet fft_set_[3] = {VK_NULL_HANDLE, VK_NULL_HANDLE,

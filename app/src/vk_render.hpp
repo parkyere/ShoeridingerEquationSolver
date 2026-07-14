@@ -89,6 +89,10 @@ public:
         const ses::Mesh* mesh = nullptr;          // non-null: upload isosurface
         const std::vector<ses::Rgb>* mesh_colors = nullptr;
         const std::vector<float>* volume_staging = nullptr;  // RG staging
+        // GPU-extracted isosurface (engine marching cubes): drawn indirect,
+        // same interleaved pos3/normal3/color3 layout as the host mesh.
+        VkBuffer gpu_mesh_vbuf = VK_NULL_HANDLE;
+        VkBuffer gpu_mesh_indirect = VK_NULL_HANDLE;
     };
 
     SceneRenderer() = default;
@@ -284,7 +288,16 @@ public:
             vkCmdBindVertexBuffers(cb, 0, 1, &proton_vbuf_.buf, &zero_off);
             vkCmdDraw(cb, static_cast<std::uint32_t>(proton_vertex_count_), 1,
                       0, 0);
-            if (mesh_vbuf_.buf != VK_NULL_HANDLE && mesh_vertex_count_ > 0) {
+            if (in.gpu_mesh_vbuf != VK_NULL_HANDLE &&
+                in.gpu_mesh_indirect != VK_NULL_HANDLE) {
+                // GPU-extracted mesh: the vertex count lives on the GPU
+                // (indirect command written by the scan pass).
+                vkCmdBindVertexBuffers(cb, 0, 1, &in.gpu_mesh_vbuf,
+                                       &zero_off);
+                vkCmdDrawIndirect(cb, in.gpu_mesh_indirect, 0, 1,
+                                  sizeof(VkDrawIndirectCommand));
+            } else if (mesh_vbuf_.buf != VK_NULL_HANDLE &&
+                       mesh_vertex_count_ > 0) {
                 vkCmdBindVertexBuffers(cb, 0, 1, &mesh_vbuf_.buf, &zero_off);
                 vkCmdDraw(cb, static_cast<std::uint32_t>(mesh_vertex_count_),
                           1, 0, 0);

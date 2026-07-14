@@ -15,6 +15,10 @@
 #include <damp_mul_spv.h>
 #include <phase_damp_mul_spv.h>
 #include <mcwf_axpy_spv.h>
+#include <mc_density_spv.h>
+#include <mc_classify_spv.h>
+#include <mc_scan_spv.h>
+#include <mc_emit_spv.h>
 #include <conj_scale_spv.h>
 #include <norm_peak_spv.h>
 #include <scale_spv.h>
@@ -69,6 +73,14 @@ inline ses_vk::EngineKernels app_engine_blobs(int n) {
     b.pd_size = k_phase_damp_mul_spv_size;
     b.mcwf = k_mcwf_axpy_spv;
     b.mcwf_size = k_mcwf_axpy_spv_size;
+    b.mc_density = k_mc_density_spv;
+    b.mc_density_size = k_mc_density_spv_size;
+    b.mc_classify = k_mc_classify_spv;
+    b.mc_classify_size = k_mc_classify_spv_size;
+    b.mc_scan = k_mc_scan_spv;
+    b.mc_scan_size = k_mc_scan_spv_size;
+    b.mc_emit = k_mc_emit_spv;
+    b.mc_emit_size = k_mc_emit_spv_size;
     b.conj = k_conj_scale_spv;
     b.conj_size = k_conj_scale_spv_size;
     b.norm = k_norm_peak_spv;

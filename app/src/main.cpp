@@ -626,6 +626,10 @@ private:
                     in.volume_staging = &director_->psi_staging();
                 }
             }
+        } else if (director_->surface_vbuf() != VK_NULL_HANDLE) {
+            // GPU-extracted isosurface: drawn indirect, no host mesh upload.
+            in.gpu_mesh_vbuf = director_->surface_vbuf();
+            in.gpu_mesh_indirect = director_->surface_indirect();
         } else if (director_->take_mesh_dirty()) {
             in.mesh = &director_->mesh();
             in.mesh_colors = &director_->colors();

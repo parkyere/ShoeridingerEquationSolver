@@ -64,6 +64,14 @@ public:
     virtual bool cloud() const = 0;
     virtual double peak() const = 0;
     virtual VkImageView psi_volume_view() = 0;
+    // GPU surface mesh (non-null when the scene extracts on-GPU): the
+    // renderer draws these directly and ignores mesh()/colors().
+    virtual VkBuffer surface_vbuf() const { return VK_NULL_HANDLE; }
+    virtual VkBuffer surface_indirect() const { return VK_NULL_HANDLE; }
+    // GPU-surface vertex capacity: generous for any tracked isosurface
+    // (~108 MB, transient while Surface is active); overflow clamps to a
+    // clean prefix (the engine warns once).
+    static constexpr int kMcMaxTris = 1000000;
     virtual float next_flash_intensity() = 0;
     virtual bool take_volume_written() = 0;
     virtual bool take_volume_dirty() = 0;

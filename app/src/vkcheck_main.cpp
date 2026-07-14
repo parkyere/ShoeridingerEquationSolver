@@ -30,7 +30,9 @@
 #include <core/harmonics.hpp>
 #include <core/imaginary_time.hpp>
 #include <core/magnetic.hpp>
+#include <core/marching_cubes.hpp>
 #include <core/radial.hpp>
+#include <core/sampling.hpp>
 #include <core/potential.hpp>
 #include <core/projection.hpp>
 #include <core/propagator.hpp>
@@ -44,6 +46,10 @@
 #include <damp_mul_spv.h>
 #include <phase_damp_mul_spv.h>
 #include <mcwf_axpy_spv.h>
+#include <mc_density_spv.h>
+#include <mc_classify_spv.h>
+#include <mc_scan_spv.h>
+#include <mc_emit_spv.h>
 #include <conj_scale_spv.h>
 #include <scale_spv.h>
 #include <norm_peak_spv.h>
@@ -1122,6 +1128,14 @@ ses_vk::EngineKernels engine_blobs_8() {
     b.pd_size = k_phase_damp_mul_spv_size;
     b.mcwf = k_mcwf_axpy_spv;
     b.mcwf_size = k_mcwf_axpy_spv_size;
+    b.mc_density = k_mc_density_spv;
+    b.mc_density_size = k_mc_density_spv_size;
+    b.mc_classify = k_mc_classify_spv;
+    b.mc_classify_size = k_mc_classify_spv_size;
+    b.mc_scan = k_mc_scan_spv;
+    b.mc_scan_size = k_mc_scan_spv_size;
+    b.mc_emit = k_mc_emit_spv;
+    b.mc_emit_size = k_mc_emit_spv_size;
     b.conj = k_conj_scale_spv;
     b.conj_size = k_conj_scale_spv_size;
     b.fft = k_fft_line8_spv;
@@ -1324,6 +1338,144 @@ bool check_engine_absorber(ses_vk::DeviceContext& ctx) {
         "engine absorber per-step (real mask): max |gpu - cpu| = %.3e "
         "(tol %.3e)  [%s]\n",
         max_err, tol, pass ? "PASS" : "FAIL");
+    return pass;
+}
+
+// GPU marching cubes vs the CPU oracle at 64^3 (512 cell blocks: the scan
+// stitching is exercised, not just one workgroup). Both sides classify the
+// SAME fp32-quantized density against the SAME float-rounded iso, so the
+// triangle COUNT must match exactly; the GPU emits block-major, the CPU
+// row-major, so both meshes are canonicalized by (centroid, first vertex)
+// before the per-vertex compare (pos/normal/color: fp32 vs f64 tolerance).
+bool check_engine_marching_cubes(ses_vk::DeviceContext& ctx) {
+    const ses::Grid1D axis{-8.0, 8.0, 64};
+    const ses::Grid3D g{axis, axis, axis};
+    const std::vector<double> v(static_cast<std::size_t>(g.size()), 0.0);
+    // Two offset lobes with opposite momenta: a lumpy surface with real
+    // phase structure for the color channel.
+    ses::Field3D psi0 = ses::gaussian_wavepacket(g, ses::Vec3d{2.0, 0.0, 0.0},
+                                                 ses::Vec3d{1.8, 1.8, 1.8},
+                                                 ses::Vec3d{0.0, 0.6, 0.0});
+    const ses::Field3D lobe2 = ses::gaussian_wavepacket(
+        g, ses::Vec3d{-2.0, 1.0, -1.0}, ses::Vec3d{1.4, 1.4, 1.4},
+        ses::Vec3d{0.4, 0.0, 0.0});
+    for (std::size_t i = 0; i < psi0.data().size(); ++i) {
+        psi0.data()[i] = psi0.data()[i] + 0.8 * lobe2.data()[i];
+    }
+    ses::normalize(psi0);
+    // fp32-quantize psi so CPU and GPU classify the identical field.
+    ses::Field3D psi{g};
+    for (std::size_t i = 0; i < psi0.data().size(); ++i) {
+        psi.data()[i] = ses::Complex<double>{
+            static_cast<float>(psi0.data()[i].real()),
+            static_cast<float>(psi0.data()[i].imag())};
+    }
+    std::vector<double> den(psi.data().size());
+    double peak = 0.0;
+    for (std::size_t i = 0; i < psi.data().size(); ++i) {
+        den[i] = static_cast<float>(ses::norm_sq(psi.data()[i]));
+        peak = std::max(peak, den[i]);
+    }
+    const double iso = static_cast<float>(0.25 * peak);
+    // Knife-edge guard: no corner within fp32 noise of iso (a 1-ulp flip
+    // would desync the exact-count assertion, not the physics).
+    for (double d : den) {
+        if (std::abs(d - iso) < 1e-9 * peak) {
+            std::printf("engine marching cubes: knife-edge iso -- adjust the "
+                        "test field  [FAIL]\n");
+            return false;
+        }
+    }
+
+    ses_vk::EngineKernels b = engine_blobs_8();
+    b.fft = k_fft_line64_spv;
+    b.fft_size = k_fft_line64_spv_size;
+    ses_vk::Engine engine;
+    if (!engine.initialize(ctx, g, b, v, 0.02, psi.data())) {
+        std::printf("engine marching cubes: engine init FAIL\n");
+        return false;
+    }
+    constexpr int kMaxTris = 200000;
+    if (!engine.mc_prepare(kMaxTris)) {
+        std::printf("engine marching cubes: mc_prepare FAIL\n");
+        engine.destroy();
+        return false;
+    }
+    const int gpu_tris = engine.mc_extract(iso);
+    std::vector<float> gpu_v;
+    if (gpu_tris < 0 || !engine.mc_read_vertices(gpu_v, gpu_tris)) {
+        std::printf("engine marching cubes: extract/readback FAIL\n");
+        engine.destroy();
+        return false;
+    }
+    engine.destroy();
+
+    const ses::Mesh cpu_mesh = ses::marching_cubes(den, g, iso);
+    const std::vector<ses::Rgb> cpu_col = ses::phase_colors(cpu_mesh, psi);
+    const int cpu_tris = static_cast<int>(cpu_mesh.vertices.size() / 3);
+
+    bool pass = (gpu_tris == cpu_tris);
+    double max_pos = 0.0;
+    double max_nrm = 0.0;
+    double max_col = 0.0;
+    if (pass && gpu_tris > 0) {
+        // Canonical order: sort triangle indices by centroid, then first
+        // vertex (exact doubles on CPU, fp32 on GPU: quantize the key).
+        struct Key {
+            double k[6];
+            int idx;
+        };
+        const auto key_less = [](const Key& a, const Key& b) {
+            for (int i = 0; i < 6; ++i) {
+                if (std::abs(a.k[i] - b.k[i]) > 1e-4) {
+                    return a.k[i] < b.k[i];
+                }
+            }
+            return false;
+        };
+        std::vector<Key> ck(static_cast<std::size_t>(cpu_tris));
+        std::vector<Key> gk(static_cast<std::size_t>(gpu_tris));
+        for (int t = 0; t < cpu_tris; ++t) {
+            const ses::Vec3d& a = cpu_mesh.vertices[3 * t];
+            const ses::Vec3d& b2 = cpu_mesh.vertices[3 * t + 1];
+            const ses::Vec3d& c = cpu_mesh.vertices[3 * t + 2];
+            ck[t] = Key{{(a.x + b2.x + c.x) / 3.0, (a.y + b2.y + c.y) / 3.0,
+                         (a.z + b2.z + c.z) / 3.0, a.x, a.y, a.z},
+                        t};
+            const float* tv = &gpu_v[static_cast<std::size_t>(t) * 27u];
+            gk[t] = Key{{(tv[0] + tv[9] + tv[18]) / 3.0,
+                         (tv[1] + tv[10] + tv[19]) / 3.0,
+                         (tv[2] + tv[11] + tv[20]) / 3.0, tv[0], tv[1], tv[2]},
+                        t};
+        }
+        std::sort(ck.begin(), ck.end(), key_less);
+        std::sort(gk.begin(), gk.end(), key_less);
+        for (int t = 0; t < cpu_tris; ++t) {
+            const int ci = ck[static_cast<std::size_t>(t)].idx;
+            const float* tv =
+                &gpu_v[static_cast<std::size_t>(gk[static_cast<std::size_t>(t)].idx) * 27u];
+            for (int vtx = 0; vtx < 3; ++vtx) {
+                const ses::Vec3d& p = cpu_mesh.vertices[3 * ci + vtx];
+                const ses::Vec3d& n = cpu_mesh.normals[3 * ci + vtx];
+                const ses::Rgb& col = cpu_col[static_cast<std::size_t>(3 * ci + vtx)];
+                const float* gv = tv + vtx * 9;
+                max_pos = std::max({max_pos, std::abs(gv[0] - p.x),
+                                    std::abs(gv[1] - p.y),
+                                    std::abs(gv[2] - p.z)});
+                max_nrm = std::max({max_nrm, std::abs(gv[3] - n.x),
+                                    std::abs(gv[4] - n.y),
+                                    std::abs(gv[5] - n.z)});
+                max_col = std::max({max_col, std::abs(gv[6] - col.r),
+                                    std::abs(gv[7] - col.g),
+                                    std::abs(gv[8] - col.b)});
+            }
+        }
+        pass = max_pos < 1e-3 && max_nrm < 2e-2 && max_col < 2e-2;
+    }
+    std::printf(
+        "engine marching cubes (raw Vulkan): tris %d vs cpu %d, max |dpos| = "
+        "%.3e, |dnrm| = %.3e, |dcol| = %.3e  [%s]\n",
+        gpu_tris, cpu_tris, max_pos, max_nrm, max_col, pass ? "PASS" : "FAIL");
     return pass;
 }
 
@@ -2106,15 +2258,24 @@ bool check_engine_mcwf_axpy(ses_vk::DeviceContext& ctx) {
         ses::radial_eigenstate(rg, ses::radial_hamiltonian(rg, vr, 0), 0);
     const ses::RadialState p0 =
         ses::radial_eigenstate(rg, ses::radial_hamiltonian(rg, vr, 1), 0);
+    // A high-l tesseral term too: the Y_lm table duplicated into
+    // mcwf_axpy.comp is otherwise only exercised at l = 0..1.
+    const ses::RadialState h0 =
+        ses::radial_eigenstate(rg, ses::radial_hamiltonian(rg, vr, 5), 0);
     double n2s = 0.0;
     double n2p = 0.0;
+    double n2h = 0.0;
     const int hs =
         engine.synthesize_state(s0.u, 0, 0, rg.h(), rg.rmax, rg.n, nullptr,
                                 &n2s);
     const int hp =
         engine.synthesize_state(p0.u, 1, 0, rg.h(), rg.rmax, rg.n, nullptr,
                                 &n2p);
-    if (hs < 0 || hp < 0 || n2s <= 0.0 || n2p <= 0.0) {
+    const int hh =
+        engine.synthesize_state(h0.u, 5, -3, rg.h(), rg.rmax, rg.n, nullptr,
+                                &n2h);
+    if (hs < 0 || hp < 0 || hh < 0 || n2s <= 0.0 || n2p <= 0.0 ||
+        n2h <= 0.0) {
         std::printf("mcwf_axpy (raw Vulkan): synthesize FAIL\n");
         return false;
     }
@@ -2122,6 +2283,7 @@ bool check_engine_mcwf_axpy(ses_vk::DeviceContext& ctx) {
     engine.upload_state(psi0.data());
     engine.add_state_into_psi(hs, 0.03, -0.01);
     engine.add_state_into_psi(hp, -0.02, 0.04);
+    engine.add_state_into_psi(hh, 0.015, 0.025);
     std::vector<float> chain;
     if (!engine.readback(chain)) {
         std::printf("mcwf_axpy (raw Vulkan): readback FAIL\n");
@@ -2132,6 +2294,7 @@ bool check_engine_mcwf_axpy(ses_vk::DeviceContext& ctx) {
     const std::vector<ses_vk::Engine::McwfTerm> terms{
         {&s0.u, 0, 0, 0.03, -0.01, 1.0 / std::sqrt(n2s)},
         {&p0.u, 1, 0, -0.02, 0.04, 1.0 / std::sqrt(n2p)},
+        {&h0.u, 5, -3, 0.015, 0.025, 1.0 / std::sqrt(n2h)},
     };
     if (!engine.mcwf_axpy(terms, rg.h(), rg.rmax, rg.n)) {
         std::printf("mcwf_axpy (raw Vulkan): fused dispatch FAIL\n");
@@ -2265,6 +2428,7 @@ int main() {
     failures += check_engine_dipole_between(ctx) ? 0 : 1;
     failures += check_engine_fp16_consumers(ctx) ? 0 : 1;
     failures += check_engine_mcwf_axpy(ctx) ? 0 : 1;
+    failures += check_engine_marching_cubes(ctx) ? 0 : 1;
     failures += check_engine_bridge(ctx) ? 0 : 1;
     failures += check_engine_step_async(ctx) ? 0 : 1;
 #ifdef SES_HAVE_VKFFT
