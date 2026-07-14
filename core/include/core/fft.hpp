@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <numbers>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -47,7 +48,13 @@ inline const Complex<double>* fft_twiddles(std::size_t n) {
 // Iterative: bit-reversal permutation, then butterfly passes of doubling
 // length.
 inline void fft(Complex<double>* a, std::size_t n) {
-    assert((n & (n - 1)) == 0 && "fft size must be a power of two");
+    // Runtime guard, not just assert: under NDEBUG a mis-sized axis would
+    // otherwise silently produce garbage or spin (the bit-reversal loop
+    // assumes a power of two). Grids are power-of-two by construction today;
+    // this catches a future non-conforming grid at the call, not downstream.
+    if ((n & (n - 1)) != 0) {
+        throw std::invalid_argument("ses::fft: size must be a power of two");
+    }
     if (n < 2) {
         return;
     }

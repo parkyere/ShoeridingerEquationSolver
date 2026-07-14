@@ -17,6 +17,11 @@ namespace ses {
 
 // <grad V> = integral |psi|^2 grad V dr, grad V by central differences on the
 // periodic grid (exact for a harmonic well's linear force).
+// PRECONDITION: psi is normalized (integral |psi|^2 dr = 1). Unlike the
+// observables.hpp expectations (which divide by the discrete norm and so are
+// scale-invariant), this returns the raw integral, so an unnormalized psi
+// yields <grad V> scaled by the norm. The live sim always feeds a normalized
+// psi, and the GPU mean_force oracle shares this assumption.
 inline Vec3d mean_potential_gradient(const Field3D& psi, const std::vector<double>& v,
                                      const Grid3D& g) noexcept {
     const int nx = g.x.n;

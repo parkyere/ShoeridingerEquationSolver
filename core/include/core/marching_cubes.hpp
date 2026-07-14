@@ -116,7 +116,13 @@ inline Mesh marching_cubes(const std::vector<double>& field, const Grid3D& g, do
 // (dispersing) cloud visible as its maximum density decays.
 inline Mesh marching_cubes_at_fraction(const std::vector<double>& field, const Grid3D& g,
                                        double fraction) {
+    if (field.empty()) {
+        return Mesh{};  // *max_element(end()) is UB
+    }
     const double peak = *std::max_element(field.begin(), field.end());
+    if (!(peak > 0.0)) {
+        return Mesh{};  // no positive density -> no isosurface at any fraction
+    }
     return marching_cubes(field, g, fraction * peak);
 }
 

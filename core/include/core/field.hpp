@@ -85,7 +85,11 @@ inline double norm_sq(const Field3D& f) noexcept {
 }
 
 inline void normalize(Field3D& f) noexcept {
-    const double inv = 1.0 / std::sqrt(norm_sq(f));
+    const double n2 = norm_sq(f);
+    if (n2 <= 0.0) {
+        return;  // zero field (e.g. a deflated-away seed): 1/0 -> Inf -> NaN
+    }
+    const double inv = 1.0 / std::sqrt(n2);
     for (Complex<double>& z : f.data()) {
         z = inv * z;
     }

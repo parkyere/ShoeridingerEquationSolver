@@ -10,11 +10,24 @@
 #include <core/spectral.hpp>
 #include <core/vec.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <vector>
 
 namespace ses {
+
+// Degenerate-input guards. An empty or fully-absorbed field has zero total
+// weight, so num/den is 0/0 -> NaN, which would poison the title readout and
+// the Larmor path. Return 0 instead. And a near-single-cell state can dip
+// <x^2> - <x>^2 slightly negative from FP cancellation -> clamp before sqrt.
+// Both are no-ops (bitwise) whenever den > 0 and the variance is positive.
+inline double obs_ratio(double num, double den) noexcept {
+    return den > 0.0 ? num / den : 0.0;
+}
+inline double obs_sigma(double second_moment, double mean) noexcept {
+    return std::sqrt(std::max(0.0, second_moment - mean * mean));
+}
 
 // <x> = sum x_i |psi_i|^2 / sum |psi_i|^2   (grid weight h cancels)
 inline double mean_position(const Field1D& f) noexcept {
@@ -25,7 +38,7 @@ inline double mean_position(const Field1D& f) noexcept {
         num += f.grid().coord(i) * w;
         den += w;
     }
-    return num / den;
+    return obs_ratio(num, den);
 }
 
 // sigma_x = sqrt(<x^2> - <x>^2)
@@ -38,8 +51,7 @@ inline double sigma_x(const Field1D& f) noexcept {
         num += x * x * w;
         den += w;
     }
-    const double mean = mean_position(f);
-    return std::sqrt(num / den - mean * mean);
+    return obs_sigma(obs_ratio(num, den), mean_position(f));
 }
 
 // <p> = sum k_j |phi_j|^2 / sum |phi_j|^2 with phi = fft(psi)  (weights cancel)
@@ -54,7 +66,7 @@ inline double mean_momentum(const Field1D& f) {
         num += k[j] * w;
         den += w;
     }
-    return num / den;
+    return obs_ratio(num, den);
 }
 
 // <H> = <T> + <V>: kinetic average in k-space (T = k^2/2), potential average
@@ -80,7 +92,7 @@ inline double mean_energy(const Field1D& f, const std::vector<double>& potential
         den_k += w;
     }
 
-    return num_v / den_x + num_t / den_k;
+    return obs_ratio(num_v, den_x) + obs_ratio(num_t, den_k);
 }
 
 // ---- 3D observables (per-axis, scale-invariant) ----
@@ -100,7 +112,8 @@ inline Vec3d mean_position(const Field3D& f) noexcept {
             }
         }
     }
-    return Vec3d{num.x / den, num.y / den, num.z / den};
+    return Vec3d{obs_ratio(num.x, den), obs_ratio(num.y, den),
+                 obs_ratio(num.z, den)};
 }
 
 inline Vec3d sigma_position(const Field3D& f) noexcept {
@@ -122,8 +135,9 @@ inline Vec3d sigma_position(const Field3D& f) noexcept {
         }
     }
     const Vec3d m = mean_position(f);
-    return Vec3d{std::sqrt(num.x / den - m.x * m.x), std::sqrt(num.y / den - m.y * m.y),
-                 std::sqrt(num.z / den - m.z * m.z)};
+    return Vec3d{obs_sigma(obs_ratio(num.x, den), m.x),
+                 obs_sigma(obs_ratio(num.y, den), m.y),
+                 obs_sigma(obs_ratio(num.z, den), m.z)};
 }
 
 inline Vec3d mean_momentum(const Field3D& f) {
@@ -146,7 +160,8 @@ inline Vec3d mean_momentum(const Field3D& f) {
             }
         }
     }
-    return Vec3d{num.x / den, num.y / den, num.z / den};
+    return Vec3d{obs_ratio(num.x, den), obs_ratio(num.y, den),
+                 obs_ratio(num.z, den)};
 }
 
 inline double mean_energy(const Field3D& f, const std::vector<double>& potential) {
@@ -179,7 +194,7 @@ inline double mean_energy(const Field3D& f, const std::vector<double>& potential
         }
     }
 
-    return num_v / den_x + num_t / den_k;
+    return obs_ratio(num_v, den_x) + obs_ratio(num_t, den_k);
 }
 
 }  // namespace ses
