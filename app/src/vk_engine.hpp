@@ -639,24 +639,24 @@ public:
         Recorder r{cb, true};
         // Stage boundaries: the RAW barriers between dispatches serialize the
         // stages, so BOTTOM_OF_PIPE stamps bracket each one cleanly.
-        vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, profile_pool_,
-                            0);
+        vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                             profile_pool_, 0);
         if (pd_full_set_ != VK_NULL_HANDLE) {
             r.dispatch(phase_damp_, pd_full_set_, mul_groups_);
         } else {
             r.dispatch(half_mul_, fullv_set_, mul_groups_);
         }
-        vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                            profile_pool_, 1);
+        vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+                             profile_pool_, 1);
         record_vkfft(r, -1);  // forward
-        vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                            profile_pool_, 2);
+        vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+                             profile_pool_, 2);
         r.dispatch(kin_mul_, kin3_set_, mul_groups_);
-        vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                            profile_pool_, 3);
+        vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+                             profile_pool_, 3);
         record_vkfft(r, 1);  // inverse (1/N by the plan)
-        vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                            profile_pool_, 4);
+        vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+                             profile_pool_, 4);
         shot.submit_and_wait(*ctx_);
         shot.destroy(*ctx_);
 
