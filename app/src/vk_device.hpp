@@ -221,7 +221,7 @@ struct DeviceContext {
         // it with SES_VK_VALIDATION=1 AT 1.4 (docs/REVIEW_BACKLOG.md) to see if a
         // real render-path VUID -- not a pure driver bug -- is the trigger. VMA
         // uses the device's REAL apiVersion (aci.vulkanApiVersion), never this.
-        ai.apiVersion = VK_API_VERSION_1_4;
+        ai.apiVersion = VK_API_VERSION_1_3;
         VkInstanceCreateInfo ici{};
         ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
         ici.pApplicationInfo = &ai;
