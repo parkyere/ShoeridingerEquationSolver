@@ -6,7 +6,6 @@
 // here; the fragment shader's transcription is verified by the dump-frame
 // composite, NOT by a per-fragment GPU oracle (there is none).
 
-#include <core/colormap.hpp>
 #include <core/complex.hpp>
 #include <core/cross_section.hpp>
 #include <core/grid.hpp>
@@ -15,6 +14,8 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+
+import ses.colormap;
 
 namespace {
 

@@ -11,7 +11,6 @@
 //  - phase_lut: the cyclic phase colormap baked into a lookup table so the
 //    GPU samples the TESTED colormap instead of a re-derived formula.
 
-#include <core/colormap.hpp>
 #include <core/vec.hpp>
 #include <core/volume.hpp>
 
@@ -20,6 +19,8 @@
 #include <cmath>
 #include <numbers>
 #include <vector>
+
+import ses.colormap;
 
 namespace {
 

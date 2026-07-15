@@ -7,12 +7,13 @@
 //  - magnitude_color(t): sequential dark -> bright map for |psi|^2 in [0,1],
 //    monotone in brightness so density reads correctly.
 
-#include <core/colormap.hpp>
 
 #include <gtest/gtest.h>
 
 #include <cmath>
 #include <numbers>
+
+import ses.colormap;
 
 namespace {
 

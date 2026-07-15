@@ -11,7 +11,6 @@
 //  - for a unit-amplitude plane wave e^{i k x} the interpolated phase tracks
 //    k*x to O((kh)^2) between grid points (tolerance-checked).
 
-#include <core/colormap.hpp>
 #include <core/complex.hpp>
 #include <core/field.hpp>
 #include <core/grid.hpp>
@@ -24,6 +23,8 @@
 
 #include <cmath>
 #include <vector>
+
+import ses.colormap;
 
 namespace {
 
