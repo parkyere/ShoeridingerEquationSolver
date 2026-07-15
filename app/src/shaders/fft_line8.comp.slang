@@ -2,7 +2,9 @@
 // used by the 3D fft3 check: run once per axis of an 8x8x8 cube. The line-
 // enumeration uniforms (mod_a/mul_b/mul_c/stride/n_lines) come from a std140
 // UBO and select the axis (x/y/z). See fft_line64.comp for the stage layout.
-[[vk::binding(0, 0)]] RWStructuredBuffer<float2, Std430DataLayout> data;
+import complex;
+
+[[vk::binding(0, 0)]] RWStructuredBuffer<Complex, Std430DataLayout> data;
 
 struct Params {
     int mod_a;
@@ -13,7 +15,7 @@ struct Params {
 };
 [[vk::binding(1, 0)]] ConstantBuffer<Params, Std140DataLayout> params;
 
-groupshared float2 line_sm[8];
+groupshared Complex line_sm[8];
 
 static const float kTwoPi = 6.28318530717958647692;
 
@@ -39,11 +41,9 @@ void main(uint3 grp : SV_GroupID, uint3 lid : SV_GroupThreadID) {
         uint half_len = len >> 1u;
         uint j = t % half_len;
         uint pos = (t / half_len) * len + j;
-        float ang = -kTwoPi * float(j) / float(len);
-        float2 w = float2(cos(ang), sin(ang));
-        float2 u = line_sm[pos];
-        float2 q = line_sm[pos + half_len];
-        float2 v = float2(q.x * w.x - q.y * w.y, q.x * w.y + q.y * w.x);
+        Complex w = cis(-kTwoPi * float(j) / float(len));
+        Complex u = line_sm[pos];
+        Complex v = line_sm[pos + half_len] * w;
         line_sm[pos] = u + v;
         line_sm[pos + half_len] = u - v;
         GroupMemoryBarrierWithGroupSync();

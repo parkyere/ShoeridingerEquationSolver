@@ -1,9 +1,11 @@
 // psi <- src, a per-cell copy of an auxiliary state buffer into psi. Plain
-// float2 assignment is bitwise-exact (no arithmetic touches the values). Used
-// by the quantum-jump collapse path. Bindings: psi(0) write, src(3) read,
+// assignment is bitwise-exact (no arithmetic touches the values). Used by the
+// quantum-jump collapse path. Bindings: psi(0) write, src(3) read,
 // std140 UBO n(1).
-[[vk::binding(0, 0)]] RWStructuredBuffer<float2, Std430DataLayout> psi;
-[[vk::binding(3, 0)]] StructuredBuffer<float2, Std430DataLayout> src;
+import complex;
+
+[[vk::binding(0, 0)]] RWStructuredBuffer<Complex, Std430DataLayout> psi;
+[[vk::binding(3, 0)]] StructuredBuffer<Complex, Std430DataLayout> src;
 
 struct Params {
     uint n;

@@ -1,7 +1,9 @@
 // Absorbing-boundary damp: psi[i] *= m[i], m a REAL R32 mask (interior 1,
 // cos^2 taper to 0 at the walls). Half the bytes of the old complex-packed
 // mask state.
-[[vk::binding(0, 0)]] RWStructuredBuffer<float2, Std430DataLayout> psi;
+import complex;
+
+[[vk::binding(0, 0)]] RWStructuredBuffer<Complex, Std430DataLayout> psi;
 [[vk::binding(1, 0)]] StructuredBuffer<float, Std430DataLayout> m;
 
 struct Params {

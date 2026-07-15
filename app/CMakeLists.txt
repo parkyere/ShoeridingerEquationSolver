@@ -76,6 +76,14 @@ set(_ses_vk_spv_dir "${CMAKE_CURRENT_BINARY_DIR}/vk_spv")
 file(MAKE_DIRECTORY "${_ses_vk_spv_dir}")
 set(_ses_vk_headers "")
 
+# Shared Slang modules: every <name>.slang WITHOUT a stage extension (complex,
+# ylm, grid, ...). They are `import`-ed by the shaders (via -I), never baked as
+# entry points, and listed as bake deps so editing a module rebakes its
+# consumers. CONFIGURE_DEPENDS re-globs when a module is added/removed.
+set(_ses_shader_dir "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders")
+file(GLOB _ses_shader_modules CONFIGURE_DEPENDS "${_ses_shader_dir}/*.slang")
+list(FILTER _ses_shader_modules EXCLUDE REGEX "\\.(comp|vert|frag)\\.slang$")
+
 # Bake one Slang shader (src/shaders/<srcfile>.slang) to a SPIR-V C header via
 # slangc + bin2h (-DNAME=k_<x>_spv, header <x>_spv.h). The stage extension in
 # the source name (.comp/.vert/.frag) is a human hint; slangc takes -stage.
@@ -87,12 +95,14 @@ function(ses_bake_shader _srcfile _stage _x)
         OUTPUT "${_hdr}"
         BYPRODUCTS "${_spv}"
         COMMAND "${SES_SLANGC}" "${_slang}"
+                -I "${_ses_shader_dir}"
                 -target spirv -entry main -stage ${_stage}
                 -matrix-layout-column-major -o "${_spv}"
         COMMAND "${CMAKE_COMMAND}" "-DIN=${_spv}" "-DOUT=${_hdr}"
                 "-DNAME=k_${_x}_spv"
                 -P "${CMAKE_SOURCE_DIR}/tools/cmake/bin2h.cmake"
-        DEPENDS "${_slang}" "${CMAKE_SOURCE_DIR}/tools/cmake/bin2h.cmake"
+        DEPENDS "${_slang}" ${_ses_shader_modules}
+                "${CMAKE_SOURCE_DIR}/tools/cmake/bin2h.cmake"
         COMMENT "slangc: ${_srcfile}.slang -> ${_x}_spv.h"
         VERBATIM)
     set(_hdrs "${_ses_vk_headers}")

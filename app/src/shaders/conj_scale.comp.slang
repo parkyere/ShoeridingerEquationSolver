@@ -1,6 +1,8 @@
 // psi <- scale * conj(psi). With a forward FFT this composes the inverse
 // transform (conj -> FFT -> conj/N). std140 UBO n + scale (binding 1).
-[[vk::binding(0, 0)]] RWStructuredBuffer<float2, Std430DataLayout> data;
+import complex;
+
+[[vk::binding(0, 0)]] RWStructuredBuffer<Complex, Std430DataLayout> data;
 
 struct Params {
     uint n;
@@ -13,6 +15,6 @@ struct Params {
 void main(uint3 tid : SV_DispatchThreadID) {
     uint i = tid.x;
     if (i < params.n) {
-        data[i] = params.scale * float2(data[i].x, -data[i].y);
+        data[i] = params.scale * conj(data[i]);
     }
 }

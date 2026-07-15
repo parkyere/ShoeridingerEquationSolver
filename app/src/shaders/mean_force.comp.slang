@@ -3,7 +3,9 @@
 // computed in-shader on the periodic grid -- replacing the stored 16 B/cell
 // gradient field (4x the potential's footprint) with cache-hot neighbor
 // taps. One vec4 partial per workgroup (binding 2); the host sums.
-[[vk::binding(0, 0)]] StructuredBuffer<float2, Std430DataLayout> psi;
+import complex;
+
+[[vk::binding(0, 0)]] StructuredBuffer<Complex, Std430DataLayout> psi;
 [[vk::binding(4, 0)]] StructuredBuffer<float, Std430DataLayout> v;
 [[vk::binding(2, 0)]] RWStructuredBuffer<float4, Std430DataLayout> partials;
 
@@ -29,8 +31,7 @@ void main(uint3 gid : SV_DispatchThreadID,
     uint ny = params.ny;
     uint nz = params.nz;
     for (uint i = gid.x; i < params.n; i += stride) {
-        float2 p = psi[i];
-        float w = dot(p, p);
+        float w = norm2(psi[i]);
         uint ix = i % nx;
         uint iy = (i / nx) % ny;
         uint iz = i / (nx * ny);

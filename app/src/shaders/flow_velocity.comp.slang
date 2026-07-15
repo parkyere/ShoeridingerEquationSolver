@@ -5,7 +5,9 @@
 // Written to a LOW-RES rgba16f volume the streaklines trilinear-sample; v is
 // smooth so coarse resolution is fine, and it keeps the memory cost small.
 // The current formula matches core/flow.hpp::probability_current.
-[[vk::binding(0, 0)]] StructuredBuffer<float2, Std430DataLayout> psi;  // fp32
+import complex;
+
+[[vk::binding(0, 0)]] StructuredBuffer<Complex, Std430DataLayout> psi;  // fp32
 [[vk::binding(1, 0)]] [[vk::image_format("rgba16f")]] RWTexture3D<float4> vel;  // M^3
 
 struct Params {
@@ -20,7 +22,7 @@ struct Params {
 };
 [[vk::binding(2, 0)]] ConstantBuffer<Params, Std140DataLayout> params;
 
-float2 psi_at(int i, int j, int k) {
+Complex psi_at(int i, int j, int k) {
     i = clamp(i, 0, params.nx - 1);
     j = clamp(j, 0, params.ny - 1);
     k = clamp(k, 0, params.nz - 1);
@@ -40,14 +42,13 @@ void main(uint3 gid : SV_DispatchThreadID) {
     int j = I.y * s.y + s.y / 2;
     int k = I.z * s.z + s.z / 2;
 
-    float2 p = psi_at(i, j, k);
-    float rho = dot(p, p);
-    float2 dx = (psi_at(i + 1, j, k) - psi_at(i - 1, j, k)) / (2.0 * params.hx);
-    float2 dy = (psi_at(i, j + 1, k) - psi_at(i, j - 1, k)) / (2.0 * params.hy);
-    float2 dz = (psi_at(i, j, k + 1) - psi_at(i, j, k - 1)) / (2.0 * params.hz);
-    // j = Im(conj(psi) grad psi) = re*d_im - im*d_re, per component.
-    float3 jc = float3(p.x * dx.y - p.y * dx.x, p.x * dy.y - p.y * dy.x,
-                       p.x * dz.y - p.y * dz.x);
+    Complex p = psi_at(i, j, k);
+    float rho = norm2(p);
+    Complex dx = (psi_at(i + 1, j, k) - psi_at(i - 1, j, k)) / (2.0 * params.hx);
+    Complex dy = (psi_at(i, j + 1, k) - psi_at(i, j - 1, k)) / (2.0 * params.hy);
+    Complex dz = (psi_at(i, j, k + 1) - psi_at(i, j, k - 1)) / (2.0 * params.hz);
+    // j = Im(conj(psi) grad psi) per component = mul_conj(psi, dpsi).im.
+    float3 jc = float3(mul_conj(p, dx).im, mul_conj(p, dy).im, mul_conj(p, dz).im);
     float3 v = jc / max(rho, 1e-12);
     float sp = length(v);
     if (sp > params.vmax) {

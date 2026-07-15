@@ -2,8 +2,10 @@
 // workgroup; the host finishes the per-workgroup partials in double.
 // Bindings: psi (readonly, 0), partials (writeonly, 2), std140 UBO n (1).
 // No atomics, so the fixed-order fold stays deterministic (bit-exactness
-// checks rely on this).
-[[vk::binding(0, 0)]] StructuredBuffer<float2, Std430DataLayout> psi;
+// checks rely on this). partials pack (sum, max) -- not a complex number.
+import complex;
+
+[[vk::binding(0, 0)]] StructuredBuffer<Complex, Std430DataLayout> psi;
 [[vk::binding(2, 0)]] RWStructuredBuffer<float2, Std430DataLayout> partials;
 
 struct Params {
@@ -23,8 +25,7 @@ void main(uint3 gid : SV_DispatchThreadID,
     float acc = 0.0;
     float mx = 0.0;
     for (uint i = gid.x; i < params.n; i += stride) {
-        float2 v = psi[i];
-        float d = dot(v, v);
+        float d = norm2(psi[i]);
         acc += d;
         mx = max(mx, d);
     }

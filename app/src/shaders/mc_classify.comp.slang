@@ -4,6 +4,8 @@
 // block_sums[wg] for the scan pass. Tables live in one int SSBO uploaded
 // from core/marching_cubes_tables.hpp (single source of truth):
 // [0,256) edge table, [256,4352) tri table 256x16, [4352,4608) tri counts.
+import grid;
+
 [[vk::binding(0, 0)]] StructuredBuffer<float, Std430DataLayout> den;
 [[vk::binding(1, 0)]] StructuredBuffer<int, Std430DataLayout> mc_tab;
 [[vk::binding(2, 0)]] RWStructuredBuffer<uint, Std430DataLayout> block_sums;
@@ -36,10 +38,9 @@ void main(uint3 grp : SV_GroupID, uint lidx : SV_GroupIndex) {
     GroupMemoryBarrierWithGroupSync();
 
     int wg = int(grp.x);
-    int3 blk = int3(wg % params.nblk.x, (wg / params.nblk.x) % params.nblk.y,
-                    wg / (params.nblk.x * params.nblk.y));
-    int li = int(lidx);
-    int3 cell = blk * 8 + int3(li % 8, (li / 8) % 8, li / 64);
+    // block index (nblk power-agnostic %/), then cell within the 8^3 block.
+    int3 blk = unflatten_moddiv(grp.x, params.nblk.x, params.nblk.y);
+    int3 cell = blk * 8 + unflatten_moddiv(lidx, 8, 8);
 
     if (all(cell < (params.npts.xyz - 1))) {
         int cube = 0;

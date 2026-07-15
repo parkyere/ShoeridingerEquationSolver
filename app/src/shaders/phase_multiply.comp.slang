@@ -1,8 +1,10 @@
 // psi <- phase * psi: element-wise complex multiply against a precomputed
 // phase table (split-step phase factor). One thread per element.
 // Bindings: psi(0) read-write, phase(1) readonly, std140 UBO n(2).
-[[vk::binding(0, 0)]] RWStructuredBuffer<float2, Std430DataLayout> psi;
-[[vk::binding(1, 0)]] StructuredBuffer<float2, Std430DataLayout> phase;
+import complex;
+
+[[vk::binding(0, 0)]] RWStructuredBuffer<Complex, Std430DataLayout> psi;
+[[vk::binding(1, 0)]] StructuredBuffer<Complex, Std430DataLayout> phase;
 
 struct Params {
     uint n;
@@ -16,7 +18,5 @@ void main(uint3 tid : SV_DispatchThreadID) {
     if (i >= params.n) {
         return;
     }
-    float2 a = psi[i];
-    float2 b = phase[i];
-    psi[i] = float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+    psi[i] = psi[i] * phase[i];
 }

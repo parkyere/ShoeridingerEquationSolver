@@ -4,7 +4,10 @@
 // line by coeff times its perpendicular coordinate. std140 UBO carries the
 // grid + shear geometry (binding 1); scalars pack tightly, so the block
 // matches the host struct field order.
-[[vk::binding(0, 0)]] RWStructuredBuffer<float2, Std430DataLayout> psi;
+import complex;
+import grid;
+
+[[vk::binding(0, 0)]] RWStructuredBuffer<Complex, Std430DataLayout> psi;
 
 struct Params {
     uint n;
@@ -28,16 +31,12 @@ void main(uint3 tid : SV_DispatchThreadID) {
     if (idx >= params.n) {
         return;
     }
-    int e[3] = { int(idx) % params.nx,
-                 (int(idx) / params.nx) % params.ny,
-                 int(idx) / (params.nx * params.ny) };
+    int3 v = unflatten_moddiv(idx, params.nx, params.ny);
+    int e[3] = { v.x, v.y, v.z };
     int f = e[params.freq_axis];
     int p = e[params.coord_axis];
     int sf = (f < params.nf / 2) ? f : f - params.nf;  // signed fftfreq
     float kf = params.kscale * float(sf);
     float d = params.coeff * (params.cmin + float(p) * params.ch);
-    float ph = -kf * d;
-    float2 w = float2(cos(ph), sin(ph));
-    float2 a = psi[idx];
-    psi[idx] = float2(a.x * w.x - a.y * w.y, a.x * w.y + a.y * w.x);
+    psi[idx] = psi[idx] * cis(-kf * d);
 }

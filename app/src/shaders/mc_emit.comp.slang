@@ -8,11 +8,14 @@
 // indices clamped at the walls -- core marching_cubes verbatim); colors are
 // arg(psi) sampled trilinearly at the vertex through the cyclic HSV wheel
 // (core sampling/colormap verbatim).
+import complex;
+import grid;
+
 [[vk::binding(0, 0)]] StructuredBuffer<float, Std430DataLayout> den;
 [[vk::binding(1, 0)]] StructuredBuffer<int, Std430DataLayout> mc_tab;
 [[vk::binding(2, 0)]] StructuredBuffer<uint, Std430DataLayout> block_offsets;
 [[vk::binding(3, 0)]] RWStructuredBuffer<float, Std430DataLayout> vb;
-[[vk::binding(4, 0)]] StructuredBuffer<float2, Std430DataLayout> psi;
+[[vk::binding(4, 0)]] StructuredBuffer<Complex, Std430DataLayout> psi;
 
 struct Params {
     int4 npts;      // grid points per axis (.xyz)
@@ -61,15 +64,15 @@ float3 phase_color_at(float3 pos) {
     float3 s = (pos - params.box_min.xyz) / params.cell_h.xyz;
     int3 i0 = clamp(int3(floor(s)), int3(0, 0, 0), params.npts.xyz - 2);
     float3 t = s - float3(i0);
-    float2 c00 = lerp(psi[flat_at(i0)], psi[flat_at(i0 + int3(1, 0, 0))], t.x);
-    float2 c10 = lerp(psi[flat_at(i0 + int3(0, 1, 0))],
+    Complex c00 = mix(psi[flat_at(i0)], psi[flat_at(i0 + int3(1, 0, 0))], t.x);
+    Complex c10 = mix(psi[flat_at(i0 + int3(0, 1, 0))],
                       psi[flat_at(i0 + int3(1, 1, 0))], t.x);
-    float2 c01 = lerp(psi[flat_at(i0 + int3(0, 0, 1))],
+    Complex c01 = mix(psi[flat_at(i0 + int3(0, 0, 1))],
                       psi[flat_at(i0 + int3(1, 0, 1))], t.x);
-    float2 c11 = lerp(psi[flat_at(i0 + int3(0, 1, 1))],
+    Complex c11 = mix(psi[flat_at(i0 + int3(0, 1, 1))],
                       psi[flat_at(i0 + int3(1, 1, 1))], t.x);
-    float2 c = lerp(lerp(c00, c10, t.y), lerp(c01, c11, t.y), t.z);
-    float theta = atan2(c.y, c.x);
+    Complex c = mix(mix(c00, c10, t.y), mix(c01, c11, t.y), t.z);
+    float theta = arg(c);
     float h = (theta + PI) / (2.0 * PI) * 6.0;
     h = h - 6.0 * floor(h / 6.0);
     float x = 1.0 - abs(fmod(h, 2.0) - 1.0);
@@ -86,10 +89,9 @@ float3 phase_color_at(float3 pos) {
 [numthreads(512, 1, 1)]
 void main(uint3 grp : SV_GroupID, uint lidx : SV_GroupIndex) {
     int wg = int(grp.x);
-    int3 blk = int3(wg % params.nblk.x, (wg / params.nblk.x) % params.nblk.y,
-                    wg / (params.nblk.x * params.nblk.y));
+    int3 blk = unflatten_moddiv(grp.x, params.nblk.x, params.nblk.y);
     int li = int(lidx);
-    int3 cell = blk * 8 + int3(li % 8, (li / 8) % 8, li / 64);
+    int3 cell = blk * 8 + unflatten_moddiv(lidx, 8, 8);
 
     int cube = 0;
     uint tris = 0u;
@@ -124,7 +126,7 @@ void main(uint3 grp : SV_GroupID, uint lidx : SV_GroupIndex) {
     float cval[8];
     for (int c = 0; c < 8; ++c) {
         int3 p = cell + kCorner[c];
-        cpos[c] = params.box_min.xyz + float3(p) * params.cell_h.xyz;
+        cpos[c] = cell_pos(p, params.box_min.xyz, params.cell_h.xyz);
         cval[c] = den[flat_at(p)];
     }
 

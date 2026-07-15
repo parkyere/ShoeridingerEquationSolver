@@ -2,7 +2,9 @@
 // GPU-computed by norm_finalize in the same submit (fused relax renorm) and
 // read from an SSBO, not a host-set UBO -- so the whole renorm records into
 // one command buffer.
-[[vk::binding(0, 0)]] RWStructuredBuffer<float2, Std430DataLayout> data;
+import complex;
+
+[[vk::binding(0, 0)]] RWStructuredBuffer<Complex, Std430DataLayout> data;
 [[vk::binding(2, 0)]] StructuredBuffer<float, Std430DataLayout> renorm;
 
 struct Params {

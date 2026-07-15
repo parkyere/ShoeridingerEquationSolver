@@ -70,6 +70,46 @@ never changed: `tools/cmake/bin2h.cmake` takes `-DNAME`, so the blob symbols
   visually correct (surface mode is proton-only in BOTH GLSL and Slang -- an
   A/B confirmed pre-existing arc characteristic, not a migration regression).
 
+### Slang modernization (2026-07-15, follow-on; bit-identical)
+
+The 1:1 transcription was then modernized to real Slang features -- **zero perf
+overhead** (module fns inline; verified perf-neutral at full GPU clock) and
+**bit-identical** (all 35 vkcheck correctness oracles byte-for-byte unchanged;
+the golden diff flags only the run-to-run timing lines).
+
+- **Shared modules** (imported via `-I ${shaders}` wired into `ses_bake_shader`;
+  any `<name>.slang` without a stage extension is auto-globbed as a module and
+  added to every shader's bake deps):
+  - `complex.slang` -- `struct Complex { float2 v }` + operators `+ - *`
+    (complex mul), `*`/`/` scalar, and `conj` / `norm2` / `cis(theta)` /
+    `mul_conj(a,b)=conj(a)*b`. A Complex IS a float2 (8 B), so
+    `RWStructuredBuffer<Complex, Std430DataLayout>` is layout-compatible with the
+    old `float2` buffer -- oracles unchanged. `mul_conj` is written in the exact
+    (ax bx + ay by, ax by - ay bx) form so no stray negation perturbs FMA.
+  - `ylm.slang` -- `real_Ylm(l,m,x,y,z)`; deleted the 3 copy-pasted 60-line copies
+    (synth, mcwf_axpy, project_deposit).
+  - `grid.slang` -- `unflatten_pow2` (mask/shift), `unflatten_moddiv` (%,/),
+    `cell_pos`. Each kernel keeps its ORIGINAL variant (pow2 vs moddiv) so perf
+    and bytes are preserved.
+- **Adopted** across ~24 compute kernels: `psi[i] * phase[i]`, `conj`, `norm2`,
+  `cis`, `mul_conj` (reductions), the FFT butterfly (`q*w`, `u+v`, `u-v`).
+- **Deliberately NOT done**: generic `fft_line<let N>` (a generic-sized
+  `groupshared` array would over-allocate LDS and hurt occupancy on the small
+  transforms -- kept 3 correctly-sized files); render/present shaders (they
+  sample a texture, no complex arithmetic); Tier-2 wave-op reductions (only
+  `norm_peak` is hot and it must stay a deterministic fixed-order fold; the
+  non-hot reductions gain ~nothing and would break bit-identity). No P5000
+  (Pascal GP104) capability-gated win exists -- no fp16 math, fixed 32-lane
+  subgroups; the device already negotiates the right feature set.
+- **Adversarial review** (3-lens workflow: semantic / completeness / quality)
+  found ZERO confirmed defects. It surfaced that mc_classify + mc_emit were
+  module holdouts; both were then closed (grid unflatten, and mc_emit adopts
+  Complex via new `mix`/`arg` helpers) -- marching-cubes oracle stays byte-
+  identical (tris 5668, dhue 1.214e-07). Deliberate keeps: mean_force's inline
+  uint unflatten (feeds uint neighbor-wrap; the int-typed grid fn would add
+  friction), no unary-minus / complex-division in complex.slang (no consumer),
+  render `comp(float3,int)` left local (1-liner, visual-only).
+
 ## Already fixed (for context — do not redo)
 
 - **State-synthesis leak** — `release_state()` recycles slots + sets via
