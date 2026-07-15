@@ -50,7 +50,9 @@ protected:
         // The readback consumes POST-step psi: host-wait the async batch
         // (same-queue submission order carries no memory dependency).
         engine_.wait_async();
-        engine_.readback(readback_buf_);
+        if (!engine_.readback(readback_buf_)) {
+            return;  // GPU readback failed: skip this probe (no stale/OOB read)
+        }
         const ses::Grid3D& g = sim_.grid();
         const double dv = g.cell_volume();
         const int nx = g.x.n;

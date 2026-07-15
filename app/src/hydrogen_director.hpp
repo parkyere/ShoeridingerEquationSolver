@@ -1388,7 +1388,12 @@ private:
             // the resolution-critical 1s and box-critical 4s/5s/6s -- the
             // only states read back to the CPU.
             if (idx == kS1 || idx == k4S || idx == k5S || idx == k6S) {
-                engine_.readback(readback_buf_);
+                if (!engine_.readback(readback_buf_)) {
+                    std::fprintf(stderr, "atlas: GPU readback FAILED (device-lost "
+                                 "/ submit error) -- giving up on the GPU atlas\n");
+                    atlas_done_ = true;  // give up gracefully
+                    return;
+                }
                 ses::Field3D f{sim_.grid()};
                 for (std::size_t i = 0; i < f.data().size(); ++i) {
                     f.data()[i] = ses::Complex<double>{readback_buf_[2 * i],

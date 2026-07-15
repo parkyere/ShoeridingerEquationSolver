@@ -402,7 +402,9 @@ protected:
         if (cpu_is_truth_ || !gpu_ok_) {
             return;
         }
-        engine_.readback(readback_buf_);
+        if (!engine_.readback(readback_buf_)) {
+            return;  // GPU readback failed: keep the current CPU state (no OOB)
+        }
         ses::Field3D f{sim_.grid()};
         for (std::size_t i = 0; i < f.data().size(); ++i) {
             f.data()[i] =
