@@ -17,12 +17,6 @@ find_package(SDL3 CONFIG REQUIRED)
 find_package(VulkanHeaders CONFIG REQUIRED)  # vcpkg port: Vulkan::Headers
 find_package(volk CONFIG REQUIRED)
 find_package(VulkanMemoryAllocator CONFIG REQUIRED)
-find_program(SES_GLSLANG_VALIDATOR glslangValidator
-    HINTS "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/glslang")
-if(NOT SES_GLSLANG_VALIDATOR)
-    message(FATAL_ERROR "glslangValidator not found (vcpkg manifest dep; "
-        "is glslang[tools] on?). The ses_vk shaders bake offline to SPIR-V.")
-endif()
 
 # VkFFT: header-only FFT + its runtime shader compiler (glslang). Optional --
 # when absent the engine compiles without SES_HAVE_VKFFT and stays on the
@@ -55,13 +49,58 @@ function(ses_enable_vkfft target)
 endfunction()
 
 # ---------------------------------------------------------------------------
-# Offline SPIR-V baking: every ses_vk compute kernel and render shader is
-# compiled by glslangValidator at build time and embedded as a C array via
-# tools/cmake/bin2h.cmake. The engine has no resource system.
+# Slang AOT toolchain. Every ses_vk compute kernel and render shader is a Slang
+# source baked to plain SPIR-V by slangc at build time and embedded as a C
+# array via tools/cmake/bin2h.cmake (symbol k_<x>_spv). slangc is a prebuilt
+# BUILD-TIME tool (FetchContent) -- it adds no runtime or vcpkg dependency;
+# matrices are column-major to match the host std140 mat4 upload. (glslang
+# stays, but ONLY as VkFFT's runtime shader compiler -- see ses_enable_vkfft.)
 # ---------------------------------------------------------------------------
+include(FetchContent)
+set(SES_SLANG_VERSION "2026.13.1")
+if(WIN32)
+    set(_ses_slang_asset "slang-${SES_SLANG_VERSION}-windows-x86_64.zip")
+else()
+    set(_ses_slang_asset "slang-${SES_SLANG_VERSION}-linux-x86_64.zip")
+endif()
+FetchContent_Declare(ses_slang
+    URL "https://github.com/shader-slang/slang/releases/download/v${SES_SLANG_VERSION}/${_ses_slang_asset}"
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_MakeAvailable(ses_slang)
+find_program(SES_SLANGC slangc
+    HINTS "${ses_slang_SOURCE_DIR}/bin"
+    NO_DEFAULT_PATH REQUIRED)
+message(STATUS "Slang AOT compiler: ${SES_SLANGC}")
+
 set(_ses_vk_spv_dir "${CMAKE_CURRENT_BINARY_DIR}/vk_spv")
 file(MAKE_DIRECTORY "${_ses_vk_spv_dir}")
 set(_ses_vk_headers "")
+
+# Bake one Slang shader (src/shaders/<srcfile>.slang) to a SPIR-V C header via
+# slangc + bin2h (-DNAME=k_<x>_spv, header <x>_spv.h). The stage extension in
+# the source name (.comp/.vert/.frag) is a human hint; slangc takes -stage.
+function(ses_bake_shader _srcfile _stage _x)
+    set(_slang "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/${_srcfile}.slang")
+    set(_spv "${_ses_vk_spv_dir}/${_x}.spv")
+    set(_hdr "${_ses_vk_spv_dir}/${_x}_spv.h")
+    add_custom_command(
+        OUTPUT "${_hdr}"
+        BYPRODUCTS "${_spv}"
+        COMMAND "${SES_SLANGC}" "${_slang}"
+                -target spirv -entry main -stage ${_stage}
+                -matrix-layout-column-major -o "${_spv}"
+        COMMAND "${CMAKE_COMMAND}" "-DIN=${_spv}" "-DOUT=${_hdr}"
+                "-DNAME=k_${_x}_spv"
+                -P "${CMAKE_SOURCE_DIR}/tools/cmake/bin2h.cmake"
+        DEPENDS "${_slang}" "${CMAKE_SOURCE_DIR}/tools/cmake/bin2h.cmake"
+        COMMENT "slangc: ${_srcfile}.slang -> ${_x}_spv.h"
+        VERBATIM)
+    set(_hdrs "${_ses_vk_headers}")
+    list(APPEND _hdrs "${_hdr}")
+    set(_ses_vk_headers "${_hdrs}" PARENT_SCOPE)
+endfunction()
+
+# Compute kernels: source <k>.comp.slang, symbol k_<k>_spv.
 foreach(_k IN ITEMS phase_multiply scale norm_peak norm_finalize scale_buf
         inner_product
         dipole_kick mean_force dipole pack_half unpack_half conj_scale
@@ -72,44 +111,20 @@ foreach(_k IN ITEMS phase_multiply scale norm_peak norm_finalize scale_buf
         mcwf_axpy
         mc_density mc_classify mc_scan mc_emit
         fft_line8 fft_line64 fft_line256)
-    set(_src "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/${_k}.comp")
-    set(_spv "${_ses_vk_spv_dir}/${_k}.spv")
-    set(_hdr "${_ses_vk_spv_dir}/${_k}_spv.h")
-    add_custom_command(
-        OUTPUT "${_hdr}"
-        BYPRODUCTS "${_spv}"
-        COMMAND "${SES_GLSLANG_VALIDATOR}" -V --target-env vulkan1.4
-                -o "${_spv}" "${_src}"
-        COMMAND "${CMAKE_COMMAND}" "-DIN=${_spv}" "-DOUT=${_hdr}"
-                "-DNAME=k_${_k}_spv"
-                -P "${CMAKE_SOURCE_DIR}/tools/cmake/bin2h.cmake"
-        DEPENDS "${_src}" "${CMAKE_SOURCE_DIR}/tools/cmake/bin2h.cmake"
-        COMMENT "glslangValidator: ${_k}.comp -> SPIR-V header"
-        VERBATIM)
-    list(APPEND _ses_vk_headers "${_hdr}")
+    ses_bake_shader("${_k}.comp" compute "${_k}")
 endforeach()
 # Render + presentation shader pairs (the blit pair feeds the shell's own
-# swapchain pass -- what Qt's qsb bake used to serve). Dots in the stage
-# extension are sanitized out of the symbol name.
+# swapchain pass). Dots in the stage extension are sanitized out of the symbol.
 foreach(_k IN ITEMS mesh.vert mesh.frag volume.vert volume.frag
         slice.vert slice.frag
         flow.vert flow.frag blit.vert blit.frag)
-    string(REPLACE "." "_" _sym "${_k}")
-    set(_src "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/${_k}")
-    set(_spv "${_ses_vk_spv_dir}/${_sym}.spv")
-    set(_hdr "${_ses_vk_spv_dir}/${_sym}_spv.h")
-    add_custom_command(
-        OUTPUT "${_hdr}"
-        BYPRODUCTS "${_spv}"
-        COMMAND "${SES_GLSLANG_VALIDATOR}" -V --target-env vulkan1.4
-                -o "${_spv}" "${_src}"
-        COMMAND "${CMAKE_COMMAND}" "-DIN=${_spv}" "-DOUT=${_hdr}"
-                "-DNAME=k_${_sym}_spv"
-                -P "${CMAKE_SOURCE_DIR}/tools/cmake/bin2h.cmake"
-        DEPENDS "${_src}" "${CMAKE_SOURCE_DIR}/tools/cmake/bin2h.cmake"
-        COMMENT "glslangValidator: ${_k} -> SPIR-V header"
-        VERBATIM)
-    list(APPEND _ses_vk_headers "${_hdr}")
+    string(REPLACE "." "_" _x "${_k}")
+    if(_k MATCHES "\\.vert$")
+        set(_stage vertex)
+    else()
+        set(_stage fragment)
+    endif()
+    ses_bake_shader("${_k}" "${_stage}" "${_x}")
 endforeach()
 # One generation rule shared by every ses_vk consumer (the app's engine
 # and the vkcheck harness) -- targets depend on this, not on the files.
@@ -169,9 +184,9 @@ ses_enable_vkfft(sesolver_app)
 
 # ---------------------------------------------------------------------------
 # sesolver_vkcheck: THE GPU verification harness. NO windowing anywhere in
-# this binary: volk loads the loader, VMA allocates, and the Vulkan-GLSL
-# kernel sources are baked to plain SPIR-V offline by glslangValidator (the
-# glslang port's "tools" feature) and embedded as C arrays via
+# this binary: volk loads the loader, VMA allocates, and the Slang kernel
+# sources are baked to plain SPIR-V offline by slangc (ses_bake_shader) and
+# embedded as C arrays via
 # tools/cmake/bin2h.cmake. Every check pins a CPU double-precision reference
 # value and tolerance. ctest: label "gpu", exit 77 = SKIP without a Vulkan
 # device; SES_VK_VALIDATION=1 turns on the validation layers and fails the

@@ -11,8 +11,64 @@ gates in [`TDD_RULES.md`](TDD_RULES.md): `ctest` (all pass) + `sesolver_vkcheck`
 **Cross-session continuity (2026-07-15):** this doc also carries forward work
 across machines (office <-> home) -- per-machine Claude memory does NOT travel,
 so anything needed to continue a session lives here, self-contained (file paths,
-exact fixes, verify commands). Latest work = the "Validation-clean sweep"
+exact fixes, verify commands). Latest work = the "GLSL -> Slang migration"
 section; open/planned work = the "Forward work" section near the bottom.
+
+## GLSL -> Slang migration (2026-07-15; ctest 270/270, vkcheck all PASS)
+
+All 50 ses_vk shaders were migrated GLSL -> **Slang**. The C++ engine/vkcheck
+never changed: `tools/cmake/bin2h.cmake` takes `-DNAME`, so the blob symbols
+(`k_<x>_spv`) and headers are language-agnostic.
+
+- **Toolchain** ([`app/CMakeLists.txt`](../app/CMakeLists.txt)) — `slangc`
+  v2026.13.1 is fetched as a prebuilt build-time tool via `FetchContent`
+  (windows-x86_64 / linux-x86_64), located with `find_program(... HINTS
+  ${ses_slang_SOURCE_DIR}/bin)`. `ses_bake_shader` baked either source during
+  the migration (dual-path); now slangc-only. `glslangValidator` finder + the
+  legacy `.comp/.vert/.frag` sources + `glslang[tools]` were all removed;
+  glslang the *library* stays solely as VkFFT's runtime compiler.
+- **Layout ABI** (the silent-corruption risk) — every buffer is pinned with a
+  per-buffer generic: `ConstantBuffer<T, Std140DataLayout>` for UBOs,
+  `RWStructuredBuffer<T, Std430DataLayout>` / `StructuredBuffer<...>` for SSBOs.
+  Verified byte-exact by the oracles (e.g. scale UBO `{uint n; float scale}`).
+- **Translation dictionary** — `vecN`->`floatN`; UBO fields via `params.`;
+  `gl_GlobalInvocationID`->`SV_DispatchThreadID`, `gl_LocalInvocationIndex`->
+  `SV_GroupIndex`, `gl_WorkGroupID`->`SV_GroupID`; `gl_NumWorkGroups`->
+  `WorkgroupCount()`; `shared`->`groupshared`, `barrier()`->
+  `GroupMemoryBarrierWithGroupSync()`; `findMSB`->`firstbithigh`,
+  `bitfieldReverse`->`reversebits`, `atomicAdd`->`InterlockedAdd`, `mix`->`lerp`,
+  `atan(y,x)`->`atan2`, `mod`->`fmod`, `fract`->`frac`, `inversesqrt`->`rsqrt`.
+- **Three gotchas that needed real fixes** (not mechanical):
+  1. **fp16 pack** — `f32tof16`/`f16tof32` declare the SPIR-V Float16/Int16
+     capabilities (device lacks `shaderFloat16`); use `import glsl` +
+     `packHalf2x16`/`unpackHalf2x16` (GLSL.std.450, no capability).
+  2. **Subgroups** (`project_deposit`) — `gl_NumSubgroups`/`gl_SubgroupID` have
+     no HLSL analogue; `subgroupAdd`/`subgroupElect` -> `WaveActiveSum`/
+     `WaveIsFirstLane`, and per-wave slotting is derived from
+     `WaveGetLaneCount()` + `SV_GroupIndex` (unique contiguous slots). Oracle:
+     `deterministic = 1`, max rel 3.874e-08 (unchanged).
+  3. **DrawParameters** — `SV_VertexID`/`SV_InstanceID` lower to
+     `VertexIndex - BaseVertex`, pulling the `shaderDrawParameters` capability
+     the device does not enable. Use `import glsl` + `gl_VertexIndex` /
+     `gl_InstanceIndex` (raw SPIR-V `VertexIndex`/`InstanceIndex`, base = 0).
+- **Samplers** — GLSL `sampler2D/3D/1D` -> Slang combined type
+  `Sampler2D/3D/1D<float4>` (one COMBINED_IMAGE_SAMPLER descriptor;
+  `[[vk::combinedImageSampler]]` is NOT supported in this Slang). `texelFetch`->
+  `.Load(int4(c,0))`, `textureSize`->`.GetDimensions(...)`, compute `texture()`->
+  `.SampleLevel(uvw,0)`, fragment `texture()`->`.Sample(uvw)`. Storage images:
+  `image3D`+format -> `[[vk::image_format("rg16f")]] RWTexture3D<float4>`,
+  `imageLoad/Store` -> `img[coord]`.
+- **Render I/O** — `[[vk::location(N)]]` structs (SV_Position / SV_Target),
+  `mul(ubo.mvp, float4(p,1))` with `-matrix-layout-column-major` to match the
+  std140 mat4 upload, `[[vk::push_constant]] ConstantBuffer<Push>`.
+- **Build discipline note** — ninja's Windows `/showIncludes` depfile does not
+  reliably rebuild a blob consumer when only its baked `_spv.h` changes; touch
+  `main.cpp` / `vkcheck_main.cpp` after a shader edit to force re-embed.
+- **Verified** — ctest 270/270; `sesolver_vkcheck` all PASS (validation ON,
+  reinit parity 0.000e+00, native VkFFT 4.9x); `--dump-frame --flow`,
+  `--dump-frame-surface`, `--dump-frame-slice` all validation-clean and
+  visually correct (surface mode is proton-only in BOTH GLSL and Slang -- an
+  A/B confirmed pre-existing arc characteristic, not a migration regression).
 
 ## Already fixed (for context — do not redo)
 

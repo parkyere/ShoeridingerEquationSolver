@@ -17,10 +17,10 @@ framework-free Vulkan renderer.
 |---|---|
 | Language / build | C++20, CMake, pinned vcpkg submodule (static deps) |
 | GUI shell | **SDL3** — window, input, and the Vulkan surface; **Dear ImGui** (vendored submodule) draws the control panel; the shell owns its device and swapchain outright |
-| GPU compute + rendering | **Framework-free Vulkan** (`ses_vk`: volk + VMA + VkFFT), shaders offline-baked to SPIR-V by glslangValidator |
+| GPU compute + rendering | **Framework-free Vulkan** (`ses_vk`: volk + VMA + VkFFT); shaders authored in **Slang**, offline-baked to SPIR-V by `slangc` (fetched as a build-time tool, no runtime/vcpkg dependency) |
 | Physics core | CPU double-precision truth in `core/`, no GPU/GUI dependencies |
 | Time propagator | **Split-operator (Fourier)** — hand-written FFT on the CPU core; VkFFT on the GPU, with hand-rolled line-FFT kernels kept as a verified alternative |
-| Reinvention boundary | **Purist** — hand-roll math, FFT, physics, render logic (incl. the swapchain); reuse only SDL3 (window/input), Dear ImGui (UI), GoogleTest, and vendored Vulkan infrastructure (volk / VMA / VkFFT / glslang) |
+| Reinvention boundary | **Purist** — hand-roll math, FFT, physics, render logic (incl. the swapchain); reuse only SDL3 (window/input), Dear ImGui (UI), GoogleTest, the Slang shader toolchain, and vendored Vulkan infrastructure (volk / VMA / VkFFT / glslang — glslang now only as VkFFT's runtime compiler) |
 | Units | Atomic units (ℏ = mₑ = e = 1) |
 | Testing | **Strict TDD** + Humble Object; a windowless GPU oracle binary (`sesolver_vkcheck`) verifies every kernel |
 

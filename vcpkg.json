@@ -10,12 +10,7 @@
         "volk",
         "vulkan-memory-allocator",
         "vkfft",
-        {
-            "name": "glslang",
-            "features": [
-                "tools"
-            ]
-        },
+        "glslang",
         {
             "name": "sdl3",
             "features": [
