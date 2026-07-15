@@ -12,13 +12,14 @@
 #include <core/complex.hpp>
 #include <core/decay.hpp>
 #include <core/radial.hpp>
-#include <core/vram_budget.hpp>
 
 #include <array>
 #include <cmath>
 #include <cstdio>
 #include <utility>
 #include <vector>
+
+import ses.vram_budget;
 
 namespace ses_shell {
 

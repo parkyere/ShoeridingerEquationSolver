@@ -8,11 +8,12 @@
 
 #include "vk_device.hpp"
 
-#include <core/vram_budget.hpp>
 
 #include <cstdint>
 #include <cstring>
 #include <vector>
+
+import ses.vram_budget;
 
 namespace ses_shell {
 

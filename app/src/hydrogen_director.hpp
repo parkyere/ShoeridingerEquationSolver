@@ -26,7 +26,6 @@
 #include <core/sampling.hpp>
 #include <core/simulation.hpp>
 #include <core/vec.hpp>
-#include <core/vram_budget.hpp>
 
 #include <algorithm>
 #include <array>
@@ -37,6 +36,8 @@
 #include <random>
 #include <string>
 #include <vector>
+
+import ses.vram_budget;
 
 namespace ses_shell {
 
