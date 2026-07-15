@@ -8,6 +8,13 @@ add_library(sesolver_core STATIC
 )
 
 target_include_directories(sesolver_core PUBLIC include)
+
+# C++20 modules the core provides (consumers `import` these). Incremental
+# migration off the header web: a leaf becomes a named module, and a consuming
+# header may `import` it while still being #included elsewhere. PUBLIC so the
+# app/test targets that link the core can import across the target boundary.
+target_sources(sesolver_core
+    PUBLIC FILE_SET CXX_MODULES FILES src/marching_cubes_tables.ixx)
 target_compile_features(sesolver_core PUBLIC cxx_std_20)
 target_link_libraries(sesolver_core PRIVATE ses_warnings)
 target_link_libraries(sesolver_core PUBLIC ses_arch)

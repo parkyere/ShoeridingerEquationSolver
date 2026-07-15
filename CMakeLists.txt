@@ -47,6 +47,12 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# C++20 named modules: scan every C++20 TU for `import` so consumers (which only
+# import, not provide) resolve modules the core provides. Required because a
+# consumed module forces all consuming targets to be scanned, and the project
+# baseline (cmake_minimum_required 3.21) leaves CMP0155 OLD (scan off).
+set(CMAKE_CXX_SCAN_FOR_MODULES ON)
+
 # Single-config generators: default to Debug for the TDD loop.
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)

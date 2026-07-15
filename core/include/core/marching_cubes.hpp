@@ -6,8 +6,9 @@
 // the gradient. Output is an unindexed triangle soup (3 vertices + 3 normals
 // per triangle).
 
+import ses.mc.tables;
+
 #include <core/grid.hpp>
-#include <core/marching_cubes_tables.hpp>
 #include <core/vec.hpp>
 
 #include <algorithm>

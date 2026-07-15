@@ -32,12 +32,13 @@
 #endif
 #endif
 
+import ses.mc.tables;
+
 #include <core/complex.hpp>
 #include <core/decay.hpp>
 #include <core/drive.hpp>
 #include <core/grid.hpp>
 #include <core/spectral.hpp>
-#include <core/marching_cubes_tables.hpp>
 #include <core/vec.hpp>
 
 #include <algorithm>

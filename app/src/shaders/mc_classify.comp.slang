@@ -2,7 +2,7 @@
 // per cell. Case index from the 8 corner densities vs iso; the block's
 // triangle total (shared atomic, order-independent int sum) lands in
 // block_sums[wg] for the scan pass. Tables live in one int SSBO uploaded
-// from core/marching_cubes_tables.hpp (single source of truth):
+// from the ses.mc.tables core module (single source of truth):
 // [0,256) edge table, [256,4352) tri table 256x16, [4352,4608) tri counts.
 import grid;
 
