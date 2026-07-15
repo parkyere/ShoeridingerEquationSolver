@@ -1,24 +1,31 @@
 #version 450
 
-// Probability-flow particles: advect tracer particles with the Bohmian
-// velocity v = j / rho, j = Im(psi* grad psi) (atomic units), sampled from
-// the SAME bridge volume the raymarcher displays (psi in .xy; grad by
-// central differences of 6 texture taps). Particles seeded/respawned by
-// rejection sampling against |psi|^2 stay |psi|^2-distributed as the state
-// evolves (equivariance) -- the flow you see IS the probability current:
-// still for real eigenstates, circulating for m != 0 and driven states.
+// Probability-flow STREAKLINES. Each streak owns a short trail (trail_len
+// slots) of its recent positions; every animated frame the head is advected
+// one Bohmian step and the trail shifts down (oldest slot drops). The velocity
+// is v = j / rho, j = Im(conj(psi) grad psi) (atomic units) -- the same current
+// as core/flow.hpp::probability_current -- sampled from the bridge volume the
+// raymarcher displays (psi in .xy; grad by central differences of 6 taps).
+// Streaks respawn (whole trail collapsed to a fresh seed) by rejection
+// sampling against |psi|^2, so they stay |psi|^2-distributed (equivariance):
+// the streaks you see ARE the probability current -- still for real
+// eigenstates, circulating for m != 0, sloshing for driven/superposed states.
 layout(local_size_x = 256) in;
 
-layout(std430, binding = 0) buffer Particles { vec4 part[]; };  // xyz, age
+// trail[i*trail_len + k]: streak i, ring slot k (0 = oldest .. trail_len-1 =
+// newest). xyz = position, w = age (only the head slot's age is authoritative).
+layout(std430, binding = 0) buffer Trail { vec4 trail[]; };
 layout(std140, binding = 1) uniform Params {
-    vec4 box_min;   // .xyz
-    vec4 box_max;   // .xyz
-    float dt;       // display advection step (au)
-    float inv_peak; // |psi|^2 normalizer (rejection sampling)
-    float lifetime; // frames until forced respawn
-    float frame;    // RNG decorrelation
-    int n_particles;
-    int animate;    // 0 = hold positions (paused)
+    vec4 box_min;    // .xyz
+    vec4 box_max;    // .xyz
+    float dt;        // display advection step (au)
+    float inv_peak;  // |psi|^2 normalizer (rejection sampling)
+    float lifetime;  // frames until forced respawn
+    float frame;     // RNG decorrelation
+    int n_streaks;
+    int trail_len;
+    int animate;     // 0 = hold positions (paused)
+    int reset;       // 1 = collapse every trail to a fresh seed (enable frame)
 };
 layout(binding = 2) uniform sampler3D psi_tex;
 
@@ -37,14 +44,33 @@ float rnd(inout uint state) {
     return float(w) / 4294967296.0;
 }
 
+// Rejection-sample a respawn point against |psi|^2 (a few tries; failures just
+// keep the last draw and re-test next frame via the density gate).
+vec3 respawn_seed(inout uint rng) {
+    vec3 p = box_min.xyz;
+    for (int t = 0; t < 4; ++t) {
+        vec3 cand = box_min.xyz +
+                    vec3(rnd(rng), rnd(rng), rnd(rng)) *
+                        (box_max.xyz - box_min.xyz);
+        p = cand;
+        vec2 cs = psi_at(cand);
+        if (rnd(rng) < dot(cs, cs) * inv_peak) {
+            break;
+        }
+    }
+    return p;
+}
+
 void main() {
     uint i = gl_GlobalInvocationID.x;
-    if (i >= uint(n_particles)) {
+    if (i >= uint(n_streaks)) {
         return;
     }
-    vec4 st = part[i];
-    vec3 p = st.xyz;
-    float age = st.w;
+    uint L = uint(trail_len);
+    uint base = i * L;
+    vec4 head = trail[base + L - 1u];  // newest slot
+    vec3 p = head.xyz;
+    float age = head.w;
 
     uint rng = i * 9781u + uint(frame) * 6271u + 12345u;
 
@@ -54,37 +80,25 @@ void main() {
                 any(lessThan(p, box_min.xyz)) ||
                 any(greaterThan(p, box_max.xyz));
 
-    if (dead) {
-        // Rejection-sample a respawn point against |psi|^2 (a few tries per
-        // frame; failures just retry next frame from a fresh draw).
-        for (int t = 0; t < 4; ++t) {
-            vec3 cand = box_min.xyz +
-                        vec3(rnd(rng), rnd(rng), rnd(rng)) *
-                            (box_max.xyz - box_min.xyz);
-            vec2 cs = psi_at(cand);
-            float crho = dot(cs, cs) * inv_peak;
-            if (rnd(rng) < crho) {
-                p = cand;
-                break;
-            }
-            p = cand;  // keep the last draw; density gate re-tests next frame
+    if (reset != 0 || dead) {
+        vec3 seed = respawn_seed(rng);
+        float na = lifetime * rnd(rng) * 0.25;  // stagger lifetimes
+        for (uint k = 0u; k < L; ++k) {
+            trail[base + k] = vec4(seed, na);  // collapse the whole trail
         }
-        age = lifetime * rnd(rng) * 0.25;  // stagger lifetimes
-        part[i] = vec4(p, age);
         return;
     }
 
     if (animate != 0) {
-        // Central-difference grad psi (h = one cell-ish in world units).
-        vec3 ext = box_max.xyz - box_min.xyz;
-        vec3 h = ext / 256.0;
+        // Central-difference grad psi (h ~ one cell in world units).
+        vec3 h = (box_max.xyz - box_min.xyz) / 256.0;
         vec2 dx = (psi_at(p + vec3(h.x, 0, 0)) - psi_at(p - vec3(h.x, 0, 0))) /
                   (2.0 * h.x);
         vec2 dy = (psi_at(p + vec3(0, h.y, 0)) - psi_at(p - vec3(0, h.y, 0))) /
                   (2.0 * h.y);
         vec2 dz = (psi_at(p + vec3(0, 0, h.z)) - psi_at(p - vec3(0, 0, h.z))) /
                   (2.0 * h.z);
-        // j = Im(conj(psi) * grad psi) = re*d_im - im*d_re, per component.
+        // j = Im(conj(psi) grad psi) = re*d_im - im*d_re (== flow.hpp).
         vec3 j = vec3(s.x * dx.y - s.y * dx.x, s.x * dy.y - s.y * dy.x,
                       s.x * dz.y - s.y * dz.x);
         vec3 v = j / max(rho, 1e-12);
@@ -95,6 +109,13 @@ void main() {
         }
         p += v * dt;
         age += 1.0;
+
+        // Shift the trail down (oldest drops) and append the new head. One
+        // thread owns its L slots, and the ascending copy reads slot k+1
+        // before it is overwritten at k+1, so no aliasing.
+        for (uint k = 0u; k + 1u < L; ++k) {
+            trail[base + k] = trail[base + k + 1u];
+        }
+        trail[base + L - 1u] = vec4(p, age);
     }
-    part[i] = vec4(p, age);
 }

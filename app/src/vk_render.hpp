@@ -232,33 +232,49 @@ public:
             aux_valid_ = true;
         }
 
-        // Advect the probability-flow particles BEFORE the pass (their SSBO
-        // is vertex-pulled by the sprite draw inside it).
-        if (in.flow && in.cloud) {
-            FlowParams fp{};
-            fp.box_min[0] = static_cast<float>(grid_.x.xmin);
-            fp.box_min[1] = static_cast<float>(grid_.y.xmin);
-            fp.box_min[2] = static_cast<float>(grid_.z.xmin);
-            fp.box_max[0] = static_cast<float>(grid_.x.xmax);
-            fp.box_max[1] = static_cast<float>(grid_.y.xmax);
-            fp.box_max[2] = static_cast<float>(grid_.z.xmax);
-            fp.dt = 0.6f;
-            fp.inv_peak =
-                static_cast<float>(in.peak > 0.0 ? 1.0 / in.peak : 0.0);
-            fp.lifetime = 600.0f;
-            fp.frame = in.frame_index;
-            fp.n_particles = static_cast<std::int32_t>(kFlowParticles);
-            fp.animate = in.flow_animate ? 1 : 0;
-            std::memcpy(flow_ubo_.mapped, &fp, sizeof(fp));
-            vmaFlushAllocation(ctx_->allocator, flow_ubo_.alloc, 0,
-                               VK_WHOLE_SIZE);
-            particles_k_.bind(cb, particles_set_);
-            vkCmdDispatch(cb, (kFlowParticles + 255) / 256, 1, 1);
-            memory_barrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                           VK_ACCESS_SHADER_WRITE_BIT,
-                           VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-                           VK_ACCESS_SHADER_READ_BIT);
+        // Advect the streaklines BEFORE the pass (their trail SSBO is
+        // vertex-pulled by the line draw inside it). Dispatch only on the
+        // enable-edge (one reset that collapses every trail to a fresh seed,
+        // so the streaks grow from nothing) and on animated frames; a paused
+        // frame leaves the frozen trail as-is.
+        const bool flow_active = in.flow && in.cloud;
+        if (flow_active) {
+            const bool enabling = !flow_was_on_;
+            const bool advancing = in.flow_animate && !enabling;
+            if (enabling) {
+                flow_frame_ = 0;
+            } else if (advancing) {
+                ++flow_frame_;
+            }
+            if (enabling || advancing) {
+                FlowParams fp{};
+                fp.box_min[0] = static_cast<float>(grid_.x.xmin);
+                fp.box_min[1] = static_cast<float>(grid_.y.xmin);
+                fp.box_min[2] = static_cast<float>(grid_.z.xmin);
+                fp.box_max[0] = static_cast<float>(grid_.x.xmax);
+                fp.box_max[1] = static_cast<float>(grid_.y.xmax);
+                fp.box_max[2] = static_cast<float>(grid_.z.xmax);
+                fp.dt = 0.18f;  // slow crawl: readable streaks from the start
+                fp.inv_peak =
+                    static_cast<float>(in.peak > 0.0 ? 1.0 / in.peak : 0.0);
+                fp.lifetime = 600.0f;
+                fp.frame = static_cast<float>(flow_frame_);
+                fp.n_streaks = static_cast<std::int32_t>(kFlowStreaks);
+                fp.trail_len = static_cast<std::int32_t>(kFlowTrail);
+                fp.animate = advancing ? 1 : 0;
+                fp.reset = enabling ? 1 : 0;
+                std::memcpy(flow_ubo_.mapped, &fp, sizeof(fp));
+                vmaFlushAllocation(ctx_->allocator, flow_ubo_.alloc, 0,
+                                   VK_WHOLE_SIZE);
+                particles_k_.bind(cb, particles_set_);
+                vkCmdDispatch(cb, (kFlowStreaks + 255) / 256, 1, 1);
+                memory_barrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                               VK_ACCESS_SHADER_WRITE_BIT,
+                               VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+                               VK_ACCESS_SHADER_READ_BIT);
+            }
         }
+        flow_was_on_ = flow_active;
 
         const float w = in.flash;
         // Dynamic rendering: transition the attachments explicitly (no render
@@ -341,13 +357,16 @@ public:
                                         nullptr);
                 vkCmdDraw(cb, 6, 1, 0, 0);
             }
-            if (in.flow) {  // additive sprites over the cloud
+            if (in.flow) {  // streaklines over the cloud (one strip per streak)
                 vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                   flow_pipe_);
                 vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                         flow_pl_, 0, 1, &flow_set_, 0,
                                         nullptr);
-                vkCmdDraw(cb, kFlowParticles, 1, 0, 0);
+                const std::int32_t tl = static_cast<std::int32_t>(kFlowTrail);
+                vkCmdPushConstants(cb, flow_pl_, VK_SHADER_STAGE_VERTEX_BIT, 0,
+                                   sizeof(tl), &tl);
+                vkCmdDraw(cb, kFlowTrail, kFlowStreaks, 0, 0);
             }
         } else {
             vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, mesh_pipe_);
@@ -1191,26 +1210,35 @@ private:
                 return false;
             }
         }
+        // Push constant: the trail length, so flow.vert can index
+        // trail[instance*trail_len + vertex] and fade along the streak.
+        const VkPushConstantRange pcr{VK_SHADER_STAGE_VERTEX_BIT, 0,
+                                      sizeof(std::int32_t)};
         VkPipelineLayoutCreateInfo plci{};
         plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         plci.setLayoutCount = 1;
         plci.pSetLayouts = &flow_dsl_holder_.set;
+        plci.pushConstantRangeCount = 1;
+        plci.pPushConstantRanges = &pcr;
         if (vkCreatePipelineLayout(ctx_->device, &plci, nullptr, &flow_pl_) !=
             VK_SUCCESS) {
             return false;
         }
+        // Streaklines: instanced LINE_STRIP (one strip per streak), premultiplied
+        // white with a tail-to-head alpha fade (weather-map Lagrangian flux).
         flow_pipe_ = build_pipeline(
             blobs.flow_vert, blobs.flow_vert_size, blobs.flow_frag,
             blobs.flow_frag_size, flow_pl_, nullptr, nullptr, 0,
-            /*depth=*/false, VK_CULL_MODE_NONE, kBlendAdditive,
-            VK_PRIMITIVE_TOPOLOGY_POINT_LIST);
+            /*depth=*/false, VK_CULL_MODE_NONE, kBlendPremultiplied,
+            VK_PRIMITIVE_TOPOLOGY_LINE_STRIP);
         if (flow_pipe_ == VK_NULL_HANDLE) {
             return false;
         }
 
-        // Seed: uniform positions in the inner half of the box, staggered
-        // ages; the rejection respawn converges them onto |psi|^2 quickly.
-        std::vector<float> seed(4 * kFlowParticles);
+        // Seed the trail buffer: each streak's trail_len slots collapsed to one
+        // born-dead position (age 1e9) in the inner half of the box; the first
+        // frame's rejection respawn spreads them onto |psi|^2.
+        std::vector<float> seed(4 * kFlowStreaks * kFlowTrail);
         std::uint32_t rng = 0x9e3779b9u;
         auto rnd = [&rng]() {
             rng = rng * 747796405u + 2891336453u;
@@ -1225,11 +1253,17 @@ private:
         const float lo[3] = {static_cast<float>(grid_.x.xmin),
                              static_cast<float>(grid_.y.xmin),
                              static_cast<float>(grid_.z.xmin)};
-        for (std::uint32_t i = 0; i < kFlowParticles; ++i) {
-            seed[4 * i + 0] = lo[0] + ext[0] * (0.25f + 0.5f * rnd());
-            seed[4 * i + 1] = lo[1] + ext[1] * (0.25f + 0.5f * rnd());
-            seed[4 * i + 2] = lo[2] + ext[2] * (0.25f + 0.5f * rnd());
-            seed[4 * i + 3] = 1e9f;  // born dead: respawn onto |psi|^2
+        for (std::uint32_t i = 0; i < kFlowStreaks; ++i) {
+            const float px = lo[0] + ext[0] * (0.25f + 0.5f * rnd());
+            const float py = lo[1] + ext[1] * (0.25f + 0.5f * rnd());
+            const float pz = lo[2] + ext[2] * (0.25f + 0.5f * rnd());
+            for (std::uint32_t k = 0; k < kFlowTrail; ++k) {
+                const std::size_t o = 4 * (i * kFlowTrail + k);
+                seed[o + 0] = px;
+                seed[o + 1] = py;
+                seed[o + 2] = pz;
+                seed[o + 3] = 1e9f;  // born dead: respawn onto |psi|^2
+            }
         }
         const VkDeviceSize bytes = seed.size() * sizeof(float);
         VkBufferCreateInfo bci{};
@@ -1813,7 +1847,10 @@ private:
     Buffer down_ubo_[3]{};
     Buffer compose_ubo_{};
     // Probability-flow particles.
-    static constexpr std::uint32_t kFlowParticles = 49152;
+    // Sparse streaklines: kFlowStreaks strips, each a kFlowTrail-vertex trail
+    // of recent positions (weather-map Lagrangian flux look, low frame cost).
+    static constexpr std::uint32_t kFlowStreaks = 2048;
+    static constexpr std::uint32_t kFlowTrail = 40;
     struct alignas(16) FlowParams {
         float box_min[4];
         float box_max[4];
@@ -1821,10 +1858,13 @@ private:
         float inv_peak;
         float lifetime;
         float frame;
-        std::int32_t n_particles;
+        std::int32_t n_streaks;
+        std::int32_t trail_len;
         std::int32_t animate;
-        std::int32_t p0, p1;
+        std::int32_t reset;
     };
+    std::uint32_t flow_frame_ = 0;   // frames advected since enable (RNG + head)
+    bool flow_was_on_ = false;       // enable-edge detect -> one reset dispatch
     // Occupancy skipping + self-shadow.
     Kernel occ_k_;
     Kernel dilate_k_;

@@ -82,6 +82,7 @@ public:
                 needs_render_ = true;
             }
         }
+        flow_on_ = has_arg("--flow");  // start with streaklines on (Key F)
     }
 
     // ---- boot -------------------------------------------------------------
