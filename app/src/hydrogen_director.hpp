@@ -185,6 +185,12 @@ public:
     // Runs once per paint, BEFORE the widget frame (engine offscreen frames
     // are illegal mid-frame).
     void run_frame() override {
+        if (gpu_ok_ && engine_.device_lost()) {
+            std::fprintf(stderr,
+                         "run_frame: GPU device lost -- falling back to CPU\n");
+            gpu_ok_ = false;       // stop every GPU submit; the CPU path takes over
+            cpu_is_truth_ = true;
+        }
         // Reclaim last frame's async batch FIRST: flips the display volume
         // at a host-observed completion point and frees the batch cb. All
         // readouts below then see the post-step psi.

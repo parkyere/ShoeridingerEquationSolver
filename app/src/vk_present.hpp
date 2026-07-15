@@ -212,10 +212,20 @@ public:
         si.signalSemaphoreCount = 1;
         si.pSignalSemaphores = &render_done_[idx];
         vkResetFences(ctx_->device, 1, &fence_);
-        if (vkQueueSubmit(ctx_->queue, 1, &si, fence_) != VK_SUCCESS) {
+        const VkResult sr = vkQueueSubmit(ctx_->queue, 1, &si, fence_);
+        if (sr != VK_SUCCESS) {
+            std::fprintf(stderr, "vk: present-blit submit %s\n", ses_vk::vk_result_str(sr));
+            ctx_->device_lost = true;
             return false;
         }
-        vkWaitForFences(ctx_->device, 1, &fence_, VK_TRUE, UINT64_MAX);
+        const VkResult wr = vkWaitForFences(ctx_->device, 1, &fence_, VK_TRUE,
+                                            10ull * 1000 * 1000 * 1000);
+        if (wr != VK_SUCCESS) {
+            std::fprintf(stderr, "vk: present-blit fence wait %s\n",
+                         ses_vk::vk_result_str(wr));
+            ctx_->device_lost = true;
+            return false;
+        }
 
         VkPresentInfoKHR pi{};
         pi.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -227,6 +237,9 @@ public:
         const VkResult r = vkQueuePresentKHR(ctx_->queue, &pi);
         if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) {
             resize_requested_ = true;
+        } else if (r != VK_SUCCESS) {
+            std::fprintf(stderr, "vk: queue present %s\n", ses_vk::vk_result_str(r));
+            ctx_->device_lost = true;
         }
         return true;
     }

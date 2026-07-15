@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <initializer_list>
+#include <source_location>
 #include <vector>
 
 namespace ses_vk {
@@ -303,20 +304,35 @@ public:
 
     VkCommandBuffer cb() const { return cb_; }
 
-    bool submit_and_wait(DeviceContext& ctx) {
+    // The default source_location captures the CALLING engine method, so a
+    // failure names exactly which op (and file:line) hung -- no per-call labels.
+    bool submit_and_wait(
+        DeviceContext& ctx,
+        std::source_location loc = std::source_location::current()) {
+        if (ctx.device_lost) {
+            return false;  // device already lost: don't submit to it again
+        }
         vkEndCommandBuffer(cb_);
         vkResetFences(ctx.device, 1, &fence_);
         VkSubmitInfo si{};
         si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         si.commandBufferCount = 1;
         si.pCommandBuffers = &cb_;
-        if (vkQueueSubmit(queue_, 1, &si, fence_) != VK_SUCCESS) {
-            std::fprintf(stderr, "vk: queue submit failed\n");
+        const VkResult sr = vkQueueSubmit(queue_, 1, &si, fence_);
+        if (sr != VK_SUCCESS) {
+            std::fprintf(stderr, "vk: queue submit %s in %s (%s:%u)\n",
+                         vk_result_str(sr), loc.function_name(), loc.file_name(),
+                         static_cast<unsigned>(loc.line()));
+            ctx.device_lost = true;
             return false;
         }
-        if (vkWaitForFences(ctx.device, 1, &fence_, VK_TRUE,
-                            10ull * 1000 * 1000 * 1000) != VK_SUCCESS) {
-            std::fprintf(stderr, "vk: fence wait failed/timed out\n");
+        const VkResult wr = vkWaitForFences(ctx.device, 1, &fence_, VK_TRUE,
+                                            10ull * 1000 * 1000 * 1000);
+        if (wr != VK_SUCCESS) {
+            std::fprintf(stderr, "vk: fence wait %s in %s (%s:%u)\n",
+                         vk_result_str(wr), loc.function_name(), loc.file_name(),
+                         static_cast<unsigned>(loc.line()));
+            ctx.device_lost = true;
             return false;
         }
         return true;

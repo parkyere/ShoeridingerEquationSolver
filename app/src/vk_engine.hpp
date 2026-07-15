@@ -633,6 +633,10 @@ public:
     // blocking step() if the dedicated cb cannot be created.
     void step_async(int nsteps, bool absorb = false, bool bridge = false) {
         wait_async();
+        if (ctx_->device_lost) {
+            async_bridged_ = false;
+            return;  // device lost: skip (the director drops to the CPU path)
+        }
         if (!ensure_async()) {
             step(nsteps, absorb, bridge);
             return;
@@ -649,9 +653,12 @@ public:
         si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         si.commandBufferCount = 1;
         si.pCommandBuffers = &async_cb_;
-        if (vkQueueSubmit(ctx_->compute_queue, 1, &si, async_fence_) !=
-            VK_SUCCESS) {
-            std::fprintf(stderr, "ses_vk::Engine: async submit failed\n");
+        const VkResult asr = vkQueueSubmit(ctx_->compute_queue, 1, &si,
+                                           async_fence_);
+        if (asr != VK_SUCCESS) {
+            std::fprintf(stderr, "ses_vk::Engine: async step-batch submit %s\n",
+                         vk_result_str(asr));
+            ctx_->device_lost = true;
             async_bridged_ = false;
             return;
         }
@@ -664,8 +671,14 @@ public:
         if (!async_pending_) {
             return;
         }
-        vkWaitForFences(ctx_->device, 1, &async_fence_, VK_TRUE,
-                        10ull * 1000 * 1000 * 1000);
+        const VkResult awr = vkWaitForFences(ctx_->device, 1, &async_fence_,
+                                             VK_TRUE, 10ull * 1000 * 1000 * 1000);
+        if (awr != VK_SUCCESS) {
+            std::fprintf(stderr,
+                         "ses_vk::Engine: async step-batch fence wait %s\n",
+                         vk_result_str(awr));
+            ctx_->device_lost = true;  // async batch hung/faulted: device is gone
+        }
         async_pending_ = false;
         if (async_bridged_) {
             flip_volume();
@@ -2138,6 +2151,10 @@ public:
         out.assign(p, p + 2 * cells_);
         return true;
     }
+
+    // True once a submit/fence has failed (VK_ERROR_DEVICE_LOST or a 10 s hang):
+    // the GPU path is dead; the director should fall back to the CPU.
+    bool device_lost() const { return ctx_->device_lost; }
 
     void destroy() {
         if (ctx_ == nullptr) {

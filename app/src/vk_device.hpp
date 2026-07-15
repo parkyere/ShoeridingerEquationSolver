@@ -70,6 +70,21 @@ struct Buffer {
     void* mapped = nullptr;  // non-null only for host-visible buffers
 };
 
+// Decode a VkResult to its name for diagnostics (submit/fence-wait outcomes).
+inline const char* vk_result_str(VkResult r) {
+    switch (r) {
+        case VK_SUCCESS: return "VK_SUCCESS";
+        case VK_NOT_READY: return "VK_NOT_READY";
+        case VK_TIMEOUT: return "VK_TIMEOUT";
+        case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
+        case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+        case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
+        case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
+        case VK_ERROR_OUT_OF_POOL_MEMORY: return "VK_ERROR_OUT_OF_POOL_MEMORY";
+        default: return "VK_ERROR_(other)";
+    }
+}
+
 struct DeviceContext {
     VkInstance instance = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
@@ -87,6 +102,10 @@ struct DeviceContext {
     VkQueue compute_queue = VK_NULL_HANDLE;
     VmaAllocator allocator = VK_NULL_HANDLE;
     bool validation_active = false;
+    // Set true the first time ANY engine submit or fence fails (VK_ERROR_DEVICE_LOST
+    // or a 10 s hang). The device is then unusable: further submits are skipped
+    // (no spam, no repeated 10 s stalls) and the director drops to the CPU path.
+    bool device_lost = false;
     // Item 0a: forward-safe feature negotiation results. create_device probes
     // phys_dev and enables ONLY the supported subset; downstream fast paths
     // gate on these (never assume Pascal limits -- newer NVIDIA must run this
@@ -191,7 +210,12 @@ struct DeviceContext {
         VkApplicationInfo ai{};
         ai.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
         ai.pApplicationName = "sesolver";
-        ai.apiVersion = VK_API_VERSION_1_4;
+        // Declare the MINIMUM version we use: every feature enabled below is
+        // Vulkan 1.3 core (dynamic rendering, synchronization2, timeline
+        // semaphores, shaderDemoteToHelperInvocation). Requesting 1.4 needlessly
+        // refused instance creation on Vulkan-1.3-only drivers (e.g. some NVIDIA
+        // Linux builds) -- VMA still uses the device's real apiVersion (below).
+        ai.apiVersion = VK_API_VERSION_1_3;
         VkInstanceCreateInfo ici{};
         ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
         ici.pApplicationInfo = &ai;
