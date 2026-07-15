@@ -14,7 +14,10 @@ target_include_directories(sesolver_core PUBLIC include)
 # header may `import` it while still being #included elsewhere. PUBLIC so the
 # app/test targets that link the core can import across the target boundary.
 target_sources(sesolver_core
-    PUBLIC FILE_SET CXX_MODULES FILES src/marching_cubes_tables.ixx)
+    PUBLIC FILE_SET CXX_MODULES FILES
+        src/marching_cubes_tables.ixx
+        src/colormap.ixx
+        src/vram_budget.ixx)
 target_compile_features(sesolver_core PUBLIC cxx_std_20)
 target_link_libraries(sesolver_core PRIVATE ses_warnings)
 target_link_libraries(sesolver_core PUBLIC ses_arch)
