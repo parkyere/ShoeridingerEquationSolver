@@ -386,8 +386,17 @@ private:
         // DescriptorPool left null lets the backend own a correctly typed pool
         // (and destroy it in ImGui_ImplVulkan_Shutdown).
         info.DescriptorPoolSize = 16;
-        info.PipelineInfoMain.RenderPass = presenter_.render_pass();
+        // Dynamic rendering (the present pass dropped its VkRenderPass): the UI
+        // pipeline declares the swapchain colour FORMAT. ImGui 1.92 deep-copies
+        // the format array during Init, so a local is safe.
+        info.UseDynamicRendering = true;
         info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+        const VkFormat ui_color_fmt = presenter_.color_format();
+        info.PipelineInfoMain.PipelineRenderingCreateInfo.sType =
+            VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+        info.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
+        info.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats =
+            &ui_color_fmt;
         info.MinImageCount = presenter_.min_image_count();
         info.ImageCount = std::max(presenter_.image_count(),
                                    presenter_.min_image_count());

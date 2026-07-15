@@ -200,16 +200,30 @@ void register_verification_arcs(ShellT* shell) {
     }
 
     // Cascade arc: excite 3d_z2 and require >= 2 photons -- 3d cannot reach
-    // 1s directly (dl = 2), so two photons prove 3d -> 2p -> 1s fired.
-    // 3d's display lifetime is ~80 au (10x the 2p, as in real hydrogen), so
-    // a 1x 90 s window is only ~2.8 lifetimes -- a ~6% Poisson false-fail.
-    // Time-scale 4x packs ~11 lifetimes into the same wall window (~2e-5).
+    // 1s directly (dl = 2), so two photons prove 3d -> 2p -> 1s fired. 3d's
+    // display lifetime is ~80 au (10x the 2p, as in real hydrogen). The sim
+    // time budgeted = wall window x time_scale, but throughput is GPU- and
+    // policy-dependent (a wall-only window silently lost its margin when the
+    // step throughput dropped), so this EARLY-EXITS the moment 2 photons land
+    // (the count only grows) and the 120 s window is just the worst-case FAIL
+    // bound -- paid on a genuine miss, not every run. time_scale is maxed (16,
+    // the clamp ceiling) for the widest lifetime margin on the slowest GPU.
     if (shell->has_arg("--selftest-cascade")) {
         run_when_manifold_ready(shell, [shell] {
             const long long baseline = shell->hy()->photon_count();
             shell->hy()->excite_n3();  // first in the cycle: 3d_z2
-            shell->set_time_scale(4);
-            shell->sched().after(90000, [shell, baseline] {
+            shell->set_time_scale(16);
+            auto probe = std::make_shared<int>(-1);
+            *probe = shell->sched().every(1000, [shell, baseline, probe] {
+                if (shell->hy()->photon_count() - baseline >= 2) {
+                    shell->sched().cancel(*probe);
+                    std::fprintf(stderr, "selftest-cascade: photons = %lld  [PASS]\n",
+                                 shell->hy()->photon_count() - baseline);
+                    shell->request_exit(0);
+                }
+            });
+            shell->sched().after(120000, [shell, baseline, probe] {
+                shell->sched().cancel(*probe);
                 const long long fresh = shell->hy()->photon_count() - baseline;
                 std::fprintf(stderr, "selftest-cascade: photons = %lld  [%s]\n",
                              fresh, fresh >= 2 ? "PASS" : "FAIL");

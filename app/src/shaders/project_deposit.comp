@@ -1,11 +1,16 @@
 #version 450
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_KHR_shader_subgroup_basic : require
 
 // Orbital-free angular projection deposit. One workgroup per radial bin
 // gathers that bin's cells (primary + secondary interpolation partners, from
 // the counting-sort CSR index) and accumulates Y_lm-weighted psi into 36
-// components (l = 0..5), tree-reduced and written to g_lm[c*nr + bin].
-// No atomics -> deterministic. std140 UBO (binding 1) for the grid + radial
-// geometry.
+// components (l = 0..5), then folds each component with a subgroupAdd + a
+// fixed-order combine of the per-subgroup partials, written to g_lm[c*nr+bin].
+// No atomics; the subgroup fold is order-agnostic within a subgroup but the
+// per-subgroup partials sum in a fixed order -> deterministic (P3): the
+// projection oracle compares within tolerance, not bit-exact. Requires
+// subgroup arithmetic (asserted by vkcheck check_device_features).
 layout(local_size_x = 128) in;
 
 layout(std430, binding = 0) readonly buffer PsiBuf { vec2 psi[]; };
@@ -95,6 +100,11 @@ float real_Ylm(int l, int m, float x, float y, float z) {
 // identical to the previous kernel's.
 shared float acc_re[36 * 128];
 shared float acc_im[36 * 128];
+// Per-subgroup partials for the cross-subgroup combine: 128 threads / the
+// smallest supported subgroup (4) => at most 32 subgroups (NVIDIA size-32
+// uses 4). One row of gl_NumSubgroups entries per component.
+shared float sg_re[36 * 32];
+shared float sg_im[36 * 32];
 
 void main() {
     int bin = int(gl_WorkGroupID.x);
@@ -150,21 +160,30 @@ void main() {
         }
     }
     barrier();
-    for (uint half_len = 64u; half_len > 0u; half_len >>= 1u) {
-        if (tid < half_len) {
-            for (int c = 0; c < 36; ++c) {
-                acc_re[uint(c) * 128u + tid] +=
-                    acc_re[uint(c) * 128u + tid + half_len];
-                acc_im[uint(c) * 128u + tid] +=
-                    acc_im[uint(c) * 128u + tid + half_len];
-            }
+    // Each component: reduce the 128 partials with one subgroupAdd per
+    // subgroup (the subgroup leader banks its sum), then thread 0 folds the
+    // per-subgroup sums in a fixed order. All 128 lanes are active here (the
+    // bin guard returned uniformly), so the subgroup ops stay convergent.
+    const uint numSg = gl_NumSubgroups;
+    const uint sgId = gl_SubgroupID;
+    for (int c = 0; c < 36; ++c) {
+        float vr = subgroupAdd(acc_re[uint(c) * 128u + tid]);
+        float vi = subgroupAdd(acc_im[uint(c) * 128u + tid]);
+        if (subgroupElect()) {
+            sg_re[uint(c) * numSg + sgId] = vr;
+            sg_im[uint(c) * numSg + sgId] = vi;
         }
-        barrier();
     }
+    barrier();
     if (tid == 0u) {
         for (int c = 0; c < 36; ++c) {
-            g_lm[uint(c) * uint(nr) + uint(bin)] =
-                vec2(acc_re[uint(c) * 128u], acc_im[uint(c) * 128u]);
+            float sr = 0.0;
+            float si = 0.0;
+            for (uint s = 0u; s < numSg; ++s) {
+                sr += sg_re[uint(c) * numSg + s];
+                si += sg_im[uint(c) * numSg + s];
+            }
+            g_lm[uint(c) * uint(nr) + uint(bin)] = vec2(sr, si);
         }
     }
 }

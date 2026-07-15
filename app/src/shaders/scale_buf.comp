@@ -1,0 +1,21 @@
+#version 450
+
+// P4: psi <- renorm[0] * psi. Identical to scale.comp except the factor is
+// GPU-computed by norm_finalize in the same submit (fused relax renorm) and
+// read from an SSBO, not a host-set UBO -- so the whole renorm records into
+// one command buffer.
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) buffer DataBuf { vec2 data[]; };
+layout(std430, binding = 2) readonly buffer RenormBuf { float renorm[]; };
+
+layout(std140, binding = 1) uniform Params {
+    uint n;
+};
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i < n) {
+        data[i] = renorm[0] * data[i];
+    }
+}

@@ -112,12 +112,12 @@ STDOUT -- grep both streams.
 
 ALL FIXED (Batch B, 2026-07-14) -- see the "Already fixed" section above.
 
-## Remaining — latent resource / concurrency (1 low)
+## Remaining — latent resource / concurrency
 
-- **Compute `Kernel` keeps its `VkShaderModule` for the object lifetime**
-  (`app/src/vk_compute.hpp`) — the graphics pipelines free theirs right after
-  pipeline creation. Retained memory (~29 small modules for the session), not a
-  leak. Minor consistency fix: free `module_` at the end of `Kernel::create`.
+ALL FIXED. The compute `Kernel` now frees its `VkShaderModule` at the end of
+`Kernel::create` (`app/src/vk_compute.hpp`) — the module is consumed by pipeline
+creation, matching the graphics pipelines; `destroy()` still guards it for the
+partial-construction path. (vkcheck all-PASS confirms every kernel still builds.)
 
 ## Verified CLEAN (do not re-investigate)
 
@@ -127,51 +127,65 @@ are ZERO `std::mutex`/`std::thread` anywhere; `g_validation_errors` is a correct
 `std::atomic`; the test `static const Relaxed` caches are pure memoization, not
 order-coupled.
 
-## Test-robustness observation (new, 2026-07-14)
+## Test-robustness observation — FIXED (2026-07-15)
 
-- **`--selftest-cascade` is timing-marginal** — its 90 s wall window at
-  time-scale 4x packs only ~2-3 display lifetimes of the 3d state at the
-  CURRENT au/s (the 1-step-per-render policy lowered throughput), so it has a
-  real Poisson false-fail probability (observed: one `photons = 0` run, then
-  `photons = 2` on the immediate re-run). Not a correctness bug; the window /
-  time-scale constant wants raising to restore the intended ~11-lifetime
-  margin. (decay/rabi/manifold, which share the same photon-count path, are
-  comfortably above threshold.)
+- **`--selftest-cascade` timing-marginality** is fixed. The wall-only window was
+  GPU-throughput-dependent (a wall x time_scale budget silently lost its margin
+  when step throughput dropped). The arc now EARLY-EXITS the moment 2 photons
+  land (the count only grows) with `time_scale` maxed at 16 and a 120 s window
+  as the worst-case FAIL bound only. Robust across GPUs AND faster: success now
+  exits in ~19 s instead of the fixed 90 s. (`app/src/selftest_arcs.hpp`.)
 
-## Forward work -- render modernization + perf (continuity)
+## Forward work -- render modernization + perf -- DONE (2026-07-15, office)
 
-Standing planned work from the Vulkan 1.4 modernization + Pascal-perf arc (NOT
-code-review findings). **New-request status (2026-07-15):** the only new request
-this session was the validation-clean sweep above -- DONE. Nothing else was newly
-requested-but-undone; the items below are pre-existing planned work, recorded
-here so the next session can pick up without this machine's Claude memory.
+The Vulkan 1.4 modernization + perf arc is now complete. All verified on the
+RTX 4060 (ctest 264/264 + vkcheck all-PASS + windowed validation 0-errors).
 
-- **Present-path dynamic rendering (LAST render-modernization item).** The
-  offscreen scene pass is already dynamic (65b216f), but `app/src/vk_present.hpp`
-  still builds a `VkRenderPass` for the swapchain clear+blit pass (attachment
-  ref ~line 252; `presenter_.render_pass()` is handed to ImGui at
-  `main.cpp` `info.PipelineInfoMain.RenderPass`). Convert to
-  `vkCmdBeginRendering`/`VkRenderingInfo`, and switch ImGui to
-  `InitInfo.UseDynamicRendering = true` + `PipelineRenderingCreateInfo` (drop the
-  render pass). Medium-risk RENDER change, but now SAFE: the windowed path has a
-  live validation oracle again -- verify with the windowed validation run above.
-  `dynamicRendering` is already enabled in the feature chain.
-- **Perf track (fp32-EXACT; the real-time STEP is already at its fp32 ceiling --
-  three step-perf hypotheses were measured flat/worse and reverted, so these are
-  OTHER-workload levers).** Gated on P0:
-  - **P0** -- instrument the relax reductions in `profile_step` (prereq for
-    P3/P4; the app already has GPU timestamp queries from Item 0b / 5c97d3f).
-  - **P3** -- `subgroupAdd` reduce scoped to `project_deposit` ONLY (MED-LOW;
-    breaks its bit-exact golden but stays deterministic + in-tolerance; harness
-    with `requiredSubgroupSize=32`, width-agnostic per the forward-compat rule).
-  - **P4** -- relax GPU-finish fusion (2 submits -> 1; a deterministic
-    fixed-order reduction tree, NOT `subgroupAdd`; keep the double-precision
-    energy diagnostic async).
-  - **BANNED (do not attempt):** `VK_EXT_shader_atomic_float`, `float_controls2`
+- **Present-path dynamic rendering (LAST render-modernization item) -- DONE.**
+  `app/src/vk_present.hpp` dropped its `VkRenderPass` + framebuffers: the record
+  path now transitions the acquired swapchain image UNDEFINED->COLOR_ATTACHMENT
+  (image_layout_barrier), `vkCmdBeginRendering` with a `VkRenderingAttachmentInfo`
+  (CLEAR/STORE), then ->PRESENT_SRC; the blit pipeline declares the swapchain
+  format via `VkPipelineRenderingCreateInfo`. ImGui switched to
+  `InitInfo.UseDynamicRendering=true` + `PipelineInfoMain.PipelineRenderingCreateInfo`
+  (`presenter_.color_format()`; ImGui 1.92 deep-copies the format array). Verified
+  validation-clean windowed (present + ImGui) AND offscreen (`--dump-frame`).
+- **Perf track (fp32-EXACT) -- DONE, with the honest measurement.** P0 first
+  (measure): the relax NORM reduction is only ~5% of the relax step (stepBody
+  ~11 ms vs normReduce ~0.57 ms at 256^3); the FFT-bound step body dominates.
+  - **P0** -- `Engine::profile_relax()` (timestamped stepBody vs normReduce),
+    reported by `vkcheck` `timestamp profile 256^3 relax`. KEPT (the tool).
+  - **P3** -- `project_deposit.comp` tree-reduce -> `subgroupAdd` + fixed-order
+    per-subgroup combine. Correct + deterministic + in-tolerance (projection
+    oracle `max rel = 3.87e-08, deterministic = 1`; requires subgroup
+    arithmetic, width-agnostic via gl_NumSubgroups/gl_SubgroupID). KEPT.
+  - **P4** -- fused relax renorm (norm_finalize.comp + scale_buf.comp: GPU
+    computes inv and rescales in the SAME submit; double-precision energy stays
+    async). Correct (relax oracle 8.1e-08, deterministic, reinit-clean). A clean
+    same-process A/B measured **+0.2-0.9% (consistently positive but marginal)** --
+    NOT the flat/worse pattern that gets reverted, so KEPT; the win grows on
+    faster GPUs where per-step submit overhead is a larger fraction. Optional
+    (blobs absent -> 2-submit fallback preserved).
+  - **BANNED (unchanged):** `VK_EXT_shader_atomic_float`, `float_controls2`
     relaxed modes, `subgroupAdd` on the bandwidth-bound STEP reductions, any
-    `VK_NV_*` (forward-unsafe), larger workgroups. The FFT pair (~70% of the
-    step) needs fp16, which is HELD by the precision constraint -- NO fp16 in the
-    propagation without an explicit user opt-in.
+    `VK_NV_*`, larger workgroups; NO fp16 in propagation without explicit opt-in.
+
+## Validation layers on the office machine (static-triplet gotcha, 2026-07-15)
+
+`vulkan-validationlayers` is an opt-in vcpkg feature (`VCPKG_MANIFEST_FEATURES=
+validation`, or `-DVCPKG_MANIFEST_FEATURES=validation` on reconfigure -- the env
+var alone is ignored once the cache exists). BUT on the **x64-windows-static**
+triplet vcpkg BUILDS the layer yet does NOT copy the runtime DLL to
+`vcpkg_installed/bin` (static triplet suppresses DLLs). The built layer lives in
+`external/vcpkg/buildtrees/vulkan-validationlayers/x64-windows-static-rel/layers/`
+(DLL + `VkLayer_khronos_validation.json`). Point `VK_ADD_LAYER_PATH` THERE:
+```
+SES_VK_VALIDATION=1
+VK_ADD_LAYER_PATH=<repo>/external/vcpkg/buildtrees/vulkan-validationlayers/x64-windows-static-rel/layers
+VK_LOADER_LAYERS_ENABLE=*validation*
+```
+Confirmed working: `vkcheck` prints `[validation ON]` + all-PASS. Windowed verify
+= launch `sesolver_app`, ~9 s, `Stop-Process -Force`, grep stderr for `VUID`/error.
 
 ## See also
 

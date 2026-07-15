@@ -52,7 +52,9 @@
 #include <mc_emit_spv.h>
 #include <conj_scale_spv.h>
 #include <scale_spv.h>
+#include <scale_buf_spv.h>
 #include <norm_peak_spv.h>
+#include <norm_finalize_spv.h>
 #include <inner_product_spv.h>
 #include <dipole_kick_spv.h>
 #include <mean_force_spv.h>
@@ -1145,6 +1147,10 @@ ses_vk::EngineKernels engine_blobs_8() {
     b.norm_size = k_norm_peak_spv_size;
     b.scale = k_scale_spv;
     b.scale_size = k_scale_spv_size;
+    b.norm_finalize = k_norm_finalize_spv;
+    b.norm_finalize_size = k_norm_finalize_spv_size;
+    b.scale_buf = k_scale_buf_spv;
+    b.scale_buf_size = k_scale_buf_spv_size;
     b.kick = k_dipole_kick_spv;
     b.kick_size = k_dipole_kick_spv_size;
     b.shear = k_shear_spv;
@@ -2553,9 +2559,9 @@ bool check_timestamp_profile(ses_vk::DeviceContext& ctx) {
             best = p;
         }
     }
-    const bool pass = best.valid && best.fwd_fft_ms > 0.0 &&
-                      best.inv_fft_ms > 0.0 && best.kin_mul_ms >= 0.0 &&
-                      best.kick_ms >= 0.0 && best.total_ms > 0.0;
+    const bool step_pass = best.valid && best.fwd_fft_ms > 0.0 &&
+                           best.inv_fft_ms > 0.0 && best.kin_mul_ms >= 0.0 &&
+                           best.kick_ms >= 0.0 && best.total_ms > 0.0;
     const double fft = best.fwd_fft_ms + best.inv_fft_ms;
     std::printf(
         "timestamp profile 256^3 step (raw Vulkan): kick %.3f + fwdFFT %.3f + "
@@ -2563,8 +2569,36 @@ bool check_timestamp_profile(ses_vk::DeviceContext& ctx) {
         best.kick_ms, best.fwd_fft_ms, best.kin_mul_ms, best.inv_fft_ms,
         best.total_ms,
         best.total_ms > 0.0 ? 100.0 * fft / best.total_ms : 0.0,
-        pass ? "PASS" : "FAIL");
-    return pass;
+        step_pass ? "PASS" : "FAIL");
+
+    // P0: relax breakdown -- the imaginary step body vs the per-step norm+peak
+    // reduction (the P3/P4 target). Reuses this 256^3 engine with relax tables.
+    const double dtau = 0.02;
+    const ses::ImaginaryTimePropagator3D relaxer{g, v, dtau};
+    bool relax_pass = false;
+    if (engine.set_relax_tables(relaxer.half_potential_weight(),
+                                relaxer.kinetic_weight(), dtau,
+                                g.cell_volume())) {
+        ses_vk::Engine::RelaxProfile rbest{};
+        for (int i = 0; i < 5; ++i) {
+            const ses_vk::Engine::RelaxProfile rp = engine.profile_relax();
+            if (rp.valid && (!rbest.valid || rp.total_ms < rbest.total_ms)) {
+                rbest = rp;
+            }
+        }
+        relax_pass = rbest.valid && rbest.step_body_ms > 0.0 &&
+                     rbest.norm_reduce_ms > 0.0 && rbest.total_ms > 0.0;
+        std::printf(
+            "timestamp profile 256^3 relax (raw Vulkan): stepBody %.3f + "
+            "normReduce %.3f = %.3f ms (reduction %.0f%%)  [%s]\n",
+            rbest.step_body_ms, rbest.norm_reduce_ms, rbest.total_ms,
+            rbest.total_ms > 0.0 ? 100.0 * rbest.norm_reduce_ms / rbest.total_ms
+                                 : 0.0,
+            relax_pass ? "PASS" : "FAIL");
+    } else {
+        std::printf("timestamp profile 256^3 relax: set_relax_tables FAIL\n");
+    }
+    return step_pass && relax_pass;
 }
 
 }  // namespace

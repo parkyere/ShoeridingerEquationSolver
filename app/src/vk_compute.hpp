@@ -89,6 +89,12 @@ public:
             std::fprintf(stderr, "vk: compute pipeline create failed\n");
             return false;
         }
+        // The module is consumed by pipeline creation and never referenced
+        // again (as the graphics pipelines already free theirs): drop it now
+        // instead of holding ~29 dead modules for the session. destroy() still
+        // guards it for the partial-construction (early-return) path.
+        vkDestroyShaderModule(ctx.device, module_, nullptr);
+        module_ = VK_NULL_HANDLE;
         return true;
     }
 

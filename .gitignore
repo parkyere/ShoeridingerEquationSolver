@@ -48,6 +48,9 @@ ui_*.h
 *.user
 *.user.*
 
+# Runtime artifacts (--dump-frame / --dump-surface render captures)
+/frame_dump*.bmp
+
 # OS cruft
 Thumbs.db
 .DS_Store

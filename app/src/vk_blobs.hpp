@@ -21,7 +21,9 @@
 #include <mc_emit_spv.h>
 #include <conj_scale_spv.h>
 #include <norm_peak_spv.h>
+#include <norm_finalize_spv.h>
 #include <scale_spv.h>
+#include <scale_buf_spv.h>
 #include <dipole_kick_spv.h>
 #include <shear_spv.h>
 #include <inner_product_spv.h>
@@ -89,6 +91,10 @@ inline ses_vk::EngineKernels app_engine_blobs(int n) {
     b.norm_size = k_norm_peak_spv_size;
     b.scale = k_scale_spv;
     b.scale_size = k_scale_spv_size;
+    b.norm_finalize = k_norm_finalize_spv;
+    b.norm_finalize_size = k_norm_finalize_spv_size;
+    b.scale_buf = k_scale_buf_spv;
+    b.scale_buf_size = k_scale_buf_spv_size;
     b.kick = k_dipole_kick_spv;
     b.kick_size = k_dipole_kick_spv_size;
     b.shear = k_shear_spv;

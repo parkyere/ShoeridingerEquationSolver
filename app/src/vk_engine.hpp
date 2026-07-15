@@ -80,6 +80,10 @@ struct EngineKernels {
     std::size_t norm_size = 0;
     const unsigned char* scale = nullptr;  // scale.comp
     std::size_t scale_size = 0;
+    const unsigned char* norm_finalize = nullptr;  // norm_finalize.comp (P4;
+    std::size_t norm_finalize_size = 0;             // optional -> 2-submit relax)
+    const unsigned char* scale_buf = nullptr;       // scale_buf.comp (P4)
+    std::size_t scale_buf_size = 0;
     const unsigned char* kick = nullptr;   // dipole_kick.comp
     std::size_t kick_size = 0;
     const unsigned char* shear = nullptr;  // shear.comp
@@ -291,6 +295,7 @@ public:
                                           sizeof(float),
                                       &kz2_buf_) ||
             !ctx.create_device_buffer(2 * kGroups * sizeof(float), &partials_) ||
+            !ctx.create_device_buffer(4 * sizeof(float), &renorm_) ||  // P4 inv
             !ctx.create_host_buffer(field_bytes_,
                                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                                         VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -320,6 +325,23 @@ public:
                 return false;
             }
             mcwf_kernel_ok_ = true;
+        }
+        // Optional P4 fused relax renorm: both blobs present => the GPU
+        // finishes the norm (partials -> inv) and rescales in the same submit,
+        // so relax_step() needs no host round-trip. Absent => 2-submit path.
+        if (blobs.norm_finalize != nullptr && blobs.scale_buf != nullptr) {
+            if (!finalize_.create(ctx, blobs.norm_finalize,
+                                  blobs.norm_finalize_size,
+                                  {{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+                                   {1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER},
+                                   {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}) ||
+                !scale_buf_.create(ctx, blobs.scale_buf, blobs.scale_buf_size,
+                                   {{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+                                    {1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER},
+                                    {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}})) {
+                return false;
+            }
+            fused_relax_ok_ = true;
         }
         // Optional GPU marching cubes (Surface-mode isosurface extraction);
         // buffers are transient (mc_prepare/release_mc), kernels bake here.
@@ -373,6 +395,11 @@ public:
         // axis) used by the shear path.
         const ConjParams conjA{static_cast<std::uint32_t>(cells_),
                                1.0f / static_cast<float>(n_), 0.0f, 0.0f};
+        // P4 finalize params: reuse ConjParams as {ngroups, cell_volume} so the
+        // GPU can turn sum(partials)*dV into inv = 1/sqrt(norm_sq).
+        const ConjParams renormp{kGroups,
+                                 static_cast<float>(grid.cell_volume()), 0.0f,
+                                 0.0f};
         const ShearParams shear_zero{};
         if (!write_ubo(&halfp_ubo_, &halfp, sizeof(halfp)) ||
             !write_ubo(&fullp_ubo_, &fullp, sizeof(fullp)) ||
@@ -385,6 +412,7 @@ public:
             !write_ubo(&fft_ubo_[2], &fftp[2], sizeof(FftParams)) ||
             !write_ubo(&scale_ubo_, &conj1, sizeof(conj1)) ||
             !write_ubo(&conjA_ubo_, &conjA, sizeof(conjA)) ||
+            !write_ubo(&renorm_ubo_, &renormp, sizeof(renormp)) ||
             !write_ubo(&shear_ubo_[0], &shear_zero, sizeof(shear_zero)) ||
             !write_ubo(&shear_ubo_[1], &shear_zero, sizeof(shear_zero))) {
             return false;
@@ -473,6 +501,29 @@ public:
             arena_.write_buffer(*ctx_, norm_set_, 2,
                                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                 partials_.buf);
+        }
+        if (fused_relax_ok_) {  // P4: partials -> inv -> psi *= inv, one submit
+            const auto storage = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            const auto uniform = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            finalize_set_ = arena_.allocate(*ctx_, finalize_.set_layout());
+            if (finalize_set_ != VK_NULL_HANDLE) {
+                arena_.write_buffer(*ctx_, finalize_set_, 0, storage,
+                                    partials_.buf);
+                arena_.write_buffer(*ctx_, finalize_set_, 1, uniform,
+                                    renorm_ubo_.buf, sizeof(ConjParams));
+                arena_.write_buffer(*ctx_, finalize_set_, 2, storage,
+                                    renorm_.buf);
+            }
+            scale_buf_set_ = arena_.allocate(*ctx_, scale_buf_.set_layout());
+            if (scale_buf_set_ != VK_NULL_HANDLE) {
+                arena_.write_buffer(*ctx_, scale_buf_set_, 0, storage, psi_.buf);
+                arena_.write_buffer(*ctx_, scale_buf_set_, 1, uniform,
+                                    scale_ubo_.buf, sizeof(ConjParams));
+                arena_.write_buffer(*ctx_, scale_buf_set_, 2, storage,
+                                    renorm_.buf);
+            }
+            fused_relax_ok_ =
+                finalize_set_ != VK_NULL_HANDLE && scale_buf_set_ != VK_NULL_HANDLE;
         }
         synth_any_set_ = arena_.allocate(*ctx_, synth_.set_layout());
         norm_any_set_ = arena_.allocate(*ctx_, norm_.set_layout());
@@ -682,6 +733,63 @@ public:
         p.total_ms = ms(ts[0], ts[4]);
         p.valid = true;
 #endif  // SES_HAVE_VKFFT
+        return p;
+    }
+
+    // P0: per-stage GPU timing of ONE imaginary-time relax iteration -- the
+    // Strang step body vs the norm+peak reduction that follows it every step.
+    // Separates the reduction (the P3/P4 target) from the FFT-bound body so
+    // those levers have a measured baseline, not a model. Needs relax tables;
+    // records its own one-shot buffer, so relax_step() stays byte-identical.
+    struct RelaxProfile {
+        double step_body_ms = 0.0;
+        double norm_reduce_ms = 0.0;
+        double total_ms = 0.0;
+        bool valid = false;
+    };
+    RelaxProfile profile_relax() {
+        RelaxProfile p{};
+        if (!relax_tables_ready() || !ensure_profile_pool()) {
+            return p;
+        }
+        vkResetQueryPool(ctx_->device, profile_pool_, 0, kProfileStamps);
+        OneShot shot;
+        if (!shot.begin_compute(*ctx_)) {
+            return p;
+        }
+        VkCommandBuffer cb = shot.cb();
+        Recorder r{cb, true};
+        vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                             profile_pool_, 0);
+        run_step_body(r, mul_, relax_half_set_, mul_, relax_kin_set_);
+        vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+                             profile_pool_, 1);
+        barrier_compute_to_compute(cb);  // step body writes psi; reduction reads
+        norm_.bind(cb, norm_set_);
+        vkCmdDispatch(cb, kGroups, 1, 1);
+        vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+                             profile_pool_, 2);
+        shot.submit_and_wait(*ctx_);
+        shot.destroy(*ctx_);
+
+        std::uint64_t ts[3] = {};
+        if (vkGetQueryPoolResults(ctx_->device, profile_pool_, 0, 3, sizeof(ts),
+                                  ts, sizeof(std::uint64_t),
+                                  VK_QUERY_RESULT_64_BIT |
+                                      VK_QUERY_RESULT_WAIT_BIT) != VK_SUCCESS) {
+            return p;
+        }
+        const double period = static_cast<double>(ctx_->timestamp_period);
+        const std::uint32_t vb = ctx_->timestamp_valid_bits;
+        const std::uint64_t mask =
+            vb >= 64 ? ~0ull : ((std::uint64_t{1} << vb) - 1ull);
+        auto ms = [&](std::uint64_t a, std::uint64_t b) {
+            return static_cast<double>((b - a) & mask) * period * 1e-6;
+        };
+        p.step_body_ms = ms(ts[0], ts[1]);
+        p.norm_reduce_ms = ms(ts[1], ts[2]);
+        p.total_ms = ms(ts[0], ts[2]);
+        p.valid = true;
         return p;
     }
 
@@ -916,10 +1024,22 @@ public:
             barrier_compute_to_compute(shot.cb());
             norm_.bind(shot.cb(), norm_set_);
             vkCmdDispatch(shot.cb(), kGroups, 1, 1);
+            if (fused_relax_ok_) {
+                // P4: the GPU finishes the renorm (partials -> inv) and
+                // rescales in this same submit; the host reads the partials
+                // afterward only for the double-precision energy/peak stat.
+                barrier_compute_to_compute(shot.cb());
+                finalize_.bind(shot.cb(), finalize_set_);
+                vkCmdDispatch(shot.cb(), 1, 1, 1);
+                barrier_compute_to_compute(shot.cb());
+                scale_buf_.bind(shot.cb(), scale_buf_set_);
+                vkCmdDispatch(shot.cb(), mul_groups_, 1, 1);
+            }
             record_partials_readback(shot.cb());
             shot.submit_and_wait(*ctx_);
             shot.destroy(*ctx_);
-            stats = finish_renorm_from_staging();
+            stats = fused_relax_ok_ ? finish_renorm_stats_only()
+                                    : finish_renorm_from_staging();
         }
         return stats;
     }
@@ -2040,6 +2160,8 @@ public:
         shear_.destroy(*ctx_);
         kick_.destroy(*ctx_);
         scale_.destroy(*ctx_);
+        scale_buf_.destroy(*ctx_);
+        finalize_.destroy(*ctx_);
         norm_.destroy(*ctx_);
         fft_.destroy(*ctx_);
         conj_.destroy(*ctx_);
@@ -2083,6 +2205,8 @@ public:
         ctx_->destroy_buffer(&shear_ubo_[0]);
         ctx_->destroy_buffer(&conjA_ubo_);
         ctx_->destroy_buffer(&scale_ubo_);
+        ctx_->destroy_buffer(&renorm_);
+        ctx_->destroy_buffer(&renorm_ubo_);
         for (int a = 0; a < 3; ++a) {
             ctx_->destroy_buffer(&fft_ubo_[a]);
         }
@@ -2118,7 +2242,8 @@ private:
              {&halfv_set_, &fullv_set_, &kin3_set_, &damp_set_, &pd_full_set_,
               &pd_half_set_, &mcwf_set_, &mc_den_set_, &mc_classify_set_,
               &mc_scan_set_, &mc_emit_set_, &conj1_set_, &conjN_set_,
-              &norm_set_, &scale_set_, &conjA_set_, &kick_set_,
+              &norm_set_, &scale_set_, &finalize_set_, &scale_buf_set_,
+              &conjA_set_, &kick_set_,
               &relax_half_set_, &relax_kin_set_, &force_set_, &dipole_set_,
               &proj_set_, &pack_set_, &unpack_set_, &inner_any_set_,
               &synth_any_set_, &norm_any_set_, &scale_any_set_, &load_set_[0],
@@ -2127,6 +2252,7 @@ private:
             *s = VK_NULL_HANDLE;
         }
         pd_kernel_ok_ = false;
+        fused_relax_ok_ = false;
         mcwf_kernel_ok_ = false;
         mc_kernel_ok_ = false;
         mc_buffers_ok_ = false;
@@ -2774,6 +2900,28 @@ private:
         return stats;
     }
 
+    // P4 fused-path stat finish: the GPU already computed inv and rescaled
+    // psi, so this only distills the double-precision energy/peak diagnostic
+    // from the (pre-scale) partials in staging -- no host scale submit.
+    RelaxStats finish_renorm_stats_only() {
+        RelaxStats stats;
+        vmaInvalidateAllocation(ctx_->allocator, staging_.alloc, 0,
+                                VK_WHOLE_SIZE);
+        const float* p = static_cast<const float*>(staging_.mapped);
+        double sum = 0.0;
+        double peak = 0.0;
+        for (std::uint32_t g = 0; g < kGroups; ++g) {
+            sum += p[2 * g];
+            peak = std::max(peak, static_cast<double>(p[2 * g + 1]));
+        }
+        const double norm_sq = sum * cell_volume_;
+        stats.energy = (norm_sq > 0.0 && dtau_ > 0.0)
+                           ? -std::log(norm_sq) / (2.0 * dtau_)
+                           : 0.0;
+        stats.peak = (norm_sq > 0.0) ? peak / norm_sq : 0.0;
+        return stats;
+    }
+
     KickParams make_kick_params(const ses::Vec3d& axis, double theta) const {
         KickParams kp{};
         kp.n = static_cast<std::uint32_t>(cells_);
@@ -3095,6 +3243,8 @@ private:
     Kernel fft_;
     Kernel norm_;
     Kernel scale_;
+    Kernel finalize_;   // P4: GPU norm finish (partials -> inv), fused relax
+    Kernel scale_buf_;  // P4: psi *= renorm[0], factor read from the SSBO
     Kernel kick_;
     Kernel shear_;
     Kernel inner_;
@@ -3152,6 +3302,8 @@ private:
     Buffer conjN_ubo_{};
     Buffer fft_ubo_[3]{};
     Buffer scale_ubo_{};
+    Buffer renorm_{};      // P4: SSBO holding the GPU-computed inv (1 float)
+    Buffer renorm_ubo_{};  // P4: finalize params {ngroups, cell_volume}
     Buffer conjA_ubo_{};
     Buffer shear_ubo_[2]{};
     Buffer kick_ubo_{};
@@ -3179,6 +3331,7 @@ private:
     VkDescriptorSet pd_full_set_ = VK_NULL_HANDLE;  // fused V+mask, coef -dt
     VkDescriptorSet pd_half_set_ = VK_NULL_HANDLE;  // fused V+mask, coef -dt/2
     bool pd_kernel_ok_ = false;
+    bool fused_relax_ok_ = false;  // P4: finalize_ + scale_buf_ wired
     Buffer mcwf_radial_{};  // kMcwfSlots x n_radial floats (slotted tables)
     VkDeviceSize mcwf_radial_bytes_ = 0;
     Buffer mcwf_ubo_{};
@@ -3226,6 +3379,8 @@ private:
                                    VK_NULL_HANDLE};
     VkDescriptorSet norm_set_ = VK_NULL_HANDLE;
     VkDescriptorSet scale_set_ = VK_NULL_HANDLE;
+    VkDescriptorSet finalize_set_ = VK_NULL_HANDLE;    // P4
+    VkDescriptorSet scale_buf_set_ = VK_NULL_HANDLE;   // P4
     VkDescriptorSet conjA_set_ = VK_NULL_HANDLE;
     VkDescriptorSet shear_set_[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     VkDescriptorSet kick_set_ = VK_NULL_HANDLE;

@@ -34,8 +34,7 @@ public:
         }
         format_ = pick;
 
-        if (!create_render_pass() || !create_pipeline(vert_spv, vert_size,
-                                                      frag_spv, frag_size) ||
+        if (!create_pipeline(vert_spv, vert_size, frag_spv, frag_size) ||
             !create_descriptors() || !create_sync() || !create_swapchain()) {
             return false;
         }
@@ -84,15 +83,12 @@ public:
             vkDestroyPipelineLayout(ctx_->device, pipe_layout_, nullptr);
             pipe_layout_ = VK_NULL_HANDLE;
         }
-        if (rp_ != VK_NULL_HANDLE) {
-            vkDestroyRenderPass(ctx_->device, rp_, nullptr);
-            rp_ = VK_NULL_HANDLE;
-        }
         ctx_ = nullptr;
     }
 
-    // For ImGui_ImplVulkan_Init: the pass UI draws in, and the image counts.
-    VkRenderPass render_pass() const { return rp_; }
+    // For ImGui_ImplVulkan_Init: the swapchain color format (ImGui draws into
+    // the present pass via dynamic rendering) and the image counts.
+    VkFormat color_format() const { return format_.format; }
     std::uint32_t min_image_count() const { return min_images_; }
     std::uint32_t image_count() const {
         return static_cast<std::uint32_t>(images_.size());
@@ -156,16 +152,31 @@ public:
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         vkBeginCommandBuffer(cb_, &bi);
 
-        VkClearValue clear{};
-        clear.color = {{0.04f, 0.05f, 0.09f, 1.0f}};
-        VkRenderPassBeginInfo rbi{};
-        rbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        rbi.renderPass = rp_;
-        rbi.framebuffer = fbs_[idx];
-        rbi.renderArea = {{0, 0}, extent_};
-        rbi.clearValueCount = 1;
-        rbi.pClearValues = &clear;
-        vkCmdBeginRenderPass(cb_, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+        // Dynamic rendering (Vulkan 1.3 idiom): no render pass / framebuffer.
+        // The acquired image is in an undefined layout -> transition it to
+        // COLOR_ATTACHMENT for the clear+blit, and to PRESENT_SRC afterward.
+        // The acquire semaphore (waited at COLOR_ATTACHMENT_OUTPUT on submit)
+        // gates availability; render_done_ gates the present.
+        ses_vk::image_layout_barrier(
+            cb_, images_[idx], VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+        VkRenderingAttachmentInfo color_att{};
+        color_att.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        color_att.imageView = views_[idx];
+        color_att.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        color_att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        color_att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        color_att.clearValue.color = {{0.04f, 0.05f, 0.09f, 1.0f}};
+        VkRenderingInfo rinfo{};
+        rinfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        rinfo.renderArea = {{0, 0}, extent_};
+        rinfo.layerCount = 1;
+        rinfo.colorAttachmentCount = 1;
+        rinfo.pColorAttachments = &color_att;
+        vkCmdBeginRendering(cb_, &rinfo);
         const VkViewport vp{0.0f, 0.0f, static_cast<float>(extent_.width),
                             static_cast<float>(extent_.height), 0.0f, 1.0f};
         const VkRect2D sc{{0, 0}, extent_};
@@ -180,7 +191,13 @@ public:
         if (record_ui) {
             record_ui(cb_);
         }
-        vkCmdEndRenderPass(cb_);
+        vkCmdEndRendering(cb_);
+        ses_vk::image_layout_barrier(
+            cb_, images_[idx], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0);
         vkEndCommandBuffer(cb_);
 
         const VkPipelineStageFlags wait_stage =
@@ -237,40 +254,6 @@ private:
         }
         *out = fmts[0];
         return true;
-    }
-
-    bool create_render_pass() {
-        VkAttachmentDescription att{};
-        att.format = format_.format;
-        att.samples = VK_SAMPLE_COUNT_1_BIT;
-        att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        att.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        att.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        att.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-        VkAttachmentReference ref{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-        VkSubpassDescription sub{};
-        sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        sub.colorAttachmentCount = 1;
-        sub.pColorAttachments = &ref;
-        VkSubpassDependency dep{};
-        dep.srcSubpass = VK_SUBPASS_EXTERNAL;
-        dep.dstSubpass = 0;
-        dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dep.srcAccessMask = 0;
-        dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        VkRenderPassCreateInfo rpi{};
-        rpi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        rpi.attachmentCount = 1;
-        rpi.pAttachments = &att;
-        rpi.subpassCount = 1;
-        rpi.pSubpasses = &sub;
-        rpi.dependencyCount = 1;
-        rpi.pDependencies = &dep;
-        return vkCreateRenderPass(ctx_->device, &rpi, nullptr, &rp_) ==
-               VK_SUCCESS;
     }
 
     bool create_pipeline(const unsigned char* vert_spv, std::size_t vert_size,
@@ -368,8 +351,15 @@ private:
         ds.dynamicStateCount = 2;
         ds.pDynamicStates = dyn;
 
+        // Dynamic rendering: the blit pipeline declares the swapchain color
+        // FORMAT instead of referencing a render pass (Vulkan 1.3 idiom).
+        VkPipelineRenderingCreateInfo prci{};
+        prci.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+        prci.colorAttachmentCount = 1;
+        prci.pColorAttachmentFormats = &format_.format;
         VkGraphicsPipelineCreateInfo gpi{};
         gpi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        gpi.pNext = &prci;
         gpi.stageCount = 2;
         gpi.pStages = stages;
         gpi.pVertexInputState = &vin;
@@ -380,8 +370,7 @@ private:
         gpi.pColorBlendState = &cb;
         gpi.pDynamicState = &ds;
         gpi.layout = pipe_layout_;
-        gpi.renderPass = rp_;
-        gpi.subpass = 0;
+        gpi.renderPass = VK_NULL_HANDLE;  // dynamic rendering (see prci above)
         const bool ok = vkCreateGraphicsPipelines(ctx_->device, VK_NULL_HANDLE,
                                                   1, &gpi, nullptr, &pipe_) ==
                         VK_SUCCESS;
@@ -497,7 +486,6 @@ private:
         images_.resize(n);
         vkGetSwapchainImagesKHR(ctx_->device, swapchain_, &n, images_.data());
         views_.resize(n, VK_NULL_HANDLE);
-        fbs_.resize(n, VK_NULL_HANDLE);
         for (std::uint32_t i = 0; i < n; ++i) {
             VkImageViewCreateInfo vci{};
             vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -506,18 +494,6 @@ private:
             vci.format = format_.format;
             vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
             if (vkCreateImageView(ctx_->device, &vci, nullptr, &views_[i]) !=
-                VK_SUCCESS) {
-                return false;
-            }
-            VkFramebufferCreateInfo fci{};
-            fci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-            fci.renderPass = rp_;
-            fci.attachmentCount = 1;
-            fci.pAttachments = &views_[i];
-            fci.width = extent_.width;
-            fci.height = extent_.height;
-            fci.layers = 1;
-            if (vkCreateFramebuffer(ctx_->device, &fci, nullptr, &fbs_[i]) !=
                 VK_SUCCESS) {
                 return false;
             }
@@ -542,12 +518,6 @@ private:
     }
 
     void destroy_swapchain() {
-        for (VkFramebuffer f : fbs_) {
-            if (f != VK_NULL_HANDLE) {
-                vkDestroyFramebuffer(ctx_->device, f, nullptr);
-            }
-        }
-        fbs_.clear();
         for (VkImageView v : views_) {
             if (v != VK_NULL_HANDLE) {
                 vkDestroyImageView(ctx_->device, v, nullptr);
@@ -575,8 +545,6 @@ private:
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
     std::vector<VkImage> images_;
     std::vector<VkImageView> views_;
-    std::vector<VkFramebuffer> fbs_;
-    VkRenderPass rp_ = VK_NULL_HANDLE;
     VkPipeline pipe_ = VK_NULL_HANDLE;
     VkPipelineLayout pipe_layout_ = VK_NULL_HANDLE;
     VkSampler sampler_ = VK_NULL_HANDLE;

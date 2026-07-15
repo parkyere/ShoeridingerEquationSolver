@@ -62,7 +62,8 @@ endfunction()
 set(_ses_vk_spv_dir "${CMAKE_CURRENT_BINARY_DIR}/vk_spv")
 file(MAKE_DIRECTORY "${_ses_vk_spv_dir}")
 set(_ses_vk_headers "")
-foreach(_k IN ITEMS phase_multiply scale norm_peak inner_product
+foreach(_k IN ITEMS phase_multiply scale norm_peak norm_finalize scale_buf
+        inner_product
         dipole_kick mean_force dipole pack_half unpack_half conj_scale
         shear axpy copy_state synth project_deposit
         bridge_store bridge_load
