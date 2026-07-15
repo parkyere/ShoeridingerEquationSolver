@@ -11,7 +11,8 @@
                 "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/external/vcpkg/scripts/buildsystems/vcpkg.cmake",
                 "VCPKG_TARGET_TRIPLET": "x64-windows-static",
                 "VCPKG_HOST_TRIPLET": "x64-windows-static",
-                "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+                "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>",
+                "VCPKG_MANIFEST_FEATURES": "validation"
             },
             "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
         },
@@ -30,13 +31,6 @@
             "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
         },
         {
-            "name": "msvc-release-validation",
-            "displayName": "Windows MSVC Release + Vulkan validation",
-            "description": "msvc-release with the opt-in `validation` vcpkg feature ON, so vcpkg builds+installs the Vulkan validation layers. The vulkan-validationlayers port forces its own dynamic linkage, so the layer DLL + manifest land in vcpkg_installed/x64-windows-static/bin even on the static triplet. Its own build tree so the default preset stays lean (VVL is a ~14 min first build; then binary-cached). Run with SES_VK_VALIDATION=1 + VK_ADD_LAYER_PATH=<binaryDir>/vcpkg_installed/x64-windows-static/bin + VK_LOADER_LAYERS_ENABLE=*validation*.",
-            "inherits": "msvc-release",
-            "cacheVariables": { "VCPKG_MANIFEST_FEATURES": "validation" }
-        },
-        {
             "name": "linux-base",
             "hidden": true,
             "generator": "Ninja",
@@ -44,7 +38,8 @@
             "cacheVariables": {
                 "SES_ENABLE_AVX2": "ON",
                 "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/external/vcpkg/scripts/buildsystems/vcpkg.cmake",
-                "VCPKG_TARGET_TRIPLET": "x64-linux"
+                "VCPKG_TARGET_TRIPLET": "x64-linux",
+                "VCPKG_MANIFEST_FEATURES": "validation"
             },
             "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
         },
@@ -75,7 +70,6 @@
     ],
     "buildPresets": [
         { "name": "msvc-release", "configurePreset": "msvc-release" },
-        { "name": "msvc-release-validation", "configurePreset": "msvc-release-validation" },
         { "name": "msvc-debug", "configurePreset": "msvc-debug" },
         { "name": "linux-release", "configurePreset": "linux-release" },
         { "name": "linux-clang22", "configurePreset": "linux-clang22" },
@@ -83,7 +77,6 @@
     ],
     "testPresets": [
         { "name": "msvc-release", "configurePreset": "msvc-release", "output": { "outputOnFailure": true } },
-        { "name": "msvc-release-validation", "configurePreset": "msvc-release-validation", "output": { "outputOnFailure": true } },
         { "name": "msvc-debug", "configurePreset": "msvc-debug", "output": { "outputOnFailure": true } },
         { "name": "linux-release", "configurePreset": "linux-release", "output": { "outputOnFailure": true } },
         { "name": "linux-clang22", "configurePreset": "linux-clang22", "output": { "outputOnFailure": true } },

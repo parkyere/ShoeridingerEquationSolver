@@ -85,17 +85,22 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-Dev-time Vulkan validation layers are an opt-in vcpkg manifest feature. The
-easiest way to turn them on is the **`msvc-release-validation`** preset (its own
-build tree, so the default preset stays lean): it enables the `validation`
-feature, and the `vulkan-validationlayers` port forces its own dynamic linkage,
-so the layer DLL + manifest land in
-`out/build/msvc-release-validation/vcpkg_installed/x64-windows-static/bin` even on
-the static triplet. Activate at runtime with `SES_VK_VALIDATION=1`,
-`VK_ADD_LAYER_PATH=<that bin>`, `VK_LOADER_LAYERS_ENABLE=*validation*`. (Manual
-alternative: any preset + `-DVCPKG_MANIFEST_FEATURES=validation`, but that is not
-sticky — a later reconfigure without it uninstalls the layer. See
-[vcpkg.json](vcpkg.json).)
+Dev-time Vulkan validation layers are **installed by default** — every preset
+sets `VCPKG_MANIFEST_FEATURES=validation` (in `*-base`), so the first configure
+also builds+installs the `vulkan-validationlayers` (a ~14 min one-time cost, then
+binary-cached). The `vulkan-validationlayers` port forces its own dynamic linkage,
+so the layer DLL + manifest land in `<build>/vcpkg_installed/<triplet>/bin` even
+on the otherwise-static triplet — installing the layer is inert; it does nothing
+until you enable it at runtime:
+
+```
+set SES_VK_VALIDATION=1
+set VK_ADD_LAYER_PATH=<build>\vcpkg_installed\x64-windows-static\bin
+set VK_LOADER_LAYERS_ENABLE=*validation*
+```
+
+(To build without the layers, add `--no-default-features`-equivalent by clearing
+`VCPKG_MANIFEST_FEATURES`. See [vcpkg.json](vcpkg.json).)
 
 ### Visual Studio
 

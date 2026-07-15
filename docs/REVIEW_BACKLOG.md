@@ -170,27 +170,27 @@ RTX 4060 (ctest 264/264 + vkcheck all-PASS + windowed validation 0-errors).
     relaxed modes, `subgroupAdd` on the bandwidth-bound STEP reductions, any
     `VK_NV_*`, larger workgroups; NO fp16 in propagation without explicit opt-in.
 
-## Validation layers -- use the `msvc-release-validation` preset (2026-07-15)
+## Validation layers -- ON BY DEFAULT in every preset (2026-07-15)
 
-`vulkan-validationlayers` is an opt-in vcpkg feature. **The `vulkan-validationlayers`
-port forces its OWN dynamic linkage** (`set(VCPKG_LIBRARY_LINKAGE dynamic)` at
-portfile line 1) + `VCPKG_POLICY_DLLS_WITHOUT_LIBS`, so the layer DLL + manifest
-land in `vcpkg_installed/x64-windows-static/bin` even on the static triplet --
-**no custom triplet needed** (an overlay triplet force-rebuilds ALL deps, since
+Every CMake preset now sets `VCPKG_MANIFEST_FEATURES=validation` (in `msvc-base`
+and `linux-base`), so `vulkan-validationlayers` is always built+installed -- no
+separate preset, no per-machine env var (that was why it "worked at home" but not
+the office: the home enable was per-machine and never travelled). **The
+`vulkan-validationlayers` port forces its OWN dynamic linkage** (`set(VCPKG_LIBRARY_LINKAGE
+dynamic)` at portfile line 1) + `VCPKG_POLICY_DLLS_WITHOUT_LIBS`, so the layer
+DLL + manifest land in `vcpkg_installed/<triplet>/bin` even on the static triplet
+-- NO custom triplet needed (an overlay triplet force-rebuilds ALL deps, since
 vcpkg hashes the triplet file into every package ABI -- dry-run confirmed; do NOT
-do it). The real trap was STICKINESS: `-DVCPKG_MANIFEST_FEATURES=validation` on a
-bare reconfigure is not cached, so a later plain reconfigure (VS auto-reconfigure
-on a CMakeLists edit) re-resolves without the feature and silently UNINSTALLS the
-layer from the tree. Fix: the new **`msvc-release-validation`** preset (its own
-tree; the cacheVariable re-applies every configure). Then:
+do it). Installing the layer is inert; activate at runtime:
 ```
 SES_VK_VALIDATION=1
-VK_ADD_LAYER_PATH=<repo>/out/build/msvc-release-validation/vcpkg_installed/x64-windows-static/bin
+VK_ADD_LAYER_PATH=<build>/vcpkg_installed/x64-windows-static/bin
 VK_LOADER_LAYERS_ENABLE=*validation*
 ```
-Confirmed end-to-end: `vkcheck` `[validation ON]` + all-PASS via that documented
-path. Windowed verify = launch `sesolver_app`, ~9 s, `Stop-Process -Force`, grep
-stderr for `VUID`/error. First VVL build ~14 min from source, then binary-cached.
+Confirmed end-to-end via the default `msvc-release` tree: `vkcheck` `[validation
+ON]` + all-PASS. Windowed verify = launch `sesolver_app`, ~9 s, `Stop-Process
+-Force`, grep stderr for `VUID`/error. First VVL build ~14 min from source, then
+binary-cached. (The `--no-default-features` escape hatch: clear the var to skip.)
 
 ## See also
 

@@ -26,7 +26,7 @@
     ],
     "features": {
         "validation": {
-            "description": "Dev-time Vulkan validation layers (never linked; the loader dlopen's the DLL by its JSON manifest -- the port forces its own dynamic linkage, so the DLL lands in vcpkg_installed/<triplet>/bin even on the static triplet). Easiest: configure the `msvc-release-validation` preset (it sets this feature stickily). Manual: VCPKG_MANIFEST_FEATURES=validation. Then activate at runtime with VK_ADD_LAYER_PATH=<build>/vcpkg_installed/<triplet>/bin + VK_LOADER_LAYERS_ENABLE=*validation* + SES_VK_VALIDATION=1.",
+            "description": "Dev-time Vulkan validation layers (never linked; the loader dlopen's the DLL by its JSON manifest -- the port forces its own dynamic linkage, so the DLL lands in vcpkg_installed/<triplet>/bin even on the static triplet). Enabled by DEFAULT: every CMake preset sets VCPKG_MANIFEST_FEATURES=validation in its *-base, so the layer is always installed (inert until activated). Activate at runtime with VK_ADD_LAYER_PATH=<build>/vcpkg_installed/<triplet>/bin + VK_LOADER_LAYERS_ENABLE=*validation* + SES_VK_VALIDATION=1.",
             "dependencies": [
                 "vulkan-validationlayers"
             ]
