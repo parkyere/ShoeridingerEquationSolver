@@ -329,8 +329,8 @@ public:
     // BaseDirector (identical).
 
     // MCWF no-jump damping toggle (panel checkbox; see apply_mcwf_damping).
-    void set_mcwf_damping(bool on) { mcwf_damping_ = on; }
-    bool mcwf_damping() const { return mcwf_damping_; }
+    void set_mcwf_damping(bool on) override { mcwf_damping_ = on; }
+    bool mcwf_damping() const override { return mcwf_damping_; }
 
     // ---- controls (the shell's key/toolbar entry points) ----
 
@@ -342,7 +342,7 @@ public:
         drop_relax_tables();
     }
 
-    void set_relaxing() {
+    void set_relaxing() override {
         if (use_gpu_path() && !ensure_relax_tables()) {
             return;  // no tables, no imaginary time
         }
@@ -413,7 +413,7 @@ public:
     // Projective ENERGY measurement (Key E): deferred to run_frame (the GPU
     // reductions + collapse run in the frame's compute half). Needs the
     // manifold.
-    void measure_energy_now() {
+    void measure_energy_now() override {
         if (solving() || !use_gpu_path() || !manifold_ready()) {
             return;
         }
@@ -426,12 +426,12 @@ public:
     // number and project onto its DEGENERATE subspace -- coherence within
     // survives ({H, L^2, L_z} commute). Key E stays the maximal (n,l,m)
     // collapse. Deferred to run_frame like the energy measurement.
-    void measure_n_shell_now() { queue_partial_measure(PartialBasis::NShell); }
-    void measure_l_now() { queue_partial_measure(PartialBasis::LTotal); }
-    void measure_m_now() { queue_partial_measure(PartialBasis::MZ); }
+    void measure_n_shell_now() override { queue_partial_measure(PartialBasis::NShell); }
+    void measure_l_now() override { queue_partial_measure(PartialBasis::LTotal); }
+    void measure_m_now() override { queue_partial_measure(PartialBasis::MZ); }
     // Last partial outcome: the sampled n, l, or signed m (-99 = none yet,
     // -1 = continuum verdict).
-    int last_partial_outcome() const { return last_partial_outcome_; }
+    int last_partial_outcome() const override { return last_partial_outcome_; }
 
     void toggle_view_mode() override {
         if (solving()) {
@@ -462,13 +462,13 @@ public:
 
     // Relax into the z-aligned 2p: the z-odd seed keeps the flow in the
     // odd-parity sector, so it converges deterministically.
-    void relax_to_excited() {
+    void relax_to_excited() override {
         start_excited_relax(make_axis_odd_seed(2), "2p", false);
     }
 
     // Relax into 2s. The 2p triplet is deflated too (2s sits ABOVE it) --
     // see start_excited_relax.
-    void relax_to_2s() {
+    void relax_to_2s() override {
         start_excited_relax(
             ses::gaussian_wavepacket(sim_.grid(), ses::Vec3d{},
                                      ses::Vec3d{4.0, 4.0, 4.0}, ses::Vec3d{}),
@@ -478,7 +478,7 @@ public:
     // Toggle spontaneous decay (quantum jumps) over the tracked manifold.
     // All channels share one display acceleration factor (title reports it;
     // relative lifetimes stay physical).
-    void toggle_decay() {
+    void toggle_decay() override {
         if (!gpu_ok_ || solving()) {
             return;
         }
@@ -495,7 +495,7 @@ public:
     }
 
     // Instantly excite an n = 3/4 state (cycles) for the decay-cascade demo.
-    void excite_n3() {
+    void excite_n3() override {
         if (!gpu_ok_ || solving()) {
             return;
         }
@@ -516,7 +516,7 @@ public:
     // Cycle the laser off -> Z -> X -> off. Carrier and E0 both come from
     // our own spectrum / dipole element; X pumps 2p_x, so the monitored
     // P(2pz) stays flat (selection rule).
-    void toggle_laser() {
+    void toggle_laser() override {
         if (!gpu_ok_ || solving()) {
             return;  // the drive runs on the GPU path only
         }
@@ -556,7 +556,7 @@ public:
 
     // Static uniform E-field magnitude along +z (au); 0 = off. GPU
     // cloud/real-time path; the laser, if on, takes precedence.
-    void set_efield_e0(double e0) {
+    void set_efield_e0(double e0) override {
         efield_e0_ = e0;
         upload_field_tables();  // fold E*z into the half-potential (with diamag if B on)
         if (e0 > 0.0 && !solving()) {
@@ -567,7 +567,7 @@ public:
     // Magnetic field strength (au) along the current axis; 0 = off. Minimal
     // coupling: the diamagnetic term is folded into the half-potential here;
     // the per-frame magnetic_step adds only the paramagnetic rotation.
-    void set_bfield_b(double b) {
+    void set_bfield_b(double b) override {
         bfield_b_ = b;
         if (b > 0.0) {
             laser_pol_ = LaserPol::Off;  // mutually exclusive (see toggle_laser)
@@ -580,16 +580,16 @@ public:
 
     // Cycle the field axis z -> x -> y; the diamagnetic term is
     // axis-dependent, so the half-potential table is rebuilt.
-    void toggle_bfield_axis() {
+    void toggle_bfield_axis() override {
         bfield_axis_ = (bfield_axis_ == 2) ? 0 : (bfield_axis_ == 0 ? 1 : 2);
         upload_field_tables();
     }
-    int bfield_axis() const { return bfield_axis_; }
+    int bfield_axis() const override { return bfield_axis_; }
 
     // ---- selftest / verification hooks ----
 
     // The computed Einstein A for a channel (0 if absent).
-    double channel_a(int from, int to) const {
+    double channel_a(int from, int to) const override {
         for (const ShellChannel& c : atom_.channels()) {
             if (c.from == from && c.to == to) {
                 return c.a_true;
@@ -616,26 +616,26 @@ public:
     // Ready only once the FULL table is assembled (channels_ fills
     // incrementally during the pair phase -- do not race it).
     bool manifold_ready() const { return atlas_done_ && !atom_.channels().empty(); }
-    double state_energy(int idx) const { return atom_.state_energy(idx); }
-    long long photon_count() const { return photon_count_; }
+    double state_energy(int idx) const override { return atom_.state_energy(idx); }
+    long long photon_count() const override { return photon_count_; }
     // Cumulative absorbed (ionized) fraction since the last collapse/prep.
-    double ionized_fraction() const {
+    double ionized_fraction() const override {
         return std::max(0.0, 1.0 - bound_survival_);
     }
     // Result of the most recent energy measurement: eigenstate index, -1 for
     // the outside-the-manifold outcome, -2 if none has run yet.
-    int last_measured_index() const { return last_measured_index_; }
+    int last_measured_index() const override { return last_measured_index_; }
     // <z> of the current cloud (bridges the GPU state to the CPU session
     // first); the hook for the Stark polarization along +z.
-    double mean_z() {
+    double mean_z() override {
         ensure_cpu_current();
         return ses::mean_position(sim_.psi()).z;
     }
-    double peak_excited_population() const { return rabi_peak_; }
+    double peak_excited_population() const override { return rabi_peak_; }
 
     // Magnetic Larmor hooks: prepare an eigenstate, probe another state's
     // population -- proves the field evolves psi itself, not just the display.
-    void debug_prepare_state(int idx) {
+    void debug_prepare_state(int idx) override {
         if (!manifold_ready() || idx < 0 || idx >= kNumStates) {
             return;
         }
@@ -644,7 +644,7 @@ public:
         cpu_is_truth_ = false;
         stepping_ = BaseStepping::RealTime;
     }
-    double probe_population(int idx) {
+    double probe_population(int idx) override {
         if (!manifold_ready() || idx < 0 || idx >= kNumStates) {
             return 0.0;
         }
@@ -653,7 +653,7 @@ public:
     }
     // Selftest hook: psi = (|a> + |b>)/sqrt(2) -- the intra-shell coherence
     // probe the partial-measurement arc collapses.
-    void debug_prepare_superposition(int a, int b) {
+    void debug_prepare_superposition(int a, int b) override {
         if (!manifold_ready() || a < 0 || a >= kNumStates || b < 0 ||
             b >= kNumStates || a == b) {
             return;

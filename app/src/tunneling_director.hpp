@@ -25,7 +25,7 @@ public:
     TunnelApi* tunnel() override { return this; }
 
     // Selftest hook: the largest transmitted fraction seen so far.
-    double transmitted_max() const { return t_max_; }
+    double transmitted_max() const override { return t_max_; }
 
 protected:
     ses::WavepacketSimulation remake_simulation() const override { return make(); }
