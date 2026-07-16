@@ -15,9 +15,7 @@
 
 #include <core/field.hpp>
 import ses.grid;
-#include <core/harmonics.hpp>
 #include <core/observables.hpp>
-#include <core/potential.hpp>
 #include <core/radial.hpp>
 import ses.vec;
 
@@ -26,6 +24,8 @@ import ses.vec;
 #include <cmath>
 #include <cstddef>
 #include <vector>
+import ses.harmonics;
+import ses.potential;
 
 namespace {
 

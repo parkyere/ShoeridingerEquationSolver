@@ -19,14 +19,14 @@
 #include <complex>
 #include <core/field.hpp>
 import ses.grid;
-#include <core/harmonics.hpp>
 #include <core/radial.hpp>
-#include <core/wavepacket.hpp>
 
 #include <gtest/gtest.h>
 
 #include <cmath>
 #include <vector>
+import ses.harmonics;
+import ses.wavepacket;
 
 namespace {
 

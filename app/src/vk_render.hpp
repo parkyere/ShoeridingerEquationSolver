@@ -17,7 +17,6 @@
 
 import ses.grid;
 #include <core/marching_cubes.hpp>
-#include <core/sphere.hpp>
 import ses.vec;
 
 #include <algorithm>
@@ -27,6 +26,7 @@ import ses.vec;
 #include <cstdio>
 #include <cstring>
 #include <vector>
+import ses.sphere;
 
 import ses.camera;
 import ses.colormap;

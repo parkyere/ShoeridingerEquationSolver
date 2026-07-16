@@ -6,13 +6,13 @@
 #include <core/field.hpp>
 import ses.grid;
 #include <core/marching_cubes.hpp>
-#include <core/potential.hpp>
 #include <core/simulation.hpp>
 import ses.vec;
 
 #include <chrono>
 #include <cstdio>
 #include <functional>
+import ses.potential;
 
 namespace {
 

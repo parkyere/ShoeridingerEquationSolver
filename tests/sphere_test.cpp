@@ -6,7 +6,6 @@
 // check that pinned marching cubes).
 
 #include <core/marching_cubes.hpp>
-#include <core/sphere.hpp>
 import ses.vec;
 
 #include <gtest/gtest.h>
@@ -17,6 +16,7 @@ import ses.vec;
 #include <map>
 #include <tuple>
 #include <utility>
+import ses.sphere;
 
 namespace {
 

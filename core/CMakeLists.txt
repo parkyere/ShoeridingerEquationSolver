@@ -25,7 +25,11 @@ target_sources(sesolver_core
         src/emission.ixx
         src/vec.ixx
         src/grid.ixx
-        src/spectral.ixx)
+        src/spectral.ixx
+        src/potential.ixx
+        src/wavepacket.ixx
+        src/sphere.ixx
+        src/harmonics.ixx)
 target_compile_features(sesolver_core PUBLIC cxx_std_20)
 target_link_libraries(sesolver_core PRIVATE ses_warnings)
 target_link_libraries(sesolver_core PUBLIC ses_arch)

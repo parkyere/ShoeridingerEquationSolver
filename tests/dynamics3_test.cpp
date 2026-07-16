@@ -14,15 +14,15 @@
 import ses.grid;
 #include <core/imaginary_time.hpp>
 #include <core/observables.hpp>
-#include <core/potential.hpp>
 #include <core/propagator.hpp>
 import ses.vec;
-#include <core/wavepacket.hpp>
 
 #include <gtest/gtest.h>
 
 #include <cmath>
 #include <vector>
+import ses.wavepacket;
+import ses.potential;
 
 namespace {
 

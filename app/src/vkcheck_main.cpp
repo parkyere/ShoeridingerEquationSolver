@@ -26,18 +26,15 @@
 #include <core/field.hpp>
 import ses.grid;
 #include <core/drive.hpp>
-#include <core/harmonics.hpp>
 #include <core/imaginary_time.hpp>
 #include <core/magnetic.hpp>
 #include <core/marching_cubes.hpp>
 #include <core/radial.hpp>
 #include <core/sampling.hpp>
-#include <core/potential.hpp>
 #include <core/projection.hpp>
 #include <core/propagator.hpp>
 #include <core/rotation.hpp>
 import ses.vec;
-#include <core/wavepacket.hpp>
 
 #include <phase_multiply_spv.h>
 #include <half_mul_spv.h>
@@ -81,6 +78,9 @@ import ses.vec;
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+import ses.harmonics;
+import ses.wavepacket;
+import ses.potential;
 
 namespace {
 

@@ -11,11 +11,11 @@ import ses.grid;
 #include <core/measurement.hpp>
 #include <core/propagator.hpp>
 import ses.vec;
-#include <core/wavepacket.hpp>
 
 #include <optional>
 #include <utility>
 #include <vector>
+import ses.wavepacket;
 
 namespace ses {
 

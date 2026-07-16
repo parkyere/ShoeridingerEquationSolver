@@ -13,7 +13,6 @@
 #include <core/field.hpp>
 import ses.grid;
 #include <core/observables.hpp>
-#include <core/potential.hpp>
 #include <core/simulation.hpp>
 import ses.vec;
 
@@ -21,6 +20,7 @@ import ses.vec;
 
 #include <cmath>
 #include <vector>
+import ses.potential;
 
 namespace {
 

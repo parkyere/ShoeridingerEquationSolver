@@ -18,12 +18,12 @@
 import ses.grid;
 #include <core/observables.hpp>
 #include <core/propagator.hpp>
-#include <core/wavepacket.hpp>
 
 #include <gtest/gtest.h>
 
 #include <cmath>
 #include <vector>
+import ses.wavepacket;
 
 namespace {
 

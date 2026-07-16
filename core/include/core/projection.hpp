@@ -10,13 +10,13 @@
 #include <complex>
 #include <core/field.hpp>
 import ses.grid;
-#include <core/harmonics.hpp>  // real_spherical_harmonic
 #include <core/radial.hpp>     // RadialGrid
 
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+import ses.harmonics;  // real_spherical_harmonic
 
 namespace ses {
 

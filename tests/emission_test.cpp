@@ -19,13 +19,13 @@
 #include <core/field.hpp>
 import ses.grid;
 #include <core/observables.hpp>
-#include <core/potential.hpp>
 import ses.vec;
-#include <core/wavepacket.hpp>
 
 #include <gtest/gtest.h>
 
 #include <cmath>
+import ses.wavepacket;
+import ses.potential;
 
 import ses.emission;
 

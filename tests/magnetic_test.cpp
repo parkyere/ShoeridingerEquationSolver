@@ -20,15 +20,15 @@
 #include <core/field.hpp>
 import ses.grid;
 #include <core/magnetic.hpp>
-#include <core/potential.hpp>
 #include <core/propagator.hpp>
 #include <core/rotation.hpp>
 import ses.vec;
-#include <core/wavepacket.hpp>
 
 #include <gtest/gtest.h>
 
 #include <cmath>
+import ses.wavepacket;
+import ses.potential;
 
 namespace {
 

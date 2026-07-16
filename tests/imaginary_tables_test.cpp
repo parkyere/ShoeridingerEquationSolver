@@ -7,7 +7,6 @@
 
 import ses.grid;
 #include <core/imaginary_time.hpp>
-#include <core/potential.hpp>
 import ses.spectral;
 import ses.vec;
 
@@ -16,6 +15,7 @@ import ses.vec;
 #include <array>
 #include <cmath>
 #include <vector>
+import ses.potential;
 
 namespace {
 

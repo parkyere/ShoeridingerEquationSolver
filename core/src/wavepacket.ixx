@@ -1,4 +1,12 @@
-#pragma once
+module;
+#include <complex>
+#include <cmath>
+#include <numbers>
+#include <core/field.hpp>
+export module ses.wavepacket;
+export import ses.grid;
+export import ses.vec;
+
 
 // Gaussian wavepacket factory (atomic units):
 //     psi(x) = (2 pi s^2)^(-1/4) exp(-(x-x0)^2 / (4 s^2)) exp(i k0 x)
@@ -6,15 +14,8 @@
 // momentum k0. The result is normalized on the grid (the continuum amplitude
 // is already unit-norm; a final discrete normalize absorbs sampling error).
 
-#include <complex>
-#include <core/field.hpp>
-import ses.grid;
-import ses.vec;
 
-#include <cmath>
-#include <numbers>
-
-namespace ses {
+export namespace ses {
 
 inline Field1D gaussian_wavepacket(const Grid1D& g, double x0, double sigma, double k0) {
     Field1D psi{g};

@@ -19,7 +19,6 @@ import ses.grid;
 #include <core/marching_cubes.hpp>
 #include <core/measurement.hpp>
 #include <core/observables.hpp>
-#include <core/potential.hpp>
 #include <core/projection.hpp>
 #include <core/sampling.hpp>
 #include <core/simulation.hpp>
@@ -34,6 +33,7 @@ import ses.vec;
 #include <random>
 #include <string>
 #include <vector>
+import ses.potential;
 
 import ses.vram_budget;
 

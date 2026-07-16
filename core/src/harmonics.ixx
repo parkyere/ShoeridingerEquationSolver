@@ -1,19 +1,20 @@
-#pragma once
+module;
+#include <complex>
+#include <cmath>
+#include <cstddef>
+#include <vector>
+#include <core/field.hpp>
+#include <core/radial.hpp>
+export module ses.harmonics;
+export import ses.grid;
+
 
 // Real spherical harmonics (l <= 5) and 3D orbital synthesis:
 // psi = (u_nl(r)/r) Y_lm from the radial engine's u tables. Cartesian
 // polynomial forms keep the nodal planes exact on the grid.
 
-#include <complex>
-#include <core/field.hpp>
-import ses.grid;
-#include <core/radial.hpp>
 
-#include <cmath>
-#include <cstddef>
-#include <vector>
-
-namespace ses {
+export namespace ses {
 
 // Y_lm normalization constants, hoisted out of real_spherical_harmonic:
 // MSVC /fp:precise does not constant-fold sqrt(literal), so evaluating them
@@ -157,8 +158,11 @@ inline double real_spherical_harmonic(int l, int m, double x, double y, double z
 inline void fill_orbital(Field3D& psi, const Grid3D& g, const RadialGrid& rg,
                          const std::vector<double>& u, int l, int m) noexcept {
     const double h = rg.h();
-    // Disjoint z-slabs: bitwise-deterministic parallelism (project rule).
-#pragma omp parallel for
+    // Serial by necessity: MSVC (18 / 14.51) SILENTLY miscompiles an
+    // `#pragma omp parallel for` inside an EXPORTED module function -- the
+    // parallel region writes nothing, yielding a zero field. This runs only on
+    // the oracle-only CPU path (state prep / vkcheck), so no speed is lost that
+    // matters; z-slabs stay disjoint, so the result is bitwise the old one.
     for (int k = 0; k < g.z.n; ++k) {
         for (int j = 0; j < g.y.n; ++j) {
             for (int i = 0; i < g.x.n; ++i) {

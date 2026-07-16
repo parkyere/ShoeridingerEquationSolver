@@ -1,19 +1,20 @@
-#pragma once
+module;
+#include <cmath>
+#include <cstddef>
+#include <numbers>
+#include <vector>
+#include <core/marching_cubes.hpp>
+export module ses.sphere;
+export import ses.vec;
+
 
 // UV-sphere triangle soup for the nucleus marker. Lattice directions are
 // computed once and shared by adjacent triangles (longitude wraps by index),
 // so seams and poles weld bitwise -- watertight by construction. Normals are
 // the exact unit radials.
 
-#include <core/marching_cubes.hpp>
-import ses.vec;
 
-#include <cmath>
-#include <cstddef>
-#include <numbers>
-#include <vector>
-
-namespace ses {
+export namespace ses {
 
 inline Mesh sphere_mesh(Vec3d center, double radius, int rings, int segments) {
     // Unit directions on a (rings+1) x segments lattice; theta = 0 is the

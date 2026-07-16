@@ -9,12 +9,12 @@
 // Oracles: exact values at grid points chosen to be exact in binary.
 
 import ses.grid;
-#include <core/potential.hpp>
 
 #include <gtest/gtest.h>
 
 #include <cmath>
 #include <vector>
+import ses.potential;
 
 namespace {
 

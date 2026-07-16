@@ -1,16 +1,17 @@
-#pragma once
+module;
+#include <cmath>
+#include <cstddef>
+#include <vector>
+export module ses.potential;
+export import ses.grid;
+export import ses.vec;
+
 
 // Potential builders: real-valued V sampled on the grid, fed to the
 // split-operator propagator. Atomic units.
 
-import ses.grid;
-import ses.vec;
 
-#include <cmath>
-#include <cstddef>
-#include <vector>
-
-namespace ses {
+export namespace ses {
 
 // V(x) = 1/2 omega^2 (x - x0)^2
 inline std::vector<double> harmonic_potential(const Grid1D& g, double omega, double x0 = 0.0) {

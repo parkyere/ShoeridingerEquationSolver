@@ -15,18 +15,18 @@
 
 #include <core/field.hpp>
 import ses.grid;
-#include <core/harmonics.hpp>
 #include <core/imaginary_time.hpp>
 #include <core/observables.hpp>
-#include <core/potential.hpp>
 #include <core/radial.hpp>
 import ses.vec;
-#include <core/wavepacket.hpp>
 
 #include <gtest/gtest.h>
 
 #include <cmath>
 #include <vector>
+import ses.harmonics;
+import ses.wavepacket;
+import ses.potential;
 
 namespace {
 

@@ -13,7 +13,6 @@ import ses.grid;
 #include <core/imaginary_time.hpp>
 #include <core/marching_cubes.hpp>
 #include <core/observables.hpp>
-#include <core/potential.hpp>
 #include <core/sampling.hpp>
 #include <core/simulation.hpp>
 import ses.vec;
@@ -26,6 +25,7 @@ import ses.vec;
 #include <random>
 #include <string>
 #include <vector>
+import ses.potential;
 
 import ses.colormap;
 
