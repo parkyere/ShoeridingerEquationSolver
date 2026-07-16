@@ -953,8 +953,9 @@ private:
                 anchor = s;
             }
         }
-        const double mag =
-            std::sqrt(std::norm(keep[static_cast<std::size_t>(anchor)]));
+        // std::abs (hypot) not sqrt(norm): overflow-safe, and CPU is oracle-only
+        // now, so the extra cost is free.
+        const double mag = std::abs(keep[static_cast<std::size_t>(anchor)]);
         if (mag <= 0.0) {
             return;  // empty subspace cannot be sampled (prob > 0 gate)
         }
@@ -1466,7 +1467,7 @@ private:
         for (auto& z : c) {
             z = std::complex<double>{gauss(rng_), gauss(rng_)};
         }
-        const double mag0 = std::sqrt(std::norm(c[0]));
+        const double mag0 = std::abs(c[0]);  // hypot: overflow-safe |c[0]|
         if (mag0 > 0.0) {
             const std::complex<double> rot{c[0].real() / mag0,
                                            -c[0].imag() / mag0};
