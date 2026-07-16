@@ -3,7 +3,7 @@ module;
 #include <initializer_list>
 #include <string>
 #include <utility>
-export module ses.app.imgui_ui;
+export module app.imgui_ui;
 export import ses.scenario;  // HydrogenApi (the hydrogen panel's control seam)
 
 
@@ -14,7 +14,7 @@ export import ses.scenario;  // HydrogenApi (the hydrogen panel's control seam)
 // wrapped status block. Templated on the shell type so main() stays a shell.
 
 
-export namespace ses_shell {
+export namespace app {
 
 // Shared UI state the sliders edit between frames (owned by the shell).
 struct UiState {
@@ -118,7 +118,7 @@ void draw_time_scale(ShellT& shell, UiState& ui) {
 }
 
 template <typename ShellT>
-void draw_hydrogen_panel(ShellT& shell, UiState& ui, HydrogenApi& hy) {
+void draw_hydrogen_panel(ShellT& shell, UiState& ui, ses_shell::HydrogenApi& hy) {
     ImGui::SetNextWindowPos(ImVec2(8, 8), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(430, 0), ImGuiCond_FirstUseEver);
     ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_NoCollapse);
@@ -262,4 +262,4 @@ void draw_generic_panel(ShellT& shell, UiState& ui,
     ImGui::End();
 }
 
-}  // namespace ses_shell
+}  // namespace app

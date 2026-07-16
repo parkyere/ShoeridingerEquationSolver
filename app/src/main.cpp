@@ -53,12 +53,12 @@
 #include <SDL3/SDL_main.h>
 import ses.scenario.tunneling_director;
 
-import ses.app.scheduler;
+import app.scheduler;
 import ses.scenario.harmonic_director;
 import ses.scenario.hydrogen_director;
 import ses.scenario.selftest_arcs;
 import ses.vk.render_blobs;
-import ses.app.imgui_ui;
+import app.imgui_ui;
 import ses.vk.present;
 import ses.vk.vram_probe;
 
@@ -73,7 +73,7 @@ namespace {
 constexpr std::uint64_t kTickMs = 16;
 
 // The shell: window + input + device + presentation + the main loop. The one
-// wrapper surface shared by the keyboard, the ImGui panel (ses.app.imgui_ui),
+// wrapper surface shared by the keyboard, the ImGui panel (app.imgui_ui),
 // and the selftest arcs (ses.scenario.selftest_arcs).
 class Shell {
 public:
@@ -281,11 +281,11 @@ public:
             ImGui_ImplSDL3_NewFrame();
             ImGui::NewFrame();
             if (auto* hy = director_->hydrogen()) {
-                ses_shell::draw_hydrogen_panel(*this, ui_, *hy);
+                app::draw_hydrogen_panel(*this, ui_, *hy);
             } else if (director_->tunnel() != nullptr) {
-                ses_shell::draw_generic_panel(*this, ui_, {});
+                app::draw_generic_panel(*this, ui_, {});
             } else {
-                ses_shell::draw_generic_panel(
+                app::draw_generic_panel(
                     *this, ui_, {{"Relax to ground (2)", '2'}});
             }
             // Panel controls mutate the director directly, so keep the status
@@ -367,7 +367,7 @@ public:
         distance_ = std::clamp(d, 4.0, 300.0);
     }
 
-    ses_shell::Scheduler& sched() { return sched_; }
+    app::Scheduler& sched() { return sched_; }
     void request_exit(int code) {
         exit_code_ = code;
         exit_requested_ = true;
@@ -620,8 +620,8 @@ private:
     VkSurfaceKHR surface_ = VK_NULL_HANDLE;
 
     std::vector<std::string> args_;
-    ses_shell::Scheduler sched_;
-    ses_shell::UiState ui_;
+    app::Scheduler sched_;
+    app::UiState ui_;
     std::string status_text_;
     double perf_sim_rate_ = 0.0;     // achieved au/s, ~1 s rolling window
     double perf_last_sim_t_ = 0.0;

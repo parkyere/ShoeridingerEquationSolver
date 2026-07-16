@@ -3,7 +3,7 @@ module;
 #include <functional>
 #include <utility>
 #include <vector>
-export module ses.app.scheduler;
+export module app.scheduler;
 
 
 // Wall-clock callback scheduler for the SDL main loop. after() fires once;
@@ -12,7 +12,7 @@ export module ses.app.scheduler;
 // way).
 
 
-export namespace ses_shell {
+export namespace app {
 
 class Scheduler {
 public:
@@ -68,4 +68,4 @@ private:
     int next_id_ = 1;
 };
 
-}  // namespace ses_shell
+}  // namespace app
