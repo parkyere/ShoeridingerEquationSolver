@@ -13,7 +13,7 @@ import ses.colormap;
 // quad geometry, and the slice colour mapping. This is the SINGLE SOURCE OF
 // TRUTH the shaders mirror -- volume.frag (clip), slice.vert (quad),
 // slice.frag (sample + colour). Only the final composited image stays
-// visual-only (dump-frame), exactly as core/volume.hpp backs the volume
+// visual-only (dump-frame), exactly as ses.volume backs the volume
 // raymarch.
 
 

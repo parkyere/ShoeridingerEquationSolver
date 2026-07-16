@@ -1,4 +1,8 @@
-#pragma once
+module;
+#include <core/vec.hpp>
+#include <cmath>
+export module ses.camera;
+
 
 // Hand-rolled renderer math (purist reinvention boundary: no GLM).
 // Conventions (pinned by tests/camera_test.cpp):
@@ -7,11 +11,8 @@
 //  - NDC depth [-1, +1] (standard OpenGL clip conventions). The Vulkan
 //    renderer applies its own y-flip/depth-remap clip correction.
 
-#include <core/vec.hpp>
 
-#include <cmath>
-
-namespace ses {
+export namespace ses {
 
 struct Mat4 {
     double m[16]{};  // column-major

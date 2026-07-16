@@ -15,12 +15,10 @@
 
 #include "vk_compute.hpp"
 
-#include <core/camera.hpp>
 #include <core/grid.hpp>
 #include <core/marching_cubes.hpp>
 #include <core/sphere.hpp>
 #include <core/vec.hpp>
-#include <core/volume.hpp>  // ses::phase_lut
 
 #include <algorithm>
 #include <array>
@@ -30,7 +28,9 @@
 #include <cstring>
 #include <vector>
 
+import ses.camera;
 import ses.colormap;
+import ses.volume;
 
 namespace ses_vk {
 

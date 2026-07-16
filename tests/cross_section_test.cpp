@@ -2,7 +2,7 @@
 // plane's ray-interval math, the slice quad geometry, and the slice colour
 // mapping. These are the SINGLE SOURCE OF TRUTH the GLSL (volume.frag,
 // slice.vert, slice.frag) mirrors textually. Verification posture matches
-// volume.frag / core/volume.hpp / volume_test.cpp: the CPU logic is pinned
+// volume.frag / ses.volume / volume_test.cpp: the CPU logic is pinned
 // here; the fragment shader's transcription is verified by the dump-frame
 // composite, NOT by a per-fragment GPU oracle (there is none).
 

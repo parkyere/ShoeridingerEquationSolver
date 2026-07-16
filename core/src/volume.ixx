@@ -1,21 +1,22 @@
-#pragma once
-
-// Volume-rendering math. The shader ray marcher mirrors these formulas
-// line-by-line; correctness is pinned HERE (tests/volume_test.cpp) because
-// shaders cannot be unit-tested.
-
+module;
 #include <core/vec.hpp>
-
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <limits>
 #include <numbers>
 #include <vector>
+export module ses.volume;
 
 import ses.colormap;
 
-namespace ses {
+
+// Volume-rendering math. The shader ray marcher mirrors these formulas
+// line-by-line; correctness is pinned HERE (tests/volume_test.cpp) because
+// shaders cannot be unit-tested.
+
+
+export namespace ses {
 
 struct RayHit {
     bool hit{};

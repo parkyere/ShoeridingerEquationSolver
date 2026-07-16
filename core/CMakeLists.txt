@@ -19,7 +19,9 @@ target_sources(sesolver_core
         src/colormap.ixx
         src/vram_budget.ixx
         src/flow.ixx
-        src/cross_section.ixx)
+        src/cross_section.ixx
+        src/camera.ixx
+        src/volume.ixx)
 target_compile_features(sesolver_core PUBLIC cxx_std_20)
 target_link_libraries(sesolver_core PRIVATE ses_warnings)
 target_link_libraries(sesolver_core PUBLIC ses_arch)

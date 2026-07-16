@@ -12,7 +12,6 @@
 //    GPU samples the TESTED colormap instead of a re-derived formula.
 
 #include <core/vec.hpp>
-#include <core/volume.hpp>
 
 #include <gtest/gtest.h>
 
@@ -21,6 +20,7 @@
 #include <vector>
 
 import ses.colormap;
+import ses.volume;
 
 namespace {
 
