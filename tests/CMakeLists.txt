@@ -27,6 +27,7 @@ add_executable(sesolver_tests
     decay_test.cpp
     deflation_test.cpp
     degenerate_guards_test.cpp
+    dipole_angular_test.cpp
     drive_test.cpp
     dynamics3_test.cpp
     eigenstate_flush_test.cpp
