@@ -8,7 +8,7 @@
 
 import ses.mc.tables;
 
-#include <core/grid.hpp>
+import ses.grid;
 import ses.vec;
 
 #include <algorithm>

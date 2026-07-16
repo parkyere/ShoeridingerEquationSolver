@@ -6,7 +6,7 @@
 // steps (pinned by tests) -- no hidden physics lives here.
 
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/imaginary_time.hpp>
 #include <core/measurement.hpp>
 #include <core/propagator.hpp>

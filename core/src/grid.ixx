@@ -1,4 +1,5 @@
-#pragma once
+export module ses.grid;
+
 
 // 1D uniform PERIODIC grid.
 //
@@ -6,7 +7,8 @@
 //     h = (xmax - xmin) / n,    x_i = xmin + i*h,    i = 0 .. n-1.
 // xmax is NOT a grid point; it aliases to xmin under periodicity.
 
-namespace ses {
+
+export namespace ses {
 
 struct Grid1D {
     double xmin{};

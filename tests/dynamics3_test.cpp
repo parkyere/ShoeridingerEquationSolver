@@ -11,7 +11,7 @@
 //    wrong (offset, isotropic-width) initial packet.
 
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/imaginary_time.hpp>
 #include <core/observables.hpp>
 #include <core/potential.hpp>

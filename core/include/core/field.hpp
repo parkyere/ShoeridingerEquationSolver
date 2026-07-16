@@ -7,7 +7,7 @@
 // so a continuum-normalized function sampled on the grid keeps unit norm.
 
 #include <core/complex.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 
 #include <cmath>
 #include <vector>

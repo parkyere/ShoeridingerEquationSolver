@@ -4,7 +4,7 @@
 // and propagator() exposes the tested phase tables without rebuilding them.
 
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/observables.hpp>
 #include <core/potential.hpp>
 #include <core/propagator.hpp>

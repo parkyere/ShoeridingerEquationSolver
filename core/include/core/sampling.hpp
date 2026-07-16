@@ -6,7 +6,7 @@
 
 #include <core/complex.hpp>
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/marching_cubes.hpp>
 import ses.vec;
 

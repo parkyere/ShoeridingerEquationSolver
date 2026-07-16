@@ -8,7 +8,7 @@
 // (The endpoint-inclusive convention h = L/(n-1) would silently break the FFT
 // wavenumber mapping later; this spec exists to forbid it.)
 
-#include <core/grid.hpp>
+import ses.grid;
 
 #include <gtest/gtest.h>
 

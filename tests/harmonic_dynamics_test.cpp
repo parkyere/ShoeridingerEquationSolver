@@ -19,7 +19,7 @@
 // The last test pins the O(dt^2) convergence claim itself.
 
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/observables.hpp>
 #include <core/potential.hpp>
 #include <core/propagator.hpp>

@@ -9,7 +9,7 @@
 #include "vk_blobs.hpp"
 
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/imaginary_time.hpp>
 #include <core/marching_cubes.hpp>
 #include <core/observables.hpp>

@@ -8,7 +8,7 @@
 #include <core/complex.hpp>
 #include <core/fft.hpp>
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 
 #include <gtest/gtest.h>
 

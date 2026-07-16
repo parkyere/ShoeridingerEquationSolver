@@ -7,7 +7,7 @@
 
 #include "vk_device.hpp"
 
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/marching_cubes.hpp>
 
 #include <cstdint>

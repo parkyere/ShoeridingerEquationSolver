@@ -9,7 +9,7 @@
 
 #include <core/complex.hpp>
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 import ses.vec;
 
 #include <cmath>

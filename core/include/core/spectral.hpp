@@ -4,7 +4,7 @@
 //     k_j = 2 pi j / L        j = 0 .. n/2 - 1
 //     k_j = 2 pi (j - n) / L  j = n/2 .. n - 1
 
-#include <core/grid.hpp>
+import ses.grid;
 
 #include <numbers>
 #include <vector>

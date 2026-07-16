@@ -15,7 +15,7 @@
 // coherent-state spec (harmonic_dynamics_test).
 
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/observables.hpp>
 #include <core/propagator.hpp>
 #include <core/wavepacket.hpp>

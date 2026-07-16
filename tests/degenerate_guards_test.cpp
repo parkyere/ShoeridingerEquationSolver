@@ -4,7 +4,7 @@
 
 #include <core/field.hpp>
 #include <core/fft.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/marching_cubes.hpp>
 #include <core/observables.hpp>
 import ses.vec;

@@ -17,7 +17,7 @@
 
 #include <core/decay.hpp>
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/observables.hpp>
 #include <core/potential.hpp>
 import ses.vec;

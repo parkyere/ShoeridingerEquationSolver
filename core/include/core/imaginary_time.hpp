@@ -7,7 +7,7 @@
 
 #include <core/fft.hpp>
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/spectral.hpp>
 
 #include <cassert>

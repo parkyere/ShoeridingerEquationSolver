@@ -3,7 +3,7 @@
 // Potential builders: real-valued V sampled on the grid, fed to the
 // split-operator propagator. Atomic units.
 
-#include <core/grid.hpp>
+import ses.grid;
 import ses.vec;
 
 #include <cmath>

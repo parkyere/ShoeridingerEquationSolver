@@ -8,7 +8,7 @@
 // deepest value is exactly -Z/a at the center and finite everywhere.
 // Oracles: exact values at grid points chosen to be exact in binary.
 
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/potential.hpp>
 
 #include <gtest/gtest.h>

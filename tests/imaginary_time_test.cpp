@@ -14,7 +14,7 @@
 //    value for V = -1/sqrt(x^2+1)) -- the precursor of the hydrogen 1s cloud.
 
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/imaginary_time.hpp>
 #include <core/observables.hpp>
 #include <core/potential.hpp>

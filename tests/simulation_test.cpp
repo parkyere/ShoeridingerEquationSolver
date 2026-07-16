@@ -7,7 +7,7 @@
 // density peak, so an animated (dispersing) cloud keeps a visible surface.
 
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/marching_cubes.hpp>
 #include <core/observables.hpp>
 #include <core/potential.hpp>

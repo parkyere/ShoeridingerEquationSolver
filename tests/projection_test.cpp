@@ -18,7 +18,7 @@
 
 #include <core/complex.hpp>
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/harmonics.hpp>
 #include <core/radial.hpp>
 #include <core/wavepacket.hpp>

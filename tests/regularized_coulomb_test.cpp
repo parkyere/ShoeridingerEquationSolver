@@ -14,7 +14,7 @@
 //  - n=1 sits well below n=2; 2s and 2p share the n=2 shell (approx SO(4)).
 
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/harmonics.hpp>
 #include <core/imaginary_time.hpp>
 #include <core/observables.hpp>

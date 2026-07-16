@@ -13,7 +13,7 @@
 
 #include <core/complex.hpp>
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/marching_cubes.hpp>
 #include <core/observables.hpp>
 #include <core/sampling.hpp>

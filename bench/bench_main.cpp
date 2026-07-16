@@ -4,7 +4,7 @@
 // prints per-operation wall times at 32^3 and 64^3.
 
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/marching_cubes.hpp>
 #include <core/potential.hpp>
 #include <core/simulation.hpp>

@@ -5,7 +5,7 @@
 // Oracles: table entries equal the defining formulas evaluated through the
 // same public building blocks (wavenumbers, potential), bitwise.
 
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/potential.hpp>
 #include <core/propagator.hpp>
 #include <core/simulation.hpp>

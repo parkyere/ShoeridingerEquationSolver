@@ -11,7 +11,7 @@
 //    (only the invisible global phase turns).
 
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/observables.hpp>
 #include <core/potential.hpp>
 #include <core/simulation.hpp>

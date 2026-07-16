@@ -8,7 +8,7 @@
 // Strang-split: R(a) . [halfV.kin.halfV] . R(a), a = (B/2)(dt/2). Unitary.
 
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/propagator.hpp>
 #include <core/rotation.hpp>
 

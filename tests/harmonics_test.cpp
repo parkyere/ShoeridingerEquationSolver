@@ -14,7 +14,7 @@
 //  - parity: p_x flips sign under x -> -x, d_xy is even under (x,y) -> -.
 
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/harmonics.hpp>
 #include <core/observables.hpp>
 #include <core/potential.hpp>

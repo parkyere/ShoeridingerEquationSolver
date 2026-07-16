@@ -19,7 +19,7 @@
 //    FASTER under subsequent free evolution.
 
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/measurement.hpp>
 #include <core/observables.hpp>
 #include <core/potential.hpp>

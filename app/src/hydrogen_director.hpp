@@ -13,7 +13,7 @@
 
 #include <core/decay.hpp>
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/imaginary_time.hpp>
 #include <core/magnetic.hpp>
 #include <core/marching_cubes.hpp>

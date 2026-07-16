@@ -15,7 +15,7 @@
 
 #include "vk_compute.hpp"
 
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/marching_cubes.hpp>
 #include <core/sphere.hpp>
 import ses.vec;

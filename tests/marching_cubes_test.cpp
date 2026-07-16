@@ -13,7 +13,7 @@
 // "inside" of a density cloud), and normals point OUTWARD (down-gradient).
 
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/marching_cubes.hpp>
 import ses.vec;
 

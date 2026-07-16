@@ -9,7 +9,7 @@
 
 #include <core/complex.hpp>
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/harmonics.hpp>  // real_spherical_harmonic
 #include <core/radial.hpp>     // RadialGrid
 

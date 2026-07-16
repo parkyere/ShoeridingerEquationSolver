@@ -6,7 +6,7 @@
 // observables, or the k-mapping shows up as a wrong per-axis number).
 
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/observables.hpp>
 #include <core/potential.hpp>
 import ses.vec;

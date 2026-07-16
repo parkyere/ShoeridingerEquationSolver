@@ -7,7 +7,7 @@
 // composite, NOT by a per-fragment GPU oracle (there is none).
 
 #include <core/complex.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 import ses.vec;
 
 #include <gtest/gtest.h>

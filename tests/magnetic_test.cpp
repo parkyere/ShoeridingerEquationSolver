@@ -18,7 +18,7 @@
 //  - norm is conserved.
 
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/magnetic.hpp>
 #include <core/potential.hpp>
 #include <core/propagator.hpp>

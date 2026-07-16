@@ -13,7 +13,7 @@
 //  - composition R(a) . R(b) == R(a+b).
 
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 #include <core/observables.hpp>
 #include <core/rotation.hpp>
 import ses.vec;

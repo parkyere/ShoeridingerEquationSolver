@@ -21,7 +21,7 @@
 #include <core/complex.hpp>
 #include <core/decay.hpp>
 #include <core/field.hpp>
-#include <core/grid.hpp>
+import ses.grid;
 import ses.vec;
 
 #include <gtest/gtest.h>
