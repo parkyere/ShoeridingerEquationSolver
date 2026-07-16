@@ -44,6 +44,12 @@ enum class PartialBasis { None, NShell, LTotal, MZ };
 constexpr int kStepsPerTick = 1;
 constexpr int kRelaxStepsPerTick = 1;
 constexpr double kRelaxDtau = 0.05;
+// Post-collapse flush budget (tau = 0.3): flushes the Ha-scale cusp junk of
+// a freshly synthesized collapse target (~92% of its <H> offset, contract in
+// tests/eigenstate_flush_test.cpp) while excited-target drain toward 1s stays
+// negligible. FIXED by design -- a longer or adaptive burst becomes
+// non-radiative decay (see start_excited_relax's deflation footgun).
+constexpr int kFlushSteps = 6;
 constexpr double kIsoFraction = 0.25;
 constexpr double kMeasureSigma = 1.25;  // Bohr; sigma keeps the measurement
                                         // back-action 3/(8 sigma^2) = 0.24 Ha
@@ -240,6 +246,8 @@ public:
                 if (n >= 0) {
                     atom_.collapse_onto(engine_, n);
                     reset_ionized_tally();
+                    flush_collapse_error(n);  // bridge below shows the
+                                              // flushed state
                     write_display_texture();
                     last_measure_ = strf(
                         "%s (E %.3f eV)",
@@ -496,6 +504,10 @@ public:
             decay_accum_dt_ = 0.0;  // no hazard accrues while decay is off
         }
         decay_on_ = !decay_on_;
+        // Flush residency ends with decay (never mid-relax: tables in use).
+        if (!decay_on_ && stepping_ == BaseStepping::RealTime) {
+            drop_relax_tables();
+        }
     }
 
     // Instantly excite an n = 3/4 state (cycles) for the decay-cascade demo.
@@ -1185,7 +1197,9 @@ private:
                     const ShellChannel& ch =
                         atom_.channels()[static_cast<std::size_t>(pick.channel)];
                     atom_.collapse_onto(engine_, ch.to);
-                    reset_ionized_tally();
+                    reset_ionized_tally();  // BEFORE the flush: its renorm
+                                            // must not read as ionization
+                    flush_collapse_error(ch.to);
                     flash_ticks_ = kFlashTicks;
                     ++photon_count_;
                     last_jump_ = strf("%s->%s", kStateSpec[ch.from].name,
@@ -1496,6 +1510,27 @@ private:
         cpu_is_truth_ = false;  // the GPU state is the seed
         write_display_texture();
         volume_dirty_ = false;
+    }
+
+    // Post-collapse eigenstate-error flush: every collapse target is the
+    // SAMPLED radial eigenstate, not a grid eigenstate, so kFlushSteps of
+    // imaginary time flush its high-frequency junk before real time resumes
+    // (GPU-path parity pinned by vkcheck's collapse-flush check). Skipped
+    // while the laser drives (same rationale as the MCWF-damping exclusion).
+    // Tables stay resident while decay is armed -- rebuilding them per photon
+    // costs more than the burst itself; a one-off flush drops them again.
+    void flush_collapse_error(int target) {
+        if (laser_pol_ != LaserPol::Off || !ensure_relax_tables()) {
+            return;
+        }
+        const ses_vk::Engine::RelaxStats stats = engine_.relax_step(kFlushSteps);
+        if (!decay_on_) {
+            drop_relax_tables();
+        }
+        // A cooled 1s <H> is the laser's preferred resonance reference.
+        if (target == kS1 && stats.energy < -0.35) {
+            relax_energy_display_ = stats.energy;
+        }
     }
 
     // Transient relax tables: built + uploaded on demand (per relax entry),
