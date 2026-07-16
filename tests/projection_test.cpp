@@ -17,7 +17,6 @@
 #include <core/projection.hpp>
 
 #include <complex>
-import ses.complex;
 #include <core/field.hpp>
 import ses.grid;
 #include <core/harmonics.hpp>
@@ -71,9 +70,9 @@ TEST(RadialAngularProjection, ExactReorgIdentity) {
         ses::Field3D orbital{g};
         ses::fill_orbital(orbital, g, rg,
                           u_by_level[static_cast<std::size_t>(st.level)], st.l, st.m);
-        const ses::Complex<double> oracle = ses::inner_product(orbital, psi);
+        const std::complex<double> oracle = ses::inner_product(orbital, psi);
         // raw (un-normalized) amplitude = amp * sqrt(norm2) = sum_j u[j] g_lm[j].
-        const ses::Complex<double> raw =
+        const std::complex<double> raw =
             proj.amp[s] * std::sqrt(proj.norm2[static_cast<std::size_t>(s)]);
         const double tol = 1e-11 * (1.0 + std::abs(oracle.real()) + std::abs(oracle.imag()));
         EXPECT_NEAR(raw.real(), oracle.real(), tol) << "state " << s;
@@ -95,7 +94,7 @@ TEST(RadialAngularProjection, OriginAndRmaxShape) {
     // (a) support only at the exact origin cell (coord(24) = 0, r = 0 < h).
     {
         ses::Field3D psi{g};
-        psi(24, 24, 24) = ses::Complex<double>{1.0, 0.0};
+        psi(24, 24, 24) = std::complex<double>{1.0, 0.0};
         const ses::RadialAngularProjection proj =
             ses::project_radial_angular(psi, rg, u_by_level, states, 5);
         // l=0: only bin 0 receives (weight 1/h); every other bin is exactly 0.
@@ -119,10 +118,10 @@ TEST(RadialAngularProjection, OriginAndRmaxShape) {
     // (b) support only beyond rmax (corner cell, r ~ 16.6 > 10): all amps zero.
     {
         ses::Field3D psi{g};
-        psi(47, 47, 47) = ses::Complex<double>{1.0, 0.0};
+        psi(47, 47, 47) = std::complex<double>{1.0, 0.0};
         const ses::RadialAngularProjection proj =
             ses::project_radial_angular(psi, rg, u_by_level, states, 5);
-        for (const ses::Complex<double>& a : proj.amp) {
+        for (const std::complex<double>& a : proj.amp) {
             EXPECT_EQ(std::abs(a), 0.0);
         }
     }
@@ -155,8 +154,8 @@ TEST(RadialAngularProjection, AngularOrthogonality) {
     // replaces (which would inner-product the same two grid orbitals).
     ses::Field3D o30{g};
     ses::fill_orbital(o30, g, rg, u_by_level[0], 3, 0);
-    const ses::Complex<double> direct = ses::inner_product(o30, psi);
-    const ses::Complex<double> raw3 = proj.amp[3] * std::sqrt(proj.norm2[3]);
+    const std::complex<double> direct = ses::inner_product(o30, psi);
+    const std::complex<double> raw3 = proj.amp[3] * std::sqrt(proj.norm2[3]);
     const double tol = 1e-11 * (1.0 + std::abs(direct.real()) + std::abs(direct.imag()));
     EXPECT_NEAR(raw3.real(), direct.real(), tol);
     EXPECT_NEAR(raw3.imag(), direct.imag(), tol);
@@ -315,11 +314,11 @@ double fp32_accum_worst_rel(const ses::Field3D& psi, const ses::RadialGrid& rg,
                     w0 = (1.0 - frac) / r;
                     if (i0 + 1 < nr) { b1 = i0 + 1; w1 = frac / r; }
                 }
-                const ses::Complex<double> pdV = psi(i, j, k) * dV;
+                const std::complex<double> pdV = psi(i, j, k) * dV;
                 for (int l = 0; l <= 5; ++l) {
                     for (int m = -l; m <= l; ++m) {
                         const double Y = ses::real_spherical_harmonic(l, m, x, y, z);
-                        const ses::Complex<double> c = pdV * Y;
+                        const std::complex<double> c = pdV * Y;
                         const std::size_t cc = static_cast<std::size_t>(ses::lm_index(l, m));
                         // accumulate in fp32 (the GPU workgroup's precision)
                         g32[cc][static_cast<std::size_t>(b0)] +=
@@ -342,13 +341,13 @@ double fp32_accum_worst_rel(const ses::Field3D& psi, const ses::RadialGrid& rg,
         const std::vector<double>& u = u_by_level[static_cast<std::size_t>(states[s].level)];
         const std::vector<std::complex<float>>& gc =
             g32[static_cast<std::size_t>(ses::lm_index(states[s].l, states[s].m))];
-        ses::Complex<double> raw32{};
+        std::complex<double> raw32{};
         for (int jr = 0; jr < nr; ++jr) {
             raw32 += u[static_cast<std::size_t>(jr)] *
-                     ses::Complex<double>{gc[static_cast<std::size_t>(jr)].real(),
+                     std::complex<double>{gc[static_cast<std::size_t>(jr)].real(),
                                           gc[static_cast<std::size_t>(jr)].imag()};
         }
-        const ses::Complex<double> raw64 =
+        const std::complex<double> raw64 =
             ref.amp[s] * std::sqrt(ref.norm2[static_cast<std::size_t>(s)]);
         worst = std::max(worst, std::abs(raw32 - raw64) / (1.0 + std::abs(raw64)));
     }
@@ -378,7 +377,7 @@ TEST(RadialAngularProjection, Fp32PerBinAccumulationHoldsTolerance) {
             for (int i = 0; i < g.x.n; ++i) {
                 const double ph = kk.x * g.x.coord(i) + kk.y * g.y.coord(j) +
                                   kk.z * g.z.coord(k);
-                plane(i, j, k) = ses::Complex<double>{std::cos(ph), std::sin(ph)};
+                plane(i, j, k) = std::complex<double>{std::cos(ph), std::sin(ph)};
             }
     const double e_continuum = fp32_accum_worst_rel(plane, rg, u_by_level, states);
 

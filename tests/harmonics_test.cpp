@@ -250,15 +250,15 @@ TEST(RealSphericalHarmonic, CosSinPairsCombineToLzEigenfunctions) {
             const auto f = [&](double phi) {
                 const double x = rho * std::cos(phi);
                 const double y = rho * std::sin(phi);
-                return ses::Complex<double>{
+                return std::complex<double>{
                     ses::real_spherical_harmonic(l, m, x, y, z),
                     ses::real_spherical_harmonic(l, -m, x, y, z)};
             };
-            const ses::Complex<double> f0 = f(0.0);
+            const std::complex<double> f0 = f(0.0);
             ASSERT_GT(std::abs(f0), 1e-4) << "theta node hit at l=" << l;
             for (int k = 1; k <= 7; ++k) {
                 const double phi = 0.83 * k;
-                const ses::Complex<double> ratio = f(phi) / f0;
+                const std::complex<double> ratio = f(phi) / f0;
                 // ratio must equal e^{+i m phi} exactly (uniform ring,
                 // right-handed phase advance).
                 EXPECT_NEAR(ratio.real(), std::cos(m * phi), 1e-12)

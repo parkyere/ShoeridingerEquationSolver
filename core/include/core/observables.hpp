@@ -5,7 +5,6 @@
 // fields as well.
 
 #include <complex>
-import ses.complex;
 #include <core/fft.hpp>
 #include <core/field.hpp>
 #include <core/spectral.hpp>
@@ -35,7 +34,7 @@ inline double mean_position(const Field1D& f) noexcept {
     double num = 0.0;
     double den = 0.0;
     for (int i = 0; i < f.size(); ++i) {
-        const double w = norm_sq(f[i]);
+        const double w = std::norm(f[i]);
         num += f.grid().coord(i) * w;
         den += w;
     }
@@ -48,7 +47,7 @@ inline double sigma_x(const Field1D& f) noexcept {
     double den = 0.0;
     for (int i = 0; i < f.size(); ++i) {
         const double x = f.grid().coord(i);
-        const double w = norm_sq(f[i]);
+        const double w = std::norm(f[i]);
         num += x * x * w;
         den += w;
     }
@@ -57,13 +56,13 @@ inline double sigma_x(const Field1D& f) noexcept {
 
 // <p> = sum k_j |phi_j|^2 / sum |phi_j|^2 with phi = fft(psi)  (weights cancel)
 inline double mean_momentum(const Field1D& f) {
-    std::vector<Complex<double>> phi = f.data();
+    std::vector<std::complex<double>> phi = f.data();
     fft(phi);
     const std::vector<double> k = wavenumbers(f.grid());
     double num = 0.0;
     double den = 0.0;
     for (std::size_t j = 0; j < phi.size(); ++j) {
-        const double w = norm_sq(phi[j]);
+        const double w = std::norm(phi[j]);
         num += k[j] * w;
         den += w;
     }
@@ -77,18 +76,18 @@ inline double mean_energy(const Field1D& f, const std::vector<double>& potential
     double num_v = 0.0;
     double den_x = 0.0;
     for (int i = 0; i < f.size(); ++i) {
-        const double w = norm_sq(f[i]);
+        const double w = std::norm(f[i]);
         num_v += potential[static_cast<std::size_t>(i)] * w;
         den_x += w;
     }
 
-    std::vector<Complex<double>> phi = f.data();
+    std::vector<std::complex<double>> phi = f.data();
     fft(phi);
     const std::vector<double> k = wavenumbers(f.grid());
     double num_t = 0.0;
     double den_k = 0.0;
     for (std::size_t j = 0; j < phi.size(); ++j) {
-        const double w = norm_sq(phi[j]);
+        const double w = std::norm(phi[j]);
         num_t += 0.5 * k[j] * k[j] * w;
         den_k += w;
     }
@@ -105,7 +104,7 @@ inline Vec3d mean_position(const Field3D& f) noexcept {
     for (int k = 0; k < g.z.n; ++k) {
         for (int j = 0; j < g.y.n; ++j) {
             for (int i = 0; i < g.x.n; ++i) {
-                const double w = norm_sq(f(i, j, k));
+                const double w = std::norm(f(i, j, k));
                 num.x += g.x.coord(i) * w;
                 num.y += g.y.coord(j) * w;
                 num.z += g.z.coord(k) * w;
@@ -124,7 +123,7 @@ inline Vec3d sigma_position(const Field3D& f) noexcept {
     for (int k = 0; k < g.z.n; ++k) {
         for (int j = 0; j < g.y.n; ++j) {
             for (int i = 0; i < g.x.n; ++i) {
-                const double w = norm_sq(f(i, j, k));
+                const double w = std::norm(f(i, j, k));
                 const double x = g.x.coord(i);
                 const double y = g.y.coord(j);
                 const double z = g.z.coord(k);
@@ -153,7 +152,7 @@ inline Vec3d mean_momentum(const Field3D& f) {
     for (int k = 0; k < g.z.n; ++k) {
         for (int j = 0; j < g.y.n; ++j) {
             for (int i = 0; i < g.x.n; ++i) {
-                const double w = norm_sq(phi(i, j, k));
+                const double w = std::norm(phi(i, j, k));
                 num.x += kx[static_cast<std::size_t>(i)] * w;
                 num.y += ky[static_cast<std::size_t>(j)] * w;
                 num.z += kz[static_cast<std::size_t>(k)] * w;
@@ -169,7 +168,7 @@ inline double mean_energy(const Field3D& f, const std::vector<double>& potential
     double num_v = 0.0;
     double den_x = 0.0;
     for (std::size_t i = 0; i < f.data().size(); ++i) {
-        const double w = norm_sq(f.data()[i]);
+        const double w = std::norm(f.data()[i]);
         num_v += potential[i] * w;
         den_x += w;
     }
@@ -185,7 +184,7 @@ inline double mean_energy(const Field3D& f, const std::vector<double>& potential
     for (int k = 0; k < g.z.n; ++k) {
         for (int j = 0; j < g.y.n; ++j) {
             for (int i = 0; i < g.x.n; ++i) {
-                const double w = norm_sq(phi(i, j, k));
+                const double w = std::norm(phi(i, j, k));
                 const double kxx = kx[static_cast<std::size_t>(i)];
                 const double kyy = ky[static_cast<std::size_t>(j)];
                 const double kzz = kz[static_cast<std::size_t>(k)];

@@ -7,7 +7,6 @@
 // Phase tables are precomputed once per (grid, potential, dt).
 
 #include <complex>
-import ses.complex;
 #include <core/fft.hpp>
 #include <core/field.hpp>
 import ses.grid;
@@ -31,14 +30,14 @@ public:
         half_v_.resize(n);
         for (std::size_t i = 0; i < n; ++i) {
             const double th = -0.5 * potential[i] * dt;
-            half_v_[i] = Complex<double>{std::cos(th), std::sin(th)};
+            half_v_[i] = std::complex<double>{std::cos(th), std::sin(th)};
         }
 
         const std::vector<double> k = wavenumbers(g);
         kinetic_.resize(n);
         for (std::size_t j = 0; j < n; ++j) {
             const double th = -0.5 * k[j] * k[j] * dt;
-            kinetic_[j] = Complex<double>{std::cos(th), std::sin(th)};
+            kinetic_[j] = std::complex<double>{std::cos(th), std::sin(th)};
         }
     }
 
@@ -56,16 +55,16 @@ public:
     }
 
 private:
-    static void apply_phase(const std::vector<Complex<double>>& phase,
-                            std::vector<Complex<double>>& a) noexcept {
+    static void apply_phase(const std::vector<std::complex<double>>& phase,
+                            std::vector<std::complex<double>>& a) noexcept {
         for (std::size_t i = 0; i < a.size(); ++i) {
             a[i] = a[i] * phase[i];
         }
     }
 
     double dt_;
-    std::vector<Complex<double>> half_v_;   // e^{-i V dt/2} per grid point
-    std::vector<Complex<double>> kinetic_;  // e^{-i k^2 dt/2} per FFT bin
+    std::vector<std::complex<double>> half_v_;   // e^{-i V dt/2} per grid point
+    std::vector<std::complex<double>> kinetic_;  // e^{-i k^2 dt/2} per FFT bin
 };
 
 // 3D split-operator: identical structure, kinetic phase over the 3D k-grid.
@@ -79,7 +78,7 @@ public:
         half_v_.resize(n);
         for (std::size_t i = 0; i < n; ++i) {
             const double th = -0.5 * potential[i] * dt;
-            half_v_[i] = Complex<double>{std::cos(th), std::sin(th)};
+            half_v_[i] = std::complex<double>{std::cos(th), std::sin(th)};
         }
 
         const std::vector<double> kx = wavenumbers(g.x);
@@ -94,7 +93,7 @@ public:
                     const double kzz = kz[static_cast<std::size_t>(k)];
                     const double th = -0.5 * (kxx * kxx + kyy * kyy + kzz * kzz) * dt;
                     kinetic_[static_cast<std::size_t>(g.flat(i, j, k))] =
-                        Complex<double>{std::cos(th), std::sin(th)};
+                        std::complex<double>{std::cos(th), std::sin(th)};
                 }
             }
         }
@@ -104,8 +103,8 @@ public:
 
     // Read access to the phase tables so the GPU engine consumes the TESTED
     // tables instead of re-deriving them.
-    const std::vector<Complex<double>>& half_potential_phase() const noexcept { return half_v_; }
-    const std::vector<Complex<double>>& kinetic_phase() const noexcept { return kinetic_; }
+    const std::vector<std::complex<double>>& half_potential_phase() const noexcept { return half_v_; }
+    const std::vector<std::complex<double>>& kinetic_phase() const noexcept { return kinetic_; }
 
     void step(Field3D& psi, int nsteps = 1) const {
         assert(psi.data().size() == half_v_.size());
@@ -120,8 +119,8 @@ public:
 
 private:
     // Elementwise (disjoint) multiply: threaded result is bitwise identical.
-    static void apply_phase(const std::vector<Complex<double>>& phase,
-                            std::vector<Complex<double>>& a) noexcept {
+    static void apply_phase(const std::vector<std::complex<double>>& phase,
+                            std::vector<std::complex<double>>& a) noexcept {
         const std::int64_t n = static_cast<std::int64_t>(a.size());
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
@@ -133,8 +132,8 @@ private:
     }
 
     double dt_;
-    std::vector<Complex<double>> half_v_;
-    std::vector<Complex<double>> kinetic_;
+    std::vector<std::complex<double>> half_v_;
+    std::vector<std::complex<double>> kinetic_;
 };
 
 }  // namespace ses

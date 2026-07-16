@@ -3,7 +3,6 @@ module;
 #include <algorithm>
 export module ses.flow;
 import ses.vec;
-import ses.complex;
 
 
 // Probability current and the Bohmian velocity field it induces -- the physics
@@ -18,19 +17,19 @@ export namespace ses {
 // rho v), component-wise j_a = Re(psi) Im(d_a psi) - Im(psi) Re(d_a psi). It
 // circulates +phi for the e^{+i phi} (m=+1) ring and vanishes for a real
 // (standing-wave) state.
-inline Vec3d probability_current(Complex<double> psi, Complex<double> dpsi_dx,
-                                 Complex<double> dpsi_dy,
-                                 Complex<double> dpsi_dz) noexcept {
-    const auto jc = [&](Complex<double> d) {
+inline Vec3d probability_current(std::complex<double> psi, std::complex<double> dpsi_dx,
+                                 std::complex<double> dpsi_dy,
+                                 std::complex<double> dpsi_dz) noexcept {
+    const auto jc = [&](std::complex<double> d) {
         return psi.real() * d.imag() - psi.imag() * d.real();
     };
     return Vec3d{jc(dpsi_dx), jc(dpsi_dy), jc(dpsi_dz)};
 }
 
 // Bohmian velocity v = j / rho (rho = |psi|^2), guarded at nodes where rho->0.
-inline Vec3d bohmian_velocity(Complex<double> psi, Complex<double> dpsi_dx,
-                              Complex<double> dpsi_dy,
-                              Complex<double> dpsi_dz) noexcept {
+inline Vec3d bohmian_velocity(std::complex<double> psi, std::complex<double> dpsi_dx,
+                              std::complex<double> dpsi_dy,
+                              std::complex<double> dpsi_dz) noexcept {
     const double rho = psi.real() * psi.real() + psi.imag() * psi.imag();
     const Vec3d j = probability_current(psi, dpsi_dx, dpsi_dy, dpsi_dz);
     const double inv = rho > 1e-12 ? 1.0 / rho : 0.0;

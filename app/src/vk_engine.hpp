@@ -35,7 +35,6 @@
 import ses.mc.tables;
 
 #include <complex>
-import ses.complex;
 #include <core/decay.hpp>
 #include <core/drive.hpp>
 import ses.grid;
@@ -170,7 +169,7 @@ public:
     bool initialize(DeviceContext& ctx, const ses::Grid3D& grid,
                     const EngineKernels& blobs,
                     const std::vector<double>& potential, double dt,
-                    const std::vector<ses::Complex<double>>& psi0) {
+                    const std::vector<std::complex<double>>& psi0) {
         dt_step_ = dt;
         ctx_ = &ctx;
         grid_ = grid;
@@ -1072,7 +1071,7 @@ public:
     }
 
     // Reset psi from a host field.
-    bool upload_state(const std::vector<ses::Complex<double>>& psi) {
+    bool upload_state(const std::vector<std::complex<double>>& psi) {
         return upload_field(psi_, psi);
     }
 
@@ -1080,7 +1079,7 @@ public:
 
     // Upload a CPU state into its own resident fp32 buffer; returns a handle
     // usable with every per-state op, or -1 on failure.
-    int create_state_buffer(const std::vector<ses::Complex<double>>& state) {
+    int create_state_buffer(const std::vector<std::complex<double>>& state) {
         const int handle = create_state_buffer_uninit();
         if (handle < 0) {
             return -1;
@@ -1112,7 +1111,7 @@ public:
     }
 
     // <state|psi> = sum conj(state)*psi * dV (fp16 states decode to scratch).
-    ses::Complex<double> inner_with_psi(int handle) {
+    std::complex<double> inner_with_psi(int handle) {
         State* st = state_at(handle);
         if (st == nullptr) {
             return {};
@@ -1154,7 +1153,7 @@ public:
             re += p[2 * g];
             im += p[2 * g + 1];
         }
-        return ses::Complex<double>{re * cell_volume_, im * cell_volume_};
+        return std::complex<double>{re * cell_volume_, im * cell_volume_};
     }
 
     // Deflated imaginary-time relax: imaginary Strang body, Gram-Schmidt
@@ -1174,7 +1173,7 @@ public:
             shot.submit_and_wait(*ctx_);
             shot.destroy(*ctx_);
             for (int h : lower) {
-                const ses::Complex<double> c = inner_with_psi(h);
+                const std::complex<double> c = inner_with_psi(h);
                 subtract_projection(h, c.real(), c.imag());
             }
             stats = renormalize_and_estimate();
@@ -1989,9 +1988,9 @@ public:
             }
         }
         return ses::DipoleMatrixElement{
-            ses::Complex<double>{d6[0] * cell_volume_, d6[1] * cell_volume_},
-            ses::Complex<double>{d6[2] * cell_volume_, d6[3] * cell_volume_},
-            ses::Complex<double>{d6[4] * cell_volume_, d6[5] * cell_volume_}};
+            std::complex<double>{d6[0] * cell_volume_, d6[1] * cell_volume_},
+            std::complex<double>{d6[2] * cell_volume_, d6[3] * cell_volume_},
+            std::complex<double>{d6[4] * cell_volume_, d6[5] * cell_volume_}};
     }
 
     // ---- orbital-free angular projection --------------------------------
@@ -2079,7 +2078,7 @@ public:
         // avoids re-allocating the ncomp vectors per projection.
         if (glm_host_.size() != static_cast<std::size_t>(proj_ncomp_)) {
             glm_host_.assign(static_cast<std::size_t>(proj_ncomp_),
-                             std::vector<ses::Complex<double>>(
+                             std::vector<std::complex<double>>(
                                  static_cast<std::size_t>(proj_nr_)));
         }
         for (int c = 0; c < proj_ncomp_; ++c) {
@@ -2089,21 +2088,21 @@ public:
                          static_cast<std::size_t>(j));
                 glm_host_[static_cast<std::size_t>(c)]
                          [static_cast<std::size_t>(j)] =
-                             ses::Complex<double>{raw[o], raw[o + 1]};
+                             std::complex<double>{raw[o], raw[o + 1]};
             }
         }
     }
 
     // <n|psi> raw amplitude = sum_j u_nl[j] g_lm[lm(l,m)][j] (double CPU
     // finish). Needs a prior project_psi().
-    ses::Complex<double> project_amplitude(const std::vector<double>& u, int l,
+    std::complex<double> project_amplitude(const std::vector<double>& u, int l,
                                            int m) const {
         const std::size_t comp = static_cast<std::size_t>(l * l + (l + m));
         if (comp >= glm_host_.size()) {
             return {};
         }
-        const std::vector<ses::Complex<double>>& gc = glm_host_[comp];
-        ses::Complex<double> raw{};
+        const std::vector<std::complex<double>>& gc = glm_host_[comp];
+        std::complex<double> raw{};
         const int n = std::min(static_cast<int>(u.size()), proj_nr_);
         for (int j = 0; j < n; ++j) {
             raw += u[static_cast<std::size_t>(j)] * gc[static_cast<std::size_t>(j)];
@@ -2406,7 +2405,7 @@ private:
     };
 
     static std::vector<float> to_rg32f(
-        const std::vector<ses::Complex<double>>& src) {
+        const std::vector<std::complex<double>>& src) {
         std::vector<float> out(2 * src.size());
         for (std::size_t i = 0; i < src.size(); ++i) {
             out[2 * i] = static_cast<float>(src[i].real());
@@ -2453,7 +2452,7 @@ private:
     }
 
     bool upload_field(Buffer& dst,
-                      const std::vector<ses::Complex<double>>& src) {
+                      const std::vector<std::complex<double>>& src) {
         const std::vector<float> f = to_rg32f(src);
         return upload_raw(dst, f.data(), f.size() * sizeof(float));
     }
@@ -3411,7 +3410,7 @@ private:
     int proj_nr_ = 0;
     int proj_ncomp_ = 0;
     double proj_h_radial_ = 0.0;
-    std::vector<std::vector<ses::Complex<double>>> glm_host_;
+    std::vector<std::vector<std::complex<double>>> glm_host_;
 
     Buffer psi_{};
     Buffer v_buf_{};    // scalar potential, R32

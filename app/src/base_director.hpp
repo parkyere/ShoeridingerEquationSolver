@@ -98,8 +98,8 @@ public:
         engine_.wait_async();
         if (cpu_is_truth_) {
             double pk = 0.0;
-            for (const ses::Complex<double>& z : sim_.psi().data()) {
-                pk = std::max(pk, ses::norm_sq(z));
+            for (const std::complex<double>& z : sim_.psi().data()) {
+                pk = std::max(pk, std::norm(z));
             }
             if (pk > 0.0) {
                 peak_ = pk;
@@ -408,7 +408,7 @@ protected:
         ses::Field3D f{sim_.grid()};
         for (std::size_t i = 0; i < f.data().size(); ++i) {
             f.data()[i] =
-                ses::Complex<double>{readback_buf_[2 * i], readback_buf_[2 * i + 1]};
+                std::complex<double>{readback_buf_[2 * i], readback_buf_[2 * i + 1]};
         }
         sim_.set_psi(f);
         cpu_is_truth_ = true;
@@ -444,7 +444,7 @@ protected:
         for (std::size_t i = 0; i < field.size(); ++i) {
             psi_staging_[2 * i] = static_cast<float>(field[i].real());
             psi_staging_[2 * i + 1] = static_cast<float>(field[i].imag());
-            peak = std::max(peak, ses::norm_sq(field[i]));
+            peak = std::max(peak, std::norm(field[i]));
         }
         peak_ = peak;
     }

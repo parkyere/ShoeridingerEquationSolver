@@ -10,7 +10,6 @@
 #include "vk_engine.hpp"
 
 #include <complex>
-import ses.complex;
 #include <core/decay.hpp>
 #include <core/radial.hpp>
 
@@ -122,7 +121,7 @@ public:
 
     // Normalized complex amplitude <n|psi> from the last project_psi() pass
     // (the MCWF no-jump damping consumes it; population = |amplitude|^2).
-    ses::Complex<double> project_state_amplitude(const ses_vk::Engine& engine,
+    std::complex<double> project_state_amplitude(const ses_vk::Engine& engine,
                                                  int idx) const {
         const StateSpec& sp = kStateSpec[static_cast<std::size_t>(idx)];
         const double n2 = state_norm2_[static_cast<std::size_t>(idx)];
@@ -143,7 +142,7 @@ public:
         if (n2 <= 0.0) {
             return 0.0;
         }
-        return ses::norm_sq(engine.project_amplitude(
+        return std::norm(engine.project_amplitude(
                    radial_u_[static_cast<std::size_t>(sp.level)], sp.l, sp.m)) /
                n2;
     }
@@ -173,7 +172,7 @@ public:
     // Fused-MCWF term for tracked state idx with coefficient d: radial table
     // + (l, m) + the cached grid-norm normalizer (a constant per state).
     // False when the cache is cold -- the caller falls back to synth_over.
-    bool mcwf_term(int idx, ses::Complex<double> d,
+    bool mcwf_term(int idx, std::complex<double> d,
                    ses_vk::Engine::McwfTerm* out) const {
         const std::size_t s = static_cast<std::size_t>(idx);
         const StateSpec& sp = kStateSpec[s];

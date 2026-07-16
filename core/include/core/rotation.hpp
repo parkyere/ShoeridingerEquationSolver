@@ -8,7 +8,6 @@
 // Used for the paramagnetic (B/2) L_axis factor of the magnetic propagator.
 
 #include <complex>
-import ses.complex;
 #include <core/fft.hpp>
 #include <core/field.hpp>
 import ses.grid;
@@ -46,8 +45,8 @@ inline void axis_shear(Field3D& f, int freq_axis, int coord_axis, double coeff) 
         }
     }
 
-    std::vector<Complex<double>> line(static_cast<std::size_t>(nf));
-    std::vector<Complex<double>>& a = f.data();
+    std::vector<std::complex<double>> line(static_cast<std::size_t>(nf));
+    std::vector<std::complex<double>>& a = f.data();
     for (int v = 0; v < n[perp[1]]; ++v) {
         for (int u = 0; u < n[perp[0]]; ++u) {
             const int base = u * s[perp[0]] + v * s[perp[1]];
@@ -62,7 +61,7 @@ inline void axis_shear(Field3D& f, int freq_axis, int coord_axis, double coeff) 
                 const double ph = -kf[static_cast<std::size_t>(t)] * d;
                 line[static_cast<std::size_t>(t)] =
                     line[static_cast<std::size_t>(t)] *
-                    Complex<double>{std::cos(ph), std::sin(ph)};
+                    std::complex<double>{std::cos(ph), std::sin(ph)};
             }
             ifft(line);
             for (int t = 0; t < nf; ++t) {

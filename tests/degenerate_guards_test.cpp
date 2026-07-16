@@ -17,7 +17,6 @@ import ses.vec;
 
 namespace {
 
-using ses::Complex;
 using ses::Field1D;
 using ses::Field3D;
 using ses::Grid1D;
@@ -32,7 +31,7 @@ Grid3D cube(int n) {
 TEST(DegenerateGuards, NormalizeZeroFieldStaysFinite) {
     Field3D f{cube(8)};  // all zero
     ses::normalize(f);
-    for (const Complex<double>& z : f.data()) {
+    for (const std::complex<double>& z : f.data()) {
         EXPECT_TRUE(std::isfinite(z.real()));
         EXPECT_TRUE(std::isfinite(z.imag()));
         EXPECT_EQ(z.real(), 0.0);
@@ -69,7 +68,7 @@ TEST(DegenerateGuards, Observables1ZeroFieldFinite) {
 TEST(DegenerateGuards, SigmaPositionSingleCellNonNegative) {
     const Grid3D g = cube(8);
     Field3D f{g};
-    f(5, 2, 6) = Complex<double>{1.0, 0.0};
+    f(5, 2, 6) = std::complex<double>{1.0, 0.0};
     const ses::Vec3d sp = ses::sigma_position(f);
     for (double c : {sp.x, sp.y, sp.z}) {
         EXPECT_TRUE(std::isfinite(c));
@@ -94,12 +93,12 @@ TEST(DegenerateGuards, MarchingCubesZeroFieldReturnsEmpty) {
 
 // A non-power-of-two length must fail loudly (not spin / garbage under NDEBUG).
 TEST(DegenerateGuards, FftNonPowerOfTwoThrows) {
-    std::vector<Complex<double>> v48(48);
+    std::vector<std::complex<double>> v48(48);
     EXPECT_THROW(ses::fft(v48), std::invalid_argument);
-    std::vector<Complex<double>> v3(3);
+    std::vector<std::complex<double>> v3(3);
     EXPECT_THROW(ses::fft(v3), std::invalid_argument);
     // Powers of two still fine.
-    std::vector<Complex<double>> v16(16);
+    std::vector<std::complex<double>> v16(16);
     EXPECT_NO_THROW(ses::fft(v16));
 }
 

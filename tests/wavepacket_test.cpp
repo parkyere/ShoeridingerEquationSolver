@@ -12,7 +12,6 @@
 // on unnormalized fields too.
 
 #include <complex>
-import ses.complex;
 #include <core/field.hpp>
 import ses.grid;
 #include <core/observables.hpp>
@@ -24,7 +23,6 @@ import ses.grid;
 
 namespace {
 
-using ses::Complex;
 using ses::Field1D;
 using ses::Grid1D;
 
@@ -41,8 +39,8 @@ TEST(GaussianWavepacket, PhaseCarriesThePlaneWave) {
     const Field1D psi = ses::gaussian_wavepacket(kGrid, 2.0, 1.5, k0);
     for (int i = 0; i < psi.size(); ++i) {
         const double x = kGrid.coord(i);
-        const Complex<double> unwound =
-            psi[i] * Complex<double>{std::cos(-k0 * x), std::sin(-k0 * x)};
+        const std::complex<double> unwound =
+            psi[i] * std::complex<double>{std::cos(-k0 * x), std::sin(-k0 * x)};
         EXPECT_NEAR(unwound.imag(), 0.0, 1e-12);
         EXPECT_GE(unwound.real(), -1e-12);
     }

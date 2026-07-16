@@ -35,7 +35,6 @@ import ses.vec;
 
 namespace {
 
-using ses::Complex;
 using ses::Field3D;
 using ses::Grid1D;
 using ses::Grid3D;
@@ -47,8 +46,8 @@ TEST(SampleCollapseIndex, InvertsTheDiscreteCdf) {
     const Grid1D axis{0.0, 4.0, 4};
     const Grid3D g{axis, axis, axis};
     Field3D psi{g};
-    psi(3, 0, 2) = Complex<double>{std::sqrt(3.0), 0.0};
-    psi(1, 2, 3) = Complex<double>{1.0, 0.0};
+    psi(3, 0, 2) = std::complex<double>{std::sqrt(3.0), 0.0};
+    psi(1, 2, 3) = std::complex<double>{1.0, 0.0};
 
     EXPECT_EQ(ses::sample_collapse_index(psi, 0.0), 35);
     EXPECT_EQ(ses::sample_collapse_index(psi, 0.5), 35);
@@ -61,8 +60,8 @@ TEST(SampleCollapseIndex, StratifiedDrawsReproduceProbabilitiesExactly) {
     const Grid1D axis{0.0, 4.0, 4};
     const Grid3D g{axis, axis, axis};
     Field3D psi{g};
-    psi(3, 0, 2) = Complex<double>{std::sqrt(3.0), 0.0};  // p = 3/4
-    psi(1, 2, 3) = Complex<double>{1.0, 0.0};             // p = 1/4
+    psi(3, 0, 2) = std::complex<double>{std::sqrt(3.0), 0.0};  // p = 3/4
+    psi(1, 2, 3) = std::complex<double>{1.0, 0.0};             // p = 1/4
 
     const int kDraws = 1000;
     int count_b = 0;
@@ -156,22 +155,22 @@ TEST(CollapseWavepacket, SharperMeasurementRespreadsFaster) {
 TEST(SignedMAmplitudes, PxSplitsEquallyAndKeptOutcomesReconstruct) {
     // L_z measurement bookkeeping on a real-harmonic (cos, sin) pair.
     // A pure cos-type state (p_x): a_+ and a_- each carry probability 1/2.
-    const Complex<double> c_cos{1.0, 0.0};
-    const Complex<double> c_sin{0.0, 0.0};
+    const std::complex<double> c_cos{1.0, 0.0};
+    const std::complex<double> c_sin{0.0, 0.0};
     const ses::SignedM a = ses::signed_m_amplitudes(c_cos, c_sin);
-    EXPECT_NEAR(ses::norm_sq(a.plus), 0.5, 1e-15);
-    EXPECT_NEAR(ses::norm_sq(a.minus), 0.5, 1e-15);
+    EXPECT_NEAR(std::norm(a.plus), 0.5, 1e-15);
+    EXPECT_NEAR(std::norm(a.minus), 0.5, 1e-15);
 
     // Keeping ONE signed-m outcome rebuilds a ring state: equal cos/sin
     // populations regardless of the input pair.
     const ses::RealPair kept = ses::pair_from_signed_m(a.plus, +1);
-    EXPECT_NEAR(ses::norm_sq(kept.c_cos), ses::norm_sq(kept.c_sin), 1e-15);
+    EXPECT_NEAR(std::norm(kept.c_cos), std::norm(kept.c_sin), 1e-15);
 
     // Completeness: keeping BOTH outcomes reconstructs the original pair.
     const ses::RealPair kp = ses::pair_from_signed_m(a.plus, +1);
     const ses::RealPair km = ses::pair_from_signed_m(a.minus, -1);
-    const Complex<double> rc = kp.c_cos + km.c_cos;
-    const Complex<double> rs = kp.c_sin + km.c_sin;
+    const std::complex<double> rc = kp.c_cos + km.c_cos;
+    const std::complex<double> rs = kp.c_sin + km.c_sin;
     EXPECT_NEAR(rc.real(), c_cos.real(), 1e-15);
     EXPECT_NEAR(rc.imag(), c_cos.imag(), 1e-15);
     EXPECT_NEAR(rs.real(), c_sin.real(), 1e-15);
@@ -179,13 +178,13 @@ TEST(SignedMAmplitudes, PxSplitsEquallyAndKeptOutcomesReconstruct) {
 }
 
 TEST(SignedMAmplitudes, GenericPairRoundTripsAndConservesProbability) {
-    const Complex<double> c_cos{0.3, -0.7};
-    const Complex<double> c_sin{-0.2, 0.55};
+    const std::complex<double> c_cos{0.3, -0.7};
+    const std::complex<double> c_sin{-0.2, 0.55};
     const ses::SignedM a = ses::signed_m_amplitudes(c_cos, c_sin);
 
     // Born-rule completeness on the pair subspace.
-    EXPECT_NEAR(ses::norm_sq(a.plus) + ses::norm_sq(a.minus),
-                ses::norm_sq(c_cos) + ses::norm_sq(c_sin), 1e-15);
+    EXPECT_NEAR(std::norm(a.plus) + std::norm(a.minus),
+                std::norm(c_cos) + std::norm(c_sin), 1e-15);
 
     const ses::RealPair kp = ses::pair_from_signed_m(a.plus, +1);
     const ses::RealPair km = ses::pair_from_signed_m(a.minus, -1);
@@ -203,7 +202,7 @@ TEST(PovmOutcomeDensity, IsRawDensityBlurredByTheKrausWidth) {
     const Grid1D axis{0.0, 16.0, 16};
     const Grid3D g{axis, axis, axis};
     Field3D psi{g};
-    psi(8, 8, 8) = Complex<double>{1.0, 0.0};
+    psi(8, 8, 8) = std::complex<double>{1.0, 0.0};
 
     const std::vector<double> d = ses::povm_outcome_density(psi, 1.0);
 
@@ -233,8 +232,8 @@ TEST(SamplePovmIndex, CanLandWhereRawDensityHasANode) {
     const Grid1D axis{0.0, 16.0, 16};
     const Grid3D g{axis, axis, axis};
     Field3D psi{g};
-    psi(7, 8, 8) = Complex<double>{1.0, 0.0};
-    psi(9, 8, 8) = Complex<double>{1.0, 0.0};
+    psi(7, 8, 8) = std::complex<double>{1.0, 0.0};
+    psi(9, 8, 8) = std::complex<double>{1.0, 0.0};
 
     const int node = g.flat(8, 8, 8);
     const std::vector<double> d = ses::povm_outcome_density(psi, 1.0);

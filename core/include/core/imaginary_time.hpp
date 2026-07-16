@@ -51,7 +51,7 @@ public:
 
 private:
     static void apply_weight(const std::vector<double>& weight,
-                             std::vector<Complex<double>>& a) noexcept {
+                             std::vector<std::complex<double>>& a) noexcept {
         for (std::size_t i = 0; i < a.size(); ++i) {
             a[i] = weight[i] * a[i];
         }
@@ -121,9 +121,9 @@ public:
             ifft(psi);
             apply_weight(half_v_, psi.data());
             for (const Field3D* phi : lower) {
-                const Complex<double> c = inner_product(*phi, psi);
-                std::vector<Complex<double>>& p = psi.data();
-                const std::vector<Complex<double>>& q = phi->data();
+                const std::complex<double> c = inner_product(*phi, psi);
+                std::vector<std::complex<double>>& p = psi.data();
+                const std::vector<std::complex<double>>& q = phi->data();
                 for (std::size_t i = 0; i < p.size(); ++i) {
                     p[i] = p[i] - c * q[i];
                 }
@@ -135,7 +135,7 @@ public:
 private:
     // Elementwise (disjoint) scale: threaded result is bitwise identical.
     static void apply_weight(const std::vector<double>& weight,
-                             std::vector<Complex<double>>& a) noexcept {
+                             std::vector<std::complex<double>>& a) noexcept {
         const std::int64_t n = static_cast<std::int64_t>(a.size());
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)

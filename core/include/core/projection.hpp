@@ -8,7 +8,6 @@
 // kernel. CONTRACT: W_j(r) must mirror fill_orbital (core/harmonics.hpp) exactly.
 
 #include <complex>
-import ses.complex;
 #include <core/field.hpp>
 import ses.grid;
 #include <core/harmonics.hpp>  // real_spherical_harmonic
@@ -34,9 +33,9 @@ inline constexpr int lm_index(int l, int m) noexcept { return l * l + (l + m); }
 inline constexpr int lm_count(int l_max) noexcept { return (l_max + 1) * (l_max + 1); }
 
 struct RadialAngularProjection {
-    std::vector<Complex<double>> amp;               // <n|psi>, unit-normalized
+    std::vector<std::complex<double>> amp;               // <n|psi>, unit-normalized
     std::vector<double> norm2;                      // N_n = sum_j u[j]^2 h (=1 for eigen-u)
-    std::vector<std::vector<Complex<double>>> g_lm;  // [lm_count][n_radial], built once
+    std::vector<std::vector<std::complex<double>>> g_lm;  // [lm_count][n_radial], built once
     // amp[n] = (sum_j u[j] g_lm[lm(n)][j]) / sqrt(N_n);
     // the RAW amplitude (== the direct grid inner product) = amp[n] * sqrt(N_n).
 };
@@ -134,8 +133,8 @@ inline RadialAngularProjection project_radial_angular(
 
     RadialAngularProjection out;
     out.g_lm.assign(static_cast<std::size_t>(ncomp),
-                    std::vector<Complex<double>>(static_cast<std::size_t>(nr),
-                                                 Complex<double>{}));
+                    std::vector<std::complex<double>>(static_cast<std::size_t>(nr),
+                                                 std::complex<double>{}));
 
     // Deposit Y_lm(cell) psi(cell) dV into radial bins (weights mirror fill_orbital).
     for (int k = 0; k < nz; ++k) {
@@ -168,11 +167,11 @@ inline RadialAngularProjection project_radial_angular(
                         w1 = frac / r;  // outermost node = pinned u(rmax)=0: dropped
                     }
                 }
-                const Complex<double> pdV = psi(i, j, k) * dV;
+                const std::complex<double> pdV = psi(i, j, k) * dV;
                 for (int l = 0; l <= l_max; ++l) {
                     for (int m = -l; m <= l; ++m) {
                         const double Y = real_spherical_harmonic(l, m, x, y, z);
-                        const Complex<double> contrib = pdV * Y;
+                        const std::complex<double> contrib = pdV * Y;
                         const std::size_t c = static_cast<std::size_t>(lm_index(l, m));
                         out.g_lm[c][static_cast<std::size_t>(b0)] += contrib * w0;
                         if (b1 >= 0) {
@@ -185,22 +184,22 @@ inline RadialAngularProjection project_radial_angular(
     }
 
     // --- per-state amplitudes: raw = sum_j u[j] g_lm[lm][j]; norm = sum u^2 h ---
-    out.amp.assign(states.size(), Complex<double>{});
+    out.amp.assign(states.size(), std::complex<double>{});
     out.norm2.assign(states.size(), 0.0);
     for (std::size_t s = 0; s < states.size(); ++s) {
         const ProjectorState& st = states[s];
         const std::vector<double>& u =
             u_by_level[static_cast<std::size_t>(st.level)];
-        const std::vector<Complex<double>>& gc =
+        const std::vector<std::complex<double>>& gc =
             out.g_lm[static_cast<std::size_t>(lm_index(st.l, st.m))];
-        Complex<double> raw{};
+        std::complex<double> raw{};
         double n2 = 0.0;
         for (int jr = 0; jr < nr; ++jr) {
             raw += u[static_cast<std::size_t>(jr)] * gc[static_cast<std::size_t>(jr)];
             n2 += u[static_cast<std::size_t>(jr)] * u[static_cast<std::size_t>(jr)] * h;
         }
         out.norm2[s] = n2;
-        out.amp[s] = (n2 > 0.0) ? raw * (1.0 / std::sqrt(n2)) : Complex<double>{};
+        out.amp[s] = (n2 > 0.0) ? raw * (1.0 / std::sqrt(n2)) : std::complex<double>{};
     }
     return out;
 }

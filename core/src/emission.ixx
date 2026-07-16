@@ -41,7 +41,7 @@ inline Vec3d mean_potential_gradient(const Field3D& psi, const std::vector<doubl
             for (int i = 0; i < nx; ++i) {
                 const int ip = (i + 1) % nx;
                 const int im = (i - 1 + nx) % nx;
-                const double rho = norm_sq(psi(i, j, k));
+                const double rho = std::norm(psi(i, j, k));
                 const double gx =
                     (v[static_cast<std::size_t>(g.flat(ip, j, k))] -
                      v[static_cast<std::size_t>(g.flat(im, j, k))]) * inv2hx;

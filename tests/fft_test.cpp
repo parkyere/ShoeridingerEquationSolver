@@ -12,7 +12,6 @@
 // linearity; Parseval.
 
 #include <complex>
-import ses.complex;
 #include <core/fft.hpp>
 
 #include <gtest/gtest.h>
@@ -23,7 +22,7 @@ import ses.complex;
 
 namespace {
 
-using Cd = ses::Complex<double>;
+using Cd = std::complex<double>;
 using CVec = std::vector<Cd>;
 
 constexpr double kTol = 1e-12;
@@ -144,12 +143,12 @@ TEST(Fft, ParsevalEnergyIdentity) {
     CVec a = deterministic_signal(16);
     double time_energy = 0.0;
     for (const Cd& z : a) {
-        time_energy += ses::norm_sq(z);
+        time_energy += std::norm(z);
     }
     ses::fft(a);
     double freq_energy = 0.0;
     for (const Cd& z : a) {
-        freq_energy += ses::norm_sq(z);
+        freq_energy += std::norm(z);
     }
     EXPECT_NEAR(time_energy, freq_energy / 16.0, 1e-10);
 }

@@ -6,7 +6,6 @@
 // which keeps global O(dt^2) accuracy.
 
 #include <complex>
-import ses.complex;
 #include <core/fft.hpp>
 #include <core/field.hpp>
 import ses.grid;
@@ -36,7 +35,7 @@ inline void apply_dipole_halfkick(Field3D& psi, const DipoleDrive& d, double t, 
                                  d.axis.z * g.z.coord(k);
                 const double ang = -theta * u;
                 psi(i, j, k) =
-                    psi(i, j, k) * Complex<double>{std::cos(ang), std::sin(ang)};
+                    psi(i, j, k) * std::complex<double>{std::cos(ang), std::sin(ang)};
             }
         }
     }
@@ -44,8 +43,8 @@ inline void apply_dipole_halfkick(Field3D& psi, const DipoleDrive& d, double t, 
 
 namespace drive_detail {
 
-inline void multiply_table(Field3D& psi, const std::vector<Complex<double>>& table) noexcept {
-    std::vector<Complex<double>>& a = psi.data();
+inline void multiply_table(Field3D& psi, const std::vector<std::complex<double>>& table) noexcept {
+    std::vector<std::complex<double>>& a = psi.data();
     for (std::size_t i = 0; i < a.size(); ++i) {
         a[i] = a[i] * table[i];
     }

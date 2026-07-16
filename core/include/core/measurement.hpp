@@ -8,7 +8,6 @@
 // sigma_m (E_c = M_c^dag M_c), not raw |psi|^2 -- see sample_povm_index.
 
 #include <complex>
-import ses.complex;
 #include <core/field.hpp>
 import ses.grid;
 import ses.vec;
@@ -38,14 +37,14 @@ inline int sample_energy_eigenstate(const std::vector<double>& populations, doub
 // First flat index whose cumulative probability exceeds u * total.
 inline int sample_collapse_index(const Field3D& psi, double u) noexcept {
     double total = 0.0;
-    for (const Complex<double>& z : psi.data()) {
-        total += norm_sq(z);
+    for (const std::complex<double>& z : psi.data()) {
+        total += std::norm(z);
     }
     const double target = u * total;
     double cum = 0.0;
     const std::size_t n = psi.data().size();
     for (std::size_t i = 0; i < n; ++i) {
-        cum += norm_sq(psi.data()[i]);
+        cum += std::norm(psi.data()[i]);
         if (cum > target) {
             return static_cast<int>(i);
         }
@@ -64,7 +63,7 @@ inline std::vector<double> povm_outcome_density(const Field3D& psi,
     const int nz = g.z.n;
     std::vector<double> d(psi.data().size());
     for (std::size_t i = 0; i < d.size(); ++i) {
-        d[i] = norm_sq(psi.data()[i]);
+        d[i] = std::norm(psi.data()[i]);
     }
     std::vector<double> tmp(d.size());
     const Grid1D* axes[3] = {&g.x, &g.y, &g.z};
@@ -109,13 +108,13 @@ inline std::vector<double> povm_outcome_density(const Field3D& psi,
 // |l, +-m> = (|cos> +- i |sin>)/sqrt(2) and the signed-m amplitudes of
 // psi = c_cos|cos> + c_sin|sin> are a_+- = (c_cos -+ i c_sin)/sqrt(2).
 struct SignedM {
-    Complex<double> plus;
-    Complex<double> minus;
+    std::complex<double> plus;
+    std::complex<double> minus;
 };
-inline SignedM signed_m_amplitudes(Complex<double> c_cos,
-                                   Complex<double> c_sin) noexcept {
+inline SignedM signed_m_amplitudes(std::complex<double> c_cos,
+                                   std::complex<double> c_sin) noexcept {
     const double inv = 1.0 / std::sqrt(2.0);
-    const Complex<double> i{0.0, 1.0};
+    const std::complex<double> i{0.0, 1.0};
     return SignedM{inv * (c_cos - i * c_sin), inv * (c_cos + i * c_sin)};
 }
 
@@ -123,12 +122,12 @@ inline SignedM signed_m_amplitudes(Complex<double> c_cos,
 // cos = a/sqrt(2), sin = sign * i a/sqrt(2). Keeping both outcomes and
 // summing reconstructs the original pair (projector completeness).
 struct RealPair {
-    Complex<double> c_cos;
-    Complex<double> c_sin;
+    std::complex<double> c_cos;
+    std::complex<double> c_sin;
 };
-inline RealPair pair_from_signed_m(Complex<double> a, int sign) noexcept {
+inline RealPair pair_from_signed_m(std::complex<double> a, int sign) noexcept {
     const double inv = 1.0 / std::sqrt(2.0);
-    const Complex<double> i{0.0, 1.0};
+    const std::complex<double> i{0.0, 1.0};
     return RealPair{inv * a, static_cast<double>(sign) * inv * (i * a)};
 }
 

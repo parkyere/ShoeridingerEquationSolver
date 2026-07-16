@@ -7,7 +7,6 @@
 // is already unit-norm; a final discrete normalize absorbs sampling error).
 
 #include <complex>
-import ses.complex;
 #include <core/field.hpp>
 import ses.grid;
 import ses.vec;
@@ -23,7 +22,7 @@ inline Field1D gaussian_wavepacket(const Grid1D& g, double x0, double sigma, dou
     for (int i = 0; i < psi.size(); ++i) {
         const double x = g.coord(i);
         const double envelope = amp * std::exp(-(x - x0) * (x - x0) / (4.0 * sigma * sigma));
-        psi[i] = Complex<double>{envelope * std::cos(k0 * x), envelope * std::sin(k0 * x)};
+        psi[i] = std::complex<double>{envelope * std::cos(k0 * x), envelope * std::sin(k0 * x)};
     }
     normalize(psi);
     return psi;
@@ -45,7 +44,7 @@ inline Field3D gaussian_wavepacket(const Grid3D& g, Vec3d r0, Vec3d sigma, Vec3d
                 const double env = envelope(x, r0.x, sigma.x) * envelope(y, r0.y, sigma.y) *
                                    envelope(z, r0.z, sigma.z);
                 const double phase = k0.x * x + k0.y * y + k0.z * z;
-                psi(i, j, k) = Complex<double>{env * std::cos(phase), env * std::sin(phase)};
+                psi(i, j, k) = std::complex<double>{env * std::cos(phase), env * std::sin(phase)};
             }
         }
     }

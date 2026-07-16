@@ -5,7 +5,6 @@
 // polynomial forms keep the nodal planes exact on the grid.
 
 #include <complex>
-import ses.complex;
 #include <core/field.hpp>
 import ses.grid;
 #include <core/radial.hpp>
@@ -182,7 +181,7 @@ inline void fill_orbital(Field3D& psi, const Grid3D& g, const RadialGrid& rg,
                 }
                 const double value =
                     u_over_r * real_spherical_harmonic(l, m, x, y, z);
-                psi(i, j, k) = Complex<double>{value, 0.0};
+                psi(i, j, k) = std::complex<double>{value, 0.0};
             }
         }
     }

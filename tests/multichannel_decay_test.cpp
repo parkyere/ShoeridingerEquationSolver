@@ -21,7 +21,6 @@
 //  - all-forbidden channel lists never jump, even with u1 = 0.
 
 #include <complex>
-import ses.complex;
 #include <core/decay.hpp>
 #include <core/field.hpp>
 import ses.grid;
@@ -34,7 +33,6 @@ import ses.grid;
 
 namespace {
 
-using ses::Complex;
 using ses::Field3D;
 using ses::Grid1D;
 using ses::Grid3D;
@@ -60,9 +58,9 @@ Manifold make_manifold(const Grid3D& g) {
                 const double y = g.y.coord(j);
                 const double z = g.z.coord(k);
                 const double env = std::exp(-0.5 * (x * x + y * y + z * z));
-                m.ground(i, j, k) = Complex<double>{env, 0.0};
-                m.ex(i, j, k) = Complex<double>{x * env, 0.0};
-                m.ey(i, j, k) = Complex<double>{y * env, 0.0};
+                m.ground(i, j, k) = std::complex<double>{env, 0.0};
+                m.ex(i, j, k) = std::complex<double>{x * env, 0.0};
+                m.ey(i, j, k) = std::complex<double>{y * env, 0.0};
             }
         }
     }
@@ -94,8 +92,8 @@ TEST(MultiQuantumJump, NoJumpIsBitwiseNoOpAndReportsClosedFormP) {
         {&m.ex, &m.ground, g1},
         {&m.ey, &m.ground, g2},
     };
-    const double p1 = ses::norm_sq(ses::inner_product(m.ex, psi));
-    const double p2 = ses::norm_sq(ses::inner_product(m.ey, psi));
+    const double p1 = std::norm(ses::inner_product(m.ex, psi));
+    const double p2 = std::norm(ses::inner_product(m.ey, psi));
     const double expected_p = 1.0 - std::exp(-(g1 * p1 + g2 * p2) * dt);
 
     const ses::MultiJumpResult r = ses::multi_quantum_jump(psi, channels, dt, 0.999, 0.5);
@@ -187,8 +185,8 @@ TEST(MultiQuantumJump, ChannelSelectionFollowsPopulationWeightedRates) {
     const double g1 = 2.0;
     const double g2 = 1.0;
     const Field3D proto = make_superposition(m);
-    const double p1 = ses::norm_sq(ses::inner_product(m.ex, proto));
-    const double p2 = ses::norm_sq(ses::inner_product(m.ey, proto));
+    const double p1 = std::norm(ses::inner_product(m.ex, proto));
+    const double p2 = std::norm(ses::inner_product(m.ey, proto));
     const double frac1 = (g1 * p1) / (g1 * p1 + g2 * p2);
 
     const int kDraws = 1000;

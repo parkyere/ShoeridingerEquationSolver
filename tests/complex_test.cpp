@@ -1,18 +1,16 @@
-// Contract specification for ses::Complex<T>.
+// Contract specification for std::complex<T>.
 //
 // The reinvention boundary excludes the C++ STANDARD LIBRARY (only third-
-// party libraries are reinvented), so ses::Complex is an alias of
-// std::complex plus the norm_sq convenience. These tests pin the arithmetic
-// contract the whole core relies on -- construction, +,-,*,/ (built with
-// -fcx-limited-range: the naive formulas, no Annex G NaN fixups), scalar
-// multiply, conj (via ADL into std), abs, and norm_sq == |z|^2.
+// party libraries are reinvented), so std::complex is used directly. These
+// tests pin the arithmetic contract the whole core relies on -- construction,
+// +,-,*,/ (built with -fcx-limited-range: the naive formulas, no Annex G NaN
+// fixups), scalar multiply, conj (via ADL into std), abs, and std::norm == |z|^2.
 //
 // Oracle: exact arithmetic identities (i*i = -1, |3-4i| = 5, ...). All simple
 // operations use values exactly representable in binary floating point, so
 // EXPECT_EQ is legitimate there; sqrt/division results use EXPECT_DOUBLE_EQ.
 
 #include <complex>
-import ses.complex;
 
 #include <gtest/gtest.h>
 
@@ -22,7 +20,7 @@ import ses.complex;
 // gap; libc++ is fine), so on that one combination the SAME expressions and
 // value pins run at runtime only -- the arithmetic contract is unchanged,
 // only the compile-time-evaluability pin is narrowed to where it holds.
-// (Construction/conj/norm_sq stay constexpr everywhere.)
+// (Construction/conj/norm stay constexpr everywhere.)
 #if defined(__clang__) && defined(__GLIBCXX__)
 #define SES_COMPLEX_ARITH_CONSTEXPR const
 #else
@@ -31,7 +29,7 @@ import ses.complex;
 
 namespace {
 
-using Cd = ses::Complex<double>;
+using Cd = std::complex<double>;
 
 TEST(Complex, DefaultConstructsToZero) {
     constexpr Cd z{};
@@ -87,9 +85,8 @@ TEST(Complex, Conjugate) {
 }
 
 TEST(Complex, NormSquaredIsSquaredMagnitude) {
-    // |3-4i|^2 = 9 + 16 = 25 (this is the probability-density operation).
-    // Qualified call: ADL associates std::complex with std, not ses.
-    constexpr double n = ses::norm_sq(Cd{3.0, -4.0});
+    // |3-4i|^2 = 9 + 16 = 25 -- std::norm is the probability-density operation.
+    constexpr double n = std::norm(Cd{3.0, -4.0});
     EXPECT_EQ(n, 25.0);
 }
 

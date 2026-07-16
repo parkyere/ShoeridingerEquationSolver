@@ -6,7 +6,6 @@
 // wrong bin and fails loudly.
 
 #include <complex>
-import ses.complex;
 #include <core/fft.hpp>
 #include <core/field.hpp>
 import ses.grid;
@@ -18,7 +17,6 @@ import ses.grid;
 
 namespace {
 
-using ses::Complex;
 using ses::Field3D;
 using ses::Grid1D;
 using ses::Grid3D;
@@ -32,8 +30,8 @@ Grid3D make_grid(int nx, int ny, int nz) {
 
 TEST(Fft3, DcConcentratesAtOriginBin) {
     Field3D f{make_grid(8, 4, 2)};
-    for (Complex<double>& v : f.data()) {
-        v = Complex<double>{1.0, 0.0};
+    for (std::complex<double>& v : f.data()) {
+        v = std::complex<double>{1.0, 0.0};
     }
     ses::fft(f);
     EXPECT_NEAR(f(0, 0, 0).real(), 64.0, kTol);  // N = 8*4*2
@@ -52,7 +50,7 @@ TEST(Fft3, PlaneWaveSpikesAtItsBin) {
         for (int j = 0; j < ny; ++j) {
             for (int i = 0; i < nx; ++i) {
                 const double th = kTwoPi * (3.0 * i / nx + 5.0 * j / ny + 1.0 * k / nz);
-                f(i, j, k) = Complex<double>{std::cos(th), std::sin(th)};
+                f(i, j, k) = std::complex<double>{std::cos(th), std::sin(th)};
             }
         }
     }
@@ -74,7 +72,7 @@ TEST(Fft3, InverseRestoresInput) {
     for (int idx = 0; idx < f.size(); ++idx) {
         const double t = static_cast<double>(idx);
         f.data()[static_cast<std::size_t>(idx)] =
-            Complex<double>{std::sin(1.3 * t) + 0.1 * t, std::cos(2.7 * t)};
+            std::complex<double>{std::sin(1.3 * t) + 0.1 * t, std::cos(2.7 * t)};
     }
     const Field3D original = f;
     ses::fft(f);
@@ -91,16 +89,16 @@ TEST(Fft3, ParsevalEnergyIdentity) {
     for (int idx = 0; idx < f.size(); ++idx) {
         const double t = static_cast<double>(idx);
         f.data()[static_cast<std::size_t>(idx)] =
-            Complex<double>{std::cos(0.9 * t), 0.2 * std::sin(1.7 * t)};
+            std::complex<double>{std::cos(0.9 * t), 0.2 * std::sin(1.7 * t)};
     }
     double time_energy = 0.0;
-    for (const Complex<double>& v : f.data()) {
-        time_energy += ses::norm_sq(v);
+    for (const std::complex<double>& v : f.data()) {
+        time_energy += std::norm(v);
     }
     ses::fft(f);
     double freq_energy = 0.0;
-    for (const Complex<double>& v : f.data()) {
-        freq_energy += ses::norm_sq(v);
+    for (const std::complex<double>& v : f.data()) {
+        freq_energy += std::norm(v);
     }
     EXPECT_NEAR(time_energy, freq_energy / 64.0, 1e-10);
 }

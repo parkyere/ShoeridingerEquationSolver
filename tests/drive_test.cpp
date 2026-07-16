@@ -19,7 +19,6 @@
 //    empty (<1_y|z|0> = 0 by symmetry) -- exact regardless of the ladder.
 
 #include <complex>
-import ses.complex;
 #include <core/drive.hpp>
 #include <core/field.hpp>
 import ses.grid;
@@ -37,7 +36,6 @@ import ses.vec;
 
 namespace {
 
-using ses::Complex;
 using ses::DipoleDrive;
 using ses::Field3D;
 using ses::Grid1D;
@@ -49,8 +47,8 @@ Grid3D cube(double lo, double hi, int n) {
 }
 
 double population(const Field3D& state, const Field3D& psi) {
-    const Complex<double> ip = ses::inner_product(state, psi);
-    return ses::norm_sq(ip);
+    const std::complex<double> ip = ses::inner_product(state, psi);
+    return std::norm(ip);
 }
 
 TEST(DipoleDrive, ZeroAmplitudeMatchesStaticBitwise) {
@@ -114,9 +112,9 @@ TEST(DipoleDrive, ResonantCoherentLadderAndSelectionRule) {
                 const double y = g.y.coord(j);
                 const double z = g.z.coord(k);
                 const double env = std::exp(-0.5 * w0 * (x * x + y * y + z * z));
-                ground(i, j, k) = Complex<double>{env, 0.0};
-                excited_z(i, j, k) = Complex<double>{z * env, 0.0};
-                excited_y(i, j, k) = Complex<double>{y * env, 0.0};
+                ground(i, j, k) = std::complex<double>{env, 0.0};
+                excited_z(i, j, k) = std::complex<double>{z * env, 0.0};
+                excited_y(i, j, k) = std::complex<double>{y * env, 0.0};
             }
         }
     }

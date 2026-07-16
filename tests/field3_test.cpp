@@ -6,7 +6,6 @@
 // discrete norm.
 
 #include <complex>
-import ses.complex;
 #include <core/field.hpp>
 import ses.grid;
 
@@ -17,7 +16,6 @@ import ses.grid;
 
 namespace {
 
-using ses::Complex;
 using ses::Field3D;
 using ses::Grid1D;
 using ses::Grid3D;
@@ -33,7 +31,7 @@ TEST(Field3D, SizeMatchesGridAndZeroInit) {
 
 TEST(Field3D, TripleIndexMatchesFlatLayout) {
     Field3D f{kSmall};
-    f(3, 2, 1) = Complex<double>{1.5, -2.5};
+    f(3, 2, 1) = std::complex<double>{1.5, -2.5};
     const int flat = kSmall.flat(3, 2, 1);
     EXPECT_EQ(f.data()[static_cast<std::size_t>(flat)].real(), 1.5);
     EXPECT_EQ(f.data()[static_cast<std::size_t>(flat)].imag(), -2.5);
@@ -43,7 +41,7 @@ TEST(Field3D, NormIncludesCellVolume) {
     // Constant psi = 1: sum = 16*8*4 ones * volume 0.125 = 64 exactly.
     Field3D f{kSmall};
     for (int i = 0; i < f.size(); ++i) {
-        f.data()[static_cast<std::size_t>(i)] = Complex<double>{1.0, 0.0};
+        f.data()[static_cast<std::size_t>(i)] = std::complex<double>{1.0, 0.0};
     }
     EXPECT_EQ(norm_sq(f), 64.0);
 }
@@ -60,7 +58,7 @@ TEST(Field3D, SeparableGaussianHasUnitNorm) {
         for (int j = 0; j < g.y.n; ++j) {
             for (int i = 0; i < g.x.n; ++i) {
                 const double val = env(g.x.coord(i)) * env(g.y.coord(j)) * env(g.z.coord(k));
-                f(i, j, k) = Complex<double>{val, 0.0};
+                f(i, j, k) = std::complex<double>{val, 0.0};
             }
         }
     }
@@ -71,7 +69,7 @@ TEST(Field3D, NormalizeMakesUnitNorm) {
     Field3D f{kSmall};
     for (int i = 0; i < f.size(); ++i) {
         f.data()[static_cast<std::size_t>(i)] =
-            Complex<double>{0.01 * i, -0.02 * i};
+            std::complex<double>{0.01 * i, -0.02 * i};
     }
     normalize(f);
     EXPECT_NEAR(norm_sq(f), 1.0, 1e-12);

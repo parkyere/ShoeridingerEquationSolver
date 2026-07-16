@@ -24,7 +24,6 @@ import ses.vec;
 
 namespace {
 
-using ses::Complex;
 using ses::Field3D;
 using ses::Grid1D;
 using ses::Grid3D;
@@ -45,7 +44,7 @@ Field3D blob(const Grid3D& g, double x0, double y0, double sigma) {
                 const double z = g.z.coord(k);
                 const double e =
                     std::exp(-(x * x + y * y + z * z) / (2.0 * sigma * sigma));
-                f(i, j, k) = Complex<double>{e, 0.0};
+                f(i, j, k) = std::complex<double>{e, 0.0};
             }
         }
     }
@@ -83,7 +82,7 @@ TEST(RotateZ, ZSymmetricFieldIsInvariant) {
                     g.x.coord(i) * g.x.coord(i) + g.y.coord(j) * g.y.coord(j);
                 const double z = g.z.coord(k);
                 f(i, j, k) =
-                    Complex<double>{std::exp(-0.1 * rho2 - 0.1 * z * z), 0.0};
+                    std::complex<double>{std::exp(-0.1 * rho2 - 0.1 * z * z), 0.0};
             }
         }
     }
@@ -137,7 +136,7 @@ TEST(RotateAxis, AboutYConservesNormAndLeavesAYSymmetricFieldInvariant) {
                     g.x.coord(i) * g.x.coord(i) + g.z.coord(k) * g.z.coord(k);
                 const double y = g.y.coord(j);
                 f(i, j, k) =
-                    Complex<double>{std::exp(-0.1 * s2 - 0.1 * y * y), 0.0};
+                    std::complex<double>{std::exp(-0.1 * s2 - 0.1 * y * y), 0.0};
             }
         }
     }

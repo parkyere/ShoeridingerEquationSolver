@@ -19,7 +19,6 @@
 //    probability is weighted by the ACTUAL excited population.
 
 #include <complex>
-import ses.complex;
 #include <core/decay.hpp>
 #include <core/field.hpp>
 import ses.grid;
@@ -32,7 +31,6 @@ import ses.vec;
 
 namespace {
 
-using ses::Complex;
 using ses::Field3D;
 using ses::Grid1D;
 using ses::Grid3D;
@@ -52,8 +50,8 @@ HarmonicStates make_states(const Grid3D& g, double w0) {
                 const double y = g.y.coord(j);
                 const double z = g.z.coord(k);
                 const double env = std::exp(-0.5 * w0 * (x * x + y * y + z * z));
-                s.ground(i, j, k) = Complex<double>{env, 0.0};
-                s.excited_z(i, j, k) = Complex<double>{z * env, 0.0};
+                s.ground(i, j, k) = std::complex<double>{env, 0.0};
+                s.excited_z(i, j, k) = std::complex<double>{z * env, 0.0};
             }
         }
     }
@@ -112,7 +110,7 @@ TEST(QuantumJump, StratifiedStatisticsAreExact) {
         if (r.jumped) {
             ++jumps;
             // The collapse lands on the ground state.
-            EXPECT_NEAR(ses::norm_sq(ses::inner_product(s.ground, psi)), 1.0, 1e-9);
+            EXPECT_NEAR(std::norm(ses::inner_product(s.ground, psi)), 1.0, 1e-9);
             EXPECT_NEAR(ses::norm_sq(psi), 1.0, 1e-12);
         }
     }

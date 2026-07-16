@@ -7,7 +7,6 @@ export module ses.cross_section;
 import ses.colormap;
 import ses.vec;
 import ses.grid;
-import ses.complex;
 
 
 // Cross-section display logic: the clip-plane ray-interval clamp, the slice
@@ -69,9 +68,9 @@ struct SliceShade {
     Rgb col;
     double alpha;
 };
-inline SliceShade slice_shade(int map, Complex<double> psi,
+inline SliceShade slice_shade(int map, std::complex<double> psi,
                               double inv_peak) noexcept {
-    const double dens = norm_sq(psi) * inv_peak;
+    const double dens = std::norm(psi) * inv_peak;
     const double amp = std::sqrt(std::max(inv_peak, 0.0));
     Rgb col{};
     double bright;

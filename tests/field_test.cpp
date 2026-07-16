@@ -12,7 +12,6 @@
 //  - normalize() must produce unit norm for an arbitrary field.
 
 #include <complex>
-import ses.complex;
 #include <core/field.hpp>
 import ses.grid;
 
@@ -23,7 +22,6 @@ import ses.grid;
 
 namespace {
 
-using ses::Complex;
 using ses::Field1D;
 using ses::Grid1D;
 
@@ -43,7 +41,7 @@ TEST(Field1D, InitializesToZero) {
 
 TEST(Field1D, ElementReadWrite) {
     Field1D f{Grid1D{0.0, 8.0, 16}};
-    f[3] = Complex<double>{1.5, -2.5};
+    f[3] = std::complex<double>{1.5, -2.5};
     EXPECT_EQ(f[3].real(), 1.5);
     EXPECT_EQ(f[3].imag(), -2.5);
 }
@@ -53,7 +51,7 @@ TEST(Field1D, NormSqIncludesGridWeight) {
     // Constant psi = 1  ->  sum |1|^2 * h = 16 * 0.5 = 8 exactly.
     Field1D f{Grid1D{0.0, 8.0, 16}};
     for (int i = 0; i < f.size(); ++i) {
-        f[i] = Complex<double>{1.0, 0.0};
+        f[i] = std::complex<double>{1.0, 0.0};
     }
     EXPECT_EQ(norm_sq(f), 8.0);
 }
@@ -69,7 +67,7 @@ TEST(Field1D, ContinuumNormalizedGaussianHasUnitDiscreteNorm) {
     const double amp = std::pow(2.0 * std::numbers::pi * s * s, -0.25);
     for (int i = 0; i < f.size(); ++i) {
         const double x = g.coord(i);
-        f[i] = Complex<double>{amp * std::exp(-x * x / (4.0 * s * s)), 0.0};
+        f[i] = std::complex<double>{amp * std::exp(-x * x / (4.0 * s * s)), 0.0};
     }
     EXPECT_NEAR(norm_sq(f), 1.0, 1e-12);
 }
@@ -77,7 +75,7 @@ TEST(Field1D, ContinuumNormalizedGaussianHasUnitDiscreteNorm) {
 TEST(Field1D, NormalizeMakesUnitNorm) {
     Field1D f{Grid1D{-4.0, 4.0, 32}};
     for (int i = 0; i < f.size(); ++i) {
-        f[i] = Complex<double>{0.3 * i, -0.7 * i};  // arbitrary non-trivial data
+        f[i] = std::complex<double>{0.3 * i, -0.7 * i};  // arbitrary non-trivial data
     }
     normalize(f);
     EXPECT_NEAR(norm_sq(f), 1.0, 1e-12);

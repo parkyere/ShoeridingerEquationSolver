@@ -96,8 +96,8 @@ void expect_watertight(const Mesh& mesh) {
 TEST(ProbabilityDensity, IsNormSqPerCell) {
     const Grid3D g = cube_grid(0.0, 2.0, 2);
     Field3D psi{g};
-    psi(0, 0, 0) = ses::Complex<double>{3.0, -4.0};
-    psi(1, 1, 1) = ses::Complex<double>{0.0, 2.0};
+    psi(0, 0, 0) = std::complex<double>{3.0, -4.0};
+    psi(1, 1, 1) = std::complex<double>{0.0, 2.0};
     const std::vector<double> rho = ses::probability_density(psi);
     ASSERT_EQ(rho.size(), 8u);
     EXPECT_EQ(rho[static_cast<std::size_t>(g.flat(0, 0, 0))], 25.0);

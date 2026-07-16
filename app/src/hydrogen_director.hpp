@@ -216,8 +216,8 @@ public:
                 // CPU state authoritative: refresh the brightness normalizer
                 // (post-M collapse, post-R reset), then upload.
                 double pk = 0.0;
-                for (const ses::Complex<double>& z : sim_.psi().data()) {
-                    pk = std::max(pk, ses::norm_sq(z));
+                for (const std::complex<double>& z : sim_.psi().data()) {
+                    pk = std::max(pk, std::norm(z));
                 }
                 if (pk > 0.0) {
                     peak_ = pk;
@@ -803,22 +803,22 @@ private:
     // would fabricate a cloud; psi is left alone then). Precondition:
     // project_psi() deposited for the CURRENT psi.
     void project_manifold_out() {
-        std::array<ses::Complex<double>, kNumStates> amp{};
+        std::array<std::complex<double>, kNumStates> amp{};
         double bound = 0.0;
         for (int s = 0; s < kNumStates; ++s) {
             amp[static_cast<std::size_t>(s)] =
                 atom_.project_state_amplitude(engine_, s);
-            bound += ses::norm_sq(amp[static_cast<std::size_t>(s)]);
+            bound += std::norm(amp[static_cast<std::size_t>(s)]);
         }
         const double residual = engine_.norm_and_peak().sum - bound;
         if (residual <= 1e-4) {
             return;
         }
         for (int s = 0; s < kNumStates; ++s) {
-            if (ses::norm_sq(amp[static_cast<std::size_t>(s)]) < 1e-9) {
+            if (std::norm(amp[static_cast<std::size_t>(s)]) < 1e-9) {
                 continue;
             }
-            const ses::Complex<double> c = amp[static_cast<std::size_t>(s)];
+            const std::complex<double> c = amp[static_cast<std::size_t>(s)];
             const int buf = atom_.synth_transient(engine_, s);
             if (buf >= 0) {
                 engine_.add_state_into_psi(buf, -c.real(), -c.imag());
@@ -841,7 +841,7 @@ private:
     // continuum verdict, which projects the manifold out instead.
     void run_partial_measure(PartialBasis basis) {
         engine_.project_psi();
-        std::array<ses::Complex<double>, kNumStates> amp{};
+        std::array<std::complex<double>, kNumStates> amp{};
         for (int s = 0; s < kNumStates; ++s) {
             amp[static_cast<std::size_t>(s)] =
                 atom_.project_state_amplitude(engine_, s);
@@ -850,7 +850,7 @@ private:
         std::array<double, 11> prob{};
         for (int s = 0; s < kNumStates; ++s) {
             const StateSpec& sp = kStateSpec[static_cast<std::size_t>(s)];
-            const double p = ses::norm_sq(amp[static_cast<std::size_t>(s)]);
+            const double p = std::norm(amp[static_cast<std::size_t>(s)]);
             if (basis == PartialBasis::NShell) {
                 prob[static_cast<std::size_t>(state_n(s) - 1)] += p;
             } else if (basis == PartialBasis::LTotal) {
@@ -862,9 +862,9 @@ private:
                 const ses::SignedM a = ses::signed_m_amplitudes(
                     amp[static_cast<std::size_t>(s)],
                     amp[static_cast<std::size_t>(partner)]);
-                prob[static_cast<std::size_t>(sp.m + 5)] += ses::norm_sq(a.plus);
+                prob[static_cast<std::size_t>(sp.m + 5)] += std::norm(a.plus);
                 prob[static_cast<std::size_t>(-sp.m + 5)] +=
-                    ses::norm_sq(a.minus);
+                    std::norm(a.minus);
             }
         }
         std::uniform_real_distribution<double> uniform(0.0, 1.0);
@@ -886,7 +886,7 @@ private:
             return;
         }
         // Kept coefficients on the real basis for the sampled subspace.
-        std::array<ses::Complex<double>, kNumStates> keep{};
+        std::array<std::complex<double>, kNumStates> keep{};
         for (int s = 0; s < kNumStates; ++s) {
             const StateSpec& sp = kStateSpec[static_cast<std::size_t>(s)];
             if (basis == PartialBasis::NShell) {
@@ -945,21 +945,21 @@ private:
     // psi <- sum keep[s] |s>, renormalized. The seed recipe: rotate the
     // global phase so the anchor coefficient is real (engine scale() is
     // real), overwrite psi with the anchor state, then add the rest.
-    void rebuild_psi_from(const std::array<ses::Complex<double>, kNumStates>& keep) {
+    void rebuild_psi_from(const std::array<std::complex<double>, kNumStates>& keep) {
         int anchor = 0;
         for (int s = 1; s < kNumStates; ++s) {
-            if (ses::norm_sq(keep[static_cast<std::size_t>(s)]) >
-                ses::norm_sq(keep[static_cast<std::size_t>(anchor)])) {
+            if (std::norm(keep[static_cast<std::size_t>(s)]) >
+                std::norm(keep[static_cast<std::size_t>(anchor)])) {
                 anchor = s;
             }
         }
         const double mag =
-            std::sqrt(ses::norm_sq(keep[static_cast<std::size_t>(anchor)]));
+            std::sqrt(std::norm(keep[static_cast<std::size_t>(anchor)]));
         if (mag <= 0.0) {
             return;  // empty subspace cannot be sampled (prob > 0 gate)
         }
-        const ses::Complex<double> rot =
-            ses::Complex<double>{keep[static_cast<std::size_t>(anchor)].real(),
+        const std::complex<double> rot =
+            std::complex<double>{keep[static_cast<std::size_t>(anchor)].real(),
                                  -keep[static_cast<std::size_t>(anchor)].imag()} /
             mag;
         atom_.collapse_onto(engine_, anchor);
@@ -968,9 +968,9 @@ private:
             if (s == anchor) {
                 continue;
             }
-            const ses::Complex<double> c =
+            const std::complex<double> c =
                 rot * keep[static_cast<std::size_t>(s)];
-            if (ses::norm_sq(c) < 1e-14) {
+            if (std::norm(c) < 1e-14) {
                 continue;
             }
             const int buf = atom_.synth_transient(engine_, s);
@@ -1027,7 +1027,7 @@ private:
                                      pop[static_cast<std::size_t>(b)];
                           });
         const int n_apply = std::min(n_cand, kMcwfMaxStates);
-        std::vector<ses::Complex<double>> dvals(
+        std::vector<std::complex<double>> dvals(
             static_cast<std::size_t>(n_apply));
         std::vector<double> loss(static_cast<std::size_t>(n_apply));
         std::vector<ses_vk::Engine::McwfTerm> terms;
@@ -1037,7 +1037,7 @@ private:
             const int s = order[static_cast<std::size_t>(i)];
             const double f =
                 std::exp(-0.5 * gamma_out[static_cast<std::size_t>(s)] * dt);
-            const ses::Complex<double> c =
+            const std::complex<double> c =
                 atom_.project_state_amplitude(engine_, s);
             dvals[static_cast<std::size_t>(i)] = (f - 1.0) * c;
             loss[static_cast<std::size_t>(i)] =
@@ -1068,7 +1068,7 @@ private:
             }
             for (int i = 0; i < n_apply; ++i) {
                 const int s = order[static_cast<std::size_t>(i)];
-                const ses::Complex<double> d =
+                const std::complex<double> d =
                     dvals[static_cast<std::size_t>(i)];
                 if (mcwf_scratch_ >= 0 &&
                     atom_.synth_over(engine_, mcwf_scratch_, s)) {
@@ -1301,7 +1301,7 @@ private:
                     const double c[3] = {g.x.coord(i), g.y.coord(j), g.z.coord(k)};
                     const double env = std::exp(
                         -(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) / (4.0 * 2.0 * 2.0));
-                    seed(i, j, k) = ses::Complex<double>{c[axis] * env, 0.0};
+                    seed(i, j, k) = std::complex<double>{c[axis] * env, 0.0};
                 }
             }
         }
@@ -1405,7 +1405,7 @@ private:
                 }
                 ses::Field3D f{sim_.grid()};
                 for (std::size_t i = 0; i < f.data().size(); ++i) {
-                    f.data()[i] = ses::Complex<double>{readback_buf_[2 * i],
+                    f.data()[i] = std::complex<double>{readback_buf_[2 * i],
                                                        readback_buf_[2 * i + 1]};
                 }
                 const double e_grid = ses::mean_energy(f, sim_.potential());
@@ -1462,13 +1462,13 @@ private:
         // Complex-Gaussian coefficients = uniform on the state sphere after
         // the final renormalization; c[0]'s phase is folded out (global).
         std::normal_distribution<double> gauss(0.0, 1.0);
-        std::array<ses::Complex<double>, kNumStates> c{};
+        std::array<std::complex<double>, kNumStates> c{};
         for (auto& z : c) {
-            z = ses::Complex<double>{gauss(rng_), gauss(rng_)};
+            z = std::complex<double>{gauss(rng_), gauss(rng_)};
         }
-        const double mag0 = std::sqrt(ses::norm_sq(c[0]));
+        const double mag0 = std::sqrt(std::norm(c[0]));
         if (mag0 > 0.0) {
-            const ses::Complex<double> rot{c[0].real() / mag0,
+            const std::complex<double> rot{c[0].real() / mag0,
                                            -c[0].imag() / mag0};
             for (auto& z : c) {
                 z = z * rot;  // c[0] is now real >= 0

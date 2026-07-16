@@ -7,7 +7,6 @@
 // so a continuum-normalized function sampled on the grid keeps unit norm.
 
 #include <complex>
-import ses.complex;
 import ses.grid;
 
 #include <cmath>
@@ -23,23 +22,23 @@ public:
     int size() const noexcept { return grid_.n; }
     const Grid1D& grid() const noexcept { return grid_; }
 
-    Complex<double>& operator[](int i) noexcept { return data_[static_cast<std::size_t>(i)]; }
-    const Complex<double>& operator[](int i) const noexcept { return data_[static_cast<std::size_t>(i)]; }
+    std::complex<double>& operator[](int i) noexcept { return data_[static_cast<std::size_t>(i)]; }
+    const std::complex<double>& operator[](int i) const noexcept { return data_[static_cast<std::size_t>(i)]; }
 
     // Raw storage access for in-place spectral transforms (fft/ifft).
-    std::vector<Complex<double>>& data() noexcept { return data_; }
-    const std::vector<Complex<double>>& data() const noexcept { return data_; }
+    std::vector<std::complex<double>>& data() noexcept { return data_; }
+    const std::vector<std::complex<double>>& data() const noexcept { return data_; }
 
 private:
     Grid1D grid_;
-    std::vector<Complex<double>> data_;
+    std::vector<std::complex<double>> data_;
 };
 
 // ||psi||^2 = sum_i |psi_i|^2 * h
 inline double norm_sq(const Field1D& f) noexcept {
     double acc = 0.0;
     for (int i = 0; i < f.size(); ++i) {
-        acc += norm_sq(f[i]);
+        acc += std::norm(f[i]);
     }
     return acc * f.grid().spacing();
 }
@@ -61,26 +60,26 @@ public:
     int size() const noexcept { return grid_.size(); }
     const Grid3D& grid() const noexcept { return grid_; }
 
-    Complex<double>& operator()(int i, int j, int k) noexcept {
+    std::complex<double>& operator()(int i, int j, int k) noexcept {
         return data_[static_cast<std::size_t>(grid_.flat(i, j, k))];
     }
-    const Complex<double>& operator()(int i, int j, int k) const noexcept {
+    const std::complex<double>& operator()(int i, int j, int k) const noexcept {
         return data_[static_cast<std::size_t>(grid_.flat(i, j, k))];
     }
 
-    std::vector<Complex<double>>& data() noexcept { return data_; }
-    const std::vector<Complex<double>>& data() const noexcept { return data_; }
+    std::vector<std::complex<double>>& data() noexcept { return data_; }
+    const std::vector<std::complex<double>>& data() const noexcept { return data_; }
 
 private:
     Grid3D grid_;
-    std::vector<Complex<double>> data_;
+    std::vector<std::complex<double>> data_;
 };
 
 // ||psi||^2 = sum_ijk |psi_ijk|^2 * hx hy hz
 inline double norm_sq(const Field3D& f) noexcept {
     double acc = 0.0;
-    for (const Complex<double>& z : f.data()) {
-        acc += norm_sq(z);
+    for (const std::complex<double>& z : f.data()) {
+        acc += std::norm(z);
     }
     return acc * f.grid().cell_volume();
 }
@@ -91,23 +90,23 @@ inline void normalize(Field3D& f) noexcept {
         return;  // zero field (e.g. a deflated-away seed): 1/0 -> Inf -> NaN
     }
     const double inv = 1.0 / std::sqrt(n2);
-    for (Complex<double>& z : f.data()) {
+    for (std::complex<double>& z : f.data()) {
         z = inv * z;
     }
 }
 
 // Discrete inner product <a|b> = sum conj(a_i) b_i * dV. The building block
 // of state projections (deflation) and populations |<phi|psi>|^2.
-inline Complex<double> inner_product(const Field3D& a, const Field3D& b) noexcept {
+inline std::complex<double> inner_product(const Field3D& a, const Field3D& b) noexcept {
     double re = 0.0;
     double im = 0.0;
     for (std::size_t i = 0; i < a.data().size(); ++i) {
-        const Complex<double> t = std::conj(a.data()[i]) * b.data()[i];
+        const std::complex<double> t = std::conj(a.data()[i]) * b.data()[i];
         re += t.real();
         im += t.imag();
     }
     const double dv = a.grid().cell_volume();
-    return Complex<double>{re * dv, im * dv};
+    return std::complex<double>{re * dv, im * dv};
 }
 
 // |psi|^2 per grid point -- the probability-density scalar field handed to
@@ -116,7 +115,7 @@ inline Complex<double> inner_product(const Field3D& a, const Field3D& b) noexcep
 inline std::vector<double> probability_density(const Field3D& f) {
     std::vector<double> rho(f.data().size());
     for (std::size_t i = 0; i < rho.size(); ++i) {
-        rho[i] = norm_sq(f.data()[i]);
+        rho[i] = std::norm(f.data()[i]);
     }
     return rho;
 }

@@ -15,7 +15,6 @@
 //    without deflation falls back to the ground state (the control).
 
 #include <complex>
-import ses.complex;
 #include <core/field.hpp>
 import ses.grid;
 #include <core/imaginary_time.hpp>
@@ -31,7 +30,6 @@ import ses.vec;
 
 namespace {
 
-using ses::Complex;
 using ses::Field3D;
 using ses::Grid1D;
 using ses::Grid3D;
@@ -42,10 +40,10 @@ TEST(InnerProduct, ExactSingleCellValue) {
     const Grid3D g{axis, axis, axis};
     Field3D a{g};
     Field3D b{g};
-    a(1, 0, 1) = Complex<double>{1.0, 2.0};
-    b(1, 0, 1) = Complex<double>{3.0, -1.0};
+    a(1, 0, 1) = std::complex<double>{1.0, 2.0};
+    b(1, 0, 1) = std::complex<double>{3.0, -1.0};
     // conj(1+2i)(3-i) = (1-2i)(3-i) = 3 - i - 6i + 2i^2 = 1 - 7i
-    const Complex<double> ip = ses::inner_product(a, b);
+    const std::complex<double> ip = ses::inner_product(a, b);
     EXPECT_DOUBLE_EQ(ip.real(), 1.0);
     EXPECT_DOUBLE_EQ(ip.imag(), -7.0);
 }
@@ -58,12 +56,12 @@ TEST(InnerProduct, SelfIsNormSqAndConjugateSymmetric) {
     const Field3D b = ses::gaussian_wavepacket(g, Vec3d{-0.5, 0.5, 0.0},
                                                Vec3d{1.0, 1.2, 1.4}, Vec3d{0.0, 0.3, 0.0});
 
-    const Complex<double> aa = ses::inner_product(a, a);
+    const std::complex<double> aa = ses::inner_product(a, a);
     EXPECT_NEAR(aa.real(), ses::norm_sq(a), 1e-12);
     EXPECT_NEAR(aa.imag(), 0.0, 1e-12);
 
-    const Complex<double> ab = ses::inner_product(a, b);
-    const Complex<double> ba = ses::inner_product(b, a);
+    const std::complex<double> ab = ses::inner_product(a, b);
+    const std::complex<double> ba = ses::inner_product(b, a);
     EXPECT_NEAR(ab.real(), ba.real(), 1e-12);
     EXPECT_NEAR(ab.imag(), -ba.imag(), 1e-12);
 }
@@ -80,12 +78,12 @@ TEST(InnerProduct, EvenAndOddGaussiansAreOrthogonal) {
                 const double y = g.y.coord(j);
                 const double z = g.z.coord(k);
                 const double env = std::exp(-(x * x + y * y + z * z) / 4.0);
-                even(i, j, k) = Complex<double>{env, 0.0};
-                odd(i, j, k) = Complex<double>{x * env, 0.0};
+                even(i, j, k) = std::complex<double>{env, 0.0};
+                odd(i, j, k) = std::complex<double>{x * env, 0.0};
             }
         }
     }
-    const Complex<double> ip = ses::inner_product(even, odd);
+    const std::complex<double> ip = ses::inner_product(even, odd);
     EXPECT_NEAR(ip.real(), 0.0, 1e-12);
     EXPECT_NEAR(ip.imag(), 0.0, 1e-12);
 }
@@ -117,7 +115,7 @@ TEST(DeflatedRelaxation, FindsTheFirstExcitedHarmonicState) {
     Field3D excited = guess;
     relaxer.relax_deflated(excited, {&ground}, 600);
     EXPECT_NEAR(ses::mean_energy(excited, v), 2.5 * omega, 2e-2);
-    const Complex<double> overlap = ses::inner_product(ground, excited);
+    const std::complex<double> overlap = ses::inner_product(ground, excited);
     EXPECT_NEAR(std::abs(overlap.real()), 0.0, 1e-6);
     EXPECT_NEAR(std::abs(overlap.imag()), 0.0, 1e-6);
     EXPECT_NEAR(ses::norm_sq(excited), 1.0, 1e-12);

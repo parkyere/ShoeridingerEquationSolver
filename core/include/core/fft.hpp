@@ -8,7 +8,6 @@
 // Sizes must be powers of two.
 
 #include <complex>
-import ses.complex;
 #include <core/field.hpp>
 
 #include <cassert>
@@ -27,15 +26,15 @@ namespace ses {
 // w *= wlen drifts off the circle and damps the norm -- caught by
 // SplitOperator.ConservesNorm.) thread_local cache keyed on n: each thread
 // owns its table, so reads are lock-free.
-inline const Complex<double>* fft_twiddles(std::size_t n) {
-    thread_local std::vector<Complex<double>> w;
+inline const std::complex<double>* fft_twiddles(std::size_t n) {
+    thread_local std::vector<std::complex<double>> w;
     thread_local std::size_t wn = 0;
     if (wn != n) {
         w.resize(n / 2);
         const double ang = -2.0 * std::numbers::pi / static_cast<double>(n);
         for (std::size_t j = 0; j < n / 2; ++j) {
             const double th = ang * static_cast<double>(j);
-            w[j] = Complex<double>{std::cos(th), std::sin(th)};
+            w[j] = std::complex<double>{std::cos(th), std::sin(th)};
         }
         wn = n;
     }
@@ -45,7 +44,7 @@ inline const Complex<double>* fft_twiddles(std::size_t n) {
 // In-place forward transform of a contiguous line of length n.
 // Iterative: bit-reversal permutation, then butterfly passes of doubling
 // length.
-inline void fft(Complex<double>* a, std::size_t n) {
+inline void fft(std::complex<double>* a, std::size_t n) {
     // Runtime guard, not just assert: under NDEBUG a mis-sized axis would
     // silently produce garbage or spin (the bit-reversal loop assumes a
     // power of two).
@@ -68,15 +67,15 @@ inline void fft(Complex<double>* a, std::size_t n) {
         }
     }
 
-    const Complex<double>* w = fft_twiddles(n);
+    const std::complex<double>* w = fft_twiddles(n);
 
     // Butterfly passes: len = 2, 4, ..., n. Stage len uses w_len^j = w[j * n/len].
     for (std::size_t len = 2; len <= n; len <<= 1) {
         const std::size_t stride = n / len;
         for (std::size_t i = 0; i < n; i += len) {
             for (std::size_t j = 0; j < len / 2; ++j) {
-                const Complex<double> u = a[i + j];
-                const Complex<double> v = a[i + j + len / 2] * w[j * stride];
+                const std::complex<double> u = a[i + j];
+                const std::complex<double> v = a[i + j + len / 2] * w[j * stride];
                 a[i + j] = u + v;
                 a[i + j + len / 2] = u - v;
             }
@@ -84,17 +83,17 @@ inline void fft(Complex<double>* a, std::size_t n) {
     }
 }
 
-inline void fft(std::vector<Complex<double>>& a) { fft(a.data(), a.size()); }
+inline void fft(std::vector<std::complex<double>>& a) { fft(a.data(), a.size()); }
 
 // In-place inverse transform via the conjugation identity:
 //     ifft(X) = conj(fft(conj(X))) / N
-inline void ifft(std::vector<Complex<double>>& a) {
-    for (Complex<double>& z : a) {
+inline void ifft(std::vector<std::complex<double>>& a) {
+    for (std::complex<double>& z : a) {
         z = conj(z);
     }
     fft(a);
     const double inv = 1.0 / static_cast<double>(a.size());
-    for (Complex<double>& z : a) {
+    for (std::complex<double>& z : a) {
         z = inv * conj(z);
     }
 }
@@ -103,7 +102,7 @@ inline void ifft(std::vector<Complex<double>>& a) {
 // layout; y/z lines gathered into per-thread scratch). Each line is owned by
 // exactly one thread, so the threaded result is BITWISE IDENTICAL to serial.
 inline void fft(Field3D& f) {
-    std::vector<Complex<double>>& a = f.data();
+    std::vector<std::complex<double>>& a = f.data();
     const Grid3D& g = f.grid();
     const int nx = g.x.n;
     const int ny = g.y.n;
@@ -122,7 +121,7 @@ inline void fft(Field3D& f) {
 #pragma omp parallel
 #endif
     {
-        std::vector<Complex<double>> line(static_cast<std::size_t>(ny));
+        std::vector<std::complex<double>> line(static_cast<std::size_t>(ny));
 #ifdef _OPENMP
 #pragma omp for collapse(2) schedule(static)
 #endif
@@ -145,7 +144,7 @@ inline void fft(Field3D& f) {
 #pragma omp parallel
 #endif
     {
-        std::vector<Complex<double>> line(static_cast<std::size_t>(nz));
+        std::vector<std::complex<double>> line(static_cast<std::size_t>(nz));
 #ifdef _OPENMP
 #pragma omp for collapse(2) schedule(static)
 #endif
@@ -168,7 +167,7 @@ inline void fft(Field3D& f) {
 // 3D inverse: conjugation identity with N = nx*ny*nz. The elementwise loops
 // are threaded (disjoint elements: bitwise identical to serial).
 inline void ifft(Field3D& f) {
-    std::vector<Complex<double>>& a = f.data();
+    std::vector<std::complex<double>>& a = f.data();
     const std::int64_t n = static_cast<std::int64_t>(a.size());
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)

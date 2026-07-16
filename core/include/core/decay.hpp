@@ -7,7 +7,6 @@
 // is injected by the caller.
 
 #include <complex>
-import ses.complex;
 #include <core/field.hpp>
 import ses.grid;
 
@@ -20,9 +19,9 @@ namespace ses {
 inline constexpr double kFineStructureConstant = 7.2973525693e-3;
 
 struct DipoleMatrixElement {
-    Complex<double> x;
-    Complex<double> y;
-    Complex<double> z;
+    std::complex<double> x;
+    std::complex<double> y;
+    std::complex<double> z;
 };
 
 // <f| r |i> component-wise: sum conj(f) * r * i * dV. Parallelized with
@@ -31,17 +30,17 @@ struct DipoleMatrixElement {
 inline DipoleMatrixElement dipole_matrix_element(const Field3D& f, const Field3D& i) {
     const Grid3D& g = f.grid();
     const int nz = g.z.n;
-    std::vector<Complex<double>> px(static_cast<std::size_t>(nz));
-    std::vector<Complex<double>> py(static_cast<std::size_t>(nz));
-    std::vector<Complex<double>> pz(static_cast<std::size_t>(nz));
+    std::vector<std::complex<double>> px(static_cast<std::size_t>(nz));
+    std::vector<std::complex<double>> py(static_cast<std::size_t>(nz));
+    std::vector<std::complex<double>> pz(static_cast<std::size_t>(nz));
 #pragma omp parallel for
     for (int k = 0; k < nz; ++k) {
-        Complex<double> dx{};
-        Complex<double> dy{};
-        Complex<double> dz{};
+        std::complex<double> dx{};
+        std::complex<double> dy{};
+        std::complex<double> dz{};
         for (int j = 0; j < g.y.n; ++j) {
             for (int ii = 0; ii < g.x.n; ++ii) {
-                const Complex<double> t = std::conj(f(ii, j, k)) * i(ii, j, k);
+                const std::complex<double> t = std::conj(f(ii, j, k)) * i(ii, j, k);
                 dx += g.x.coord(ii) * t;
                 dy += g.y.coord(j) * t;
                 dz += g.z.coord(k) * t;
@@ -51,9 +50,9 @@ inline DipoleMatrixElement dipole_matrix_element(const Field3D& f, const Field3D
         py[static_cast<std::size_t>(k)] = dy;
         pz[static_cast<std::size_t>(k)] = dz;
     }
-    Complex<double> dx{};
-    Complex<double> dy{};
-    Complex<double> dz{};
+    std::complex<double> dx{};
+    std::complex<double> dy{};
+    std::complex<double> dz{};
     for (int k = 0; k < nz; ++k) {
         dx += px[static_cast<std::size_t>(k)];
         dy += py[static_cast<std::size_t>(k)];
@@ -87,7 +86,7 @@ struct JumpResult {
 // uniform draw.
 inline JumpResult quantum_jump(Field3D& psi, const Field3D& excited, const Field3D& ground,
                                double gamma, double dt, double u) {
-    const double p_e = norm_sq(inner_product(excited, psi));
+    const double p_e = std::norm(inner_product(excited, psi));
     const double p = 1.0 - std::exp(-gamma * p_e * dt);
     if (u < p) {
         psi = ground;
@@ -102,19 +101,19 @@ inline JumpResult quantum_jump(Field3D& psi, const Field3D& excited, const Field
 // a superposition's faster-decaying components drain away relative to the
 // stable ones (the visible "breathe-out" between jumps). This is the single
 // source of truth the app's GPU apply_mcwf_damping mirrors in the {|n>} basis.
-inline std::vector<Complex<double>> nojump_damped_amplitudes(
-    const std::vector<Complex<double>>& c, const std::vector<double>& gamma,
+inline std::vector<std::complex<double>> nojump_damped_amplitudes(
+    const std::vector<std::complex<double>>& c, const std::vector<double>& gamma,
     double dt) {
-    std::vector<Complex<double>> out(c.size());
+    std::vector<std::complex<double>> out(c.size());
     double n2 = 0.0;
     for (std::size_t i = 0; i < c.size(); ++i) {
         const double f = std::exp(-0.5 * gamma[i] * dt);
         out[i] = f * c[i];
-        n2 += norm_sq(out[i]);
+        n2 += std::norm(out[i]);
     }
     if (n2 > 0.0) {
         const double inv = 1.0 / std::sqrt(n2);
-        for (Complex<double>& z : out) {
+        for (std::complex<double>& z : out) {
             z = inv * z;
         }
     }
@@ -192,7 +191,7 @@ inline MultiJumpResult multi_quantum_jump(Field3D& psi,
                                           double dt, double u1, double u2) {
     std::vector<double> rates(channels.size());
     for (std::size_t m = 0; m < channels.size(); ++m) {
-        rates[m] = channels[m].gamma * norm_sq(inner_product(*channels[m].from, psi));
+        rates[m] = channels[m].gamma * std::norm(inner_product(*channels[m].from, psi));
     }
     const ChannelPick pick = pick_decay_channel(rates, dt, u1, u2);
     if (pick.channel >= 0) {

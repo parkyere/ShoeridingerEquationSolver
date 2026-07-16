@@ -22,7 +22,6 @@
 #include "vk_engine.hpp"
 
 #include <complex>
-import ses.complex;
 #include <core/fft.hpp>
 #include <core/field.hpp>
 import ses.grid;
@@ -88,9 +87,9 @@ namespace {
 constexpr VkDescriptorType kStorage = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 constexpr VkDescriptorType kUniform = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 
-// Complex<double> -> interleaved rg32f, the engine's upload format: the GPU
+// std::complex<double> -> interleaved rg32f, the engine's upload format: the GPU
 // sees exactly the fp32 narrowing of the oracle's double inputs.
-std::vector<float> to_rg32f(const std::vector<ses::Complex<double>>& src) {
+std::vector<float> to_rg32f(const std::vector<std::complex<double>>& src) {
     std::vector<float> out(2 * src.size());
     for (std::size_t i = 0; i < src.size(); ++i) {
         out[2 * i] = static_cast<float>(src[i].real());
@@ -163,13 +162,13 @@ void invalidate(ses_vk::DeviceContext& ctx, const ses_vk::Buffer& b) {
 // covers fp32 rounding on these O(1) values.
 bool check_phase_multiply(ses_vk::DeviceContext& ctx) {
     const std::size_t n = 4096;
-    std::vector<ses::Complex<double>> psi_d(n);
-    std::vector<ses::Complex<double>> phase_d(n);
+    std::vector<std::complex<double>> psi_d(n);
+    std::vector<std::complex<double>> phase_d(n);
     for (std::size_t i = 0; i < n; ++i) {
         const double x = static_cast<double>(i);
-        psi_d[i] = ses::Complex<double>{std::sin(0.37 * x) + 0.2,
+        psi_d[i] = std::complex<double>{std::sin(0.37 * x) + 0.2,
                                         std::cos(1.13 * x) - 0.1};
-        phase_d[i] = ses::Complex<double>{std::cos(2.9 * x), std::sin(2.9 * x)};
+        phase_d[i] = std::complex<double>{std::cos(2.9 * x), std::sin(2.9 * x)};
     }
     const std::vector<float> psi_f = to_rg32f(psi_d);
     const std::vector<float> phase_f = to_rg32f(phase_d);
@@ -226,7 +225,7 @@ bool check_phase_multiply(ses_vk::DeviceContext& ctx) {
     const float* out = static_cast<const float*>(staging.mapped);
     double max_err = 0.0;
     for (std::size_t i = 0; i < n; ++i) {
-        const ses::Complex<double> expected = psi_d[i] * phase_d[i];
+        const std::complex<double> expected = psi_d[i] * phase_d[i];
         max_err = std::max(max_err, std::abs(out[2 * i] - expected.real()));
         max_err = std::max(max_err, std::abs(out[2 * i + 1] - expected.imag()));
     }
@@ -242,10 +241,10 @@ bool check_phase_multiply(ses_vk::DeviceContext& ctx) {
 bool check_scale(ses_vk::DeviceContext& ctx) {
     const std::size_t n = 4096;
     const float sc = 0.5f;
-    std::vector<ses::Complex<double>> d0(n);
+    std::vector<std::complex<double>> d0(n);
     for (std::size_t i = 0; i < n; ++i) {
         const double x = static_cast<double>(i);
-        d0[i] = ses::Complex<double>{std::sin(0.7 * x) - 0.3,
+        d0[i] = std::complex<double>{std::sin(0.7 * x) - 0.3,
                                      std::cos(0.21 * x) + 0.4};
     }
     const std::vector<float> in = to_rg32f(d0);
@@ -317,15 +316,15 @@ bool check_scale(ses_vk::DeviceContext& ctx) {
 // rounding across the whole field, the peak is one squared value.
 bool check_norm_peak(ses_vk::DeviceContext& ctx) {
     const std::size_t n = 20000;
-    std::vector<ses::Complex<double>> psi_d(n);
+    std::vector<std::complex<double>> psi_d(n);
     for (std::size_t i = 0; i < n; ++i) {
         const double x = static_cast<double>(i);
-        psi_d[i] = ses::Complex<double>{0.5 * std::sin(0.013 * x),
+        psi_d[i] = std::complex<double>{0.5 * std::sin(0.013 * x),
                                         0.3 * std::cos(0.017 * x) + 0.1};
     }
     double cpu_sum = 0.0;
     double cpu_peak = 0.0;
-    for (const ses::Complex<double>& z : psi_d) {
+    for (const std::complex<double>& z : psi_d) {
         const double d = z.real() * z.real() + z.imag() * z.imag();
         cpu_sum += d;
         cpu_peak = std::max(cpu_peak, d);
@@ -399,14 +398,14 @@ bool check_norm_peak(ses_vk::DeviceContext& ctx) {
 // (rel 1e-5).
 bool check_inner_product(ses_vk::DeviceContext& ctx) {
     const std::size_t n = 20000;
-    std::vector<ses::Complex<double>> psi_d(n);
-    std::vector<ses::Complex<double>> phi_d(n);
+    std::vector<std::complex<double>> psi_d(n);
+    std::vector<std::complex<double>> phi_d(n);
     for (std::size_t i = 0; i < n; ++i) {
         const double x = static_cast<double>(i);
         psi_d[i] =
-            ses::Complex<double>{std::sin(0.019 * x) + 0.1, std::cos(0.023 * x)};
+            std::complex<double>{std::sin(0.019 * x) + 0.1, std::cos(0.023 * x)};
         phi_d[i] =
-            ses::Complex<double>{std::cos(0.011 * x), std::sin(0.029 * x) - 0.2};
+            std::complex<double>{std::cos(0.011 * x), std::sin(0.029 * x) - 0.2};
     }
     double cpu_re = 0.0;
     double cpu_im = 0.0;
@@ -502,11 +501,11 @@ bool check_dipole_kick(ses_vk::DeviceContext& ctx) {
     const double axis[3] = {0.3, 0.6, -0.2};
     const double theta = 0.15;
 
-    std::vector<ses::Complex<double>> psi_d(n);
-    std::vector<ses::Complex<double>> cpu(n);
+    std::vector<std::complex<double>> psi_d(n);
+    std::vector<std::complex<double>> cpu(n);
     for (std::size_t idx = 0; idx < n; ++idx) {
         const double x = static_cast<double>(idx);
-        psi_d[idx] = ses::Complex<double>{std::sin(0.13 * x) + 0.2,
+        psi_d[idx] = std::complex<double>{std::sin(0.13 * x) + 0.2,
                                           std::cos(0.09 * x) - 0.1};
         const int i = static_cast<int>(idx) % nx;
         const int j = (static_cast<int>(idx) / nx) % ny;
@@ -519,7 +518,7 @@ bool check_dipole_kick(ses_vk::DeviceContext& ctx) {
         const double wi = std::sin(ang);
         const double ar = psi_d[idx].real();
         const double ai = psi_d[idx].imag();
-        cpu[idx] = ses::Complex<double>{ar * wr - ai * wi, ar * wi + ai * wr};
+        cpu[idx] = std::complex<double>{ar * wr - ai * wi, ar * wi + ai * wr};
     }
     const std::vector<float> in = to_rg32f(psi_d);
     const VkDeviceSize bytes = in.size() * sizeof(float);
@@ -608,11 +607,11 @@ bool check_mean_force(ses_vk::DeviceContext& ctx) {
     const std::size_t n = std::size_t(nx) * ny * nz;
     const double i2h[3] = {1.0 / (2.0 * 0.5), 1.0 / (2.0 * 0.4),
                            1.0 / (2.0 * 0.25)};
-    std::vector<ses::Complex<double>> psi_d(n);
+    std::vector<std::complex<double>> psi_d(n);
     std::vector<double> v_d(n);
     for (std::size_t i = 0; i < n; ++i) {
         const double x = static_cast<double>(i);
-        psi_d[i] = ses::Complex<double>{0.4 * std::sin(0.011 * x),
+        psi_d[i] = std::complex<double>{0.4 * std::sin(0.011 * x),
                                         0.3 * std::cos(0.013 * x) + 0.05};
         const std::size_t ix = i % nx, iy = (i / nx) % ny, iz = i / (nx * ny);
         v_d[i] = std::sin(0.31 * double(ix)) * std::cos(0.17 * double(iy)) +
@@ -729,15 +728,15 @@ bool check_dipole(ses_vk::DeviceContext& ctx) {
     const double box_min[3] = {-4.0, -4.0, -4.0};
     const double cell_h[3] = {1.0, 1.1, 0.9};
 
-    std::vector<ses::Complex<double>> to_d(n);
-    std::vector<ses::Complex<double>> from_d(n);
+    std::vector<std::complex<double>> to_d(n);
+    std::vector<std::complex<double>> from_d(n);
     double cpu[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     for (std::size_t idx = 0; idx < n; ++idx) {
         const double x = static_cast<double>(idx);
         to_d[idx] =
-            ses::Complex<double>{std::sin(0.11 * x) + 0.1, std::cos(0.07 * x)};
+            std::complex<double>{std::sin(0.11 * x) + 0.1, std::cos(0.07 * x)};
         from_d[idx] =
-            ses::Complex<double>{std::cos(0.05 * x), std::sin(0.13 * x) - 0.2};
+            std::complex<double>{std::cos(0.05 * x), std::sin(0.13 * x) - 0.2};
         const int i = static_cast<int>(idx) % nx;
         const int j = (static_cast<int>(idx) / nx) % ny;
         const int kk = static_cast<int>(idx) / (nx * ny);
@@ -848,10 +847,10 @@ bool check_dipole(ses_vk::DeviceContext& ctx) {
 // (read-after-write hazard). Tolerance is fp16 storage precision.
 bool check_fp16_roundtrip(ses_vk::DeviceContext& ctx) {
     const std::size_t n = 4096;
-    std::vector<ses::Complex<double>> src_d(n);
+    std::vector<std::complex<double>> src_d(n);
     for (std::size_t i = 0; i < n; ++i) {
         const double x = static_cast<double>(i);
-        src_d[i] = ses::Complex<double>{0.5 * std::sin(0.05 * x),
+        src_d[i] = std::complex<double>{0.5 * std::sin(0.05 * x),
                                         0.5 * std::cos(0.03 * x)};
     }
     const std::vector<float> src_f = to_rg32f(src_d);
@@ -935,13 +934,13 @@ bool check_fp16_roundtrip(ses_vk::DeviceContext& ctx) {
 // unnormalized spectrum magnitudes grow with N, scaling up fp32 rounding.
 bool check_line_fft(ses_vk::DeviceContext& ctx, int N, const unsigned char* spv,
                     std::size_t spv_size) {
-    std::vector<ses::Complex<double>> line(static_cast<std::size_t>(N));
+    std::vector<std::complex<double>> line(static_cast<std::size_t>(N));
     for (int i = 0; i < N; ++i) {
         line[static_cast<std::size_t>(i)] =
-            ses::Complex<double>{std::sin(0.3 * i) + 0.1 * i,
+            std::complex<double>{std::sin(0.3 * i) + 0.1 * i,
                                  std::cos(0.7 * i) - 0.2};
     }
-    std::vector<ses::Complex<double>> cpu = line;
+    std::vector<std::complex<double>> cpu = line;
     ses::fft(cpu);  // forward, unnormalized -- same convention as the kernel
 
     const std::vector<float> in = to_rg32f(line);
@@ -1025,7 +1024,7 @@ bool check_fft3(ses_vk::DeviceContext& ctx) {
     for (int i = 0; i < original.size(); ++i) {
         const double x = static_cast<double>(i);
         original.data()[static_cast<std::size_t>(i)] =
-            ses::Complex<double>{std::sin(0.61 * x) + 0.15,
+            std::complex<double>{std::sin(0.61 * x) + 0.15,
                                  std::cos(1.27 * x) - 0.2};
     }
     ses::Field3D cpu = original;
@@ -1329,7 +1328,7 @@ bool check_engine_absorber(ses_vk::DeviceContext& ctx) {
     for (int s = 0; s < 5; ++s) {
         cpu_prop.step(cpu, 1);
         for (std::size_t i = 0; i < cpu.data().size(); ++i) {
-            cpu.data()[i] = cpu.data()[i] * ses::Complex<double>{mask[i], 0.0};
+            cpu.data()[i] = cpu.data()[i] * std::complex<double>{mask[i], 0.0};
         }
     }
     double max_err = 0.0;
@@ -1378,14 +1377,14 @@ bool check_engine_marching_cubes(ses_vk::DeviceContext& ctx) {
     // fp32-quantize psi so CPU and GPU classify the identical field.
     ses::Field3D psi{g};
     for (std::size_t i = 0; i < psi0.data().size(); ++i) {
-        psi.data()[i] = ses::Complex<double>{
+        psi.data()[i] = std::complex<double>{
             static_cast<float>(psi0.data()[i].real()),
             static_cast<float>(psi0.data()[i].imag())};
     }
     std::vector<double> den(psi.data().size());
     double peak = 0.0;
     for (std::size_t i = 0; i < psi.data().size(); ++i) {
-        den[i] = static_cast<float>(ses::norm_sq(psi.data()[i]));
+        den[i] = static_cast<float>(std::norm(psi.data()[i]));
         peak = std::max(peak, den[i]);
     }
     const double iso = static_cast<float>(0.25 * peak);
@@ -1658,8 +1657,8 @@ bool check_engine_deflation(ses_vk::DeviceContext& ctx) {
     }
 
     // Inner-product kernel: <ground|guess> vs the CPU double reference.
-    const ses::Complex<double> cpu_ip = ses::inner_product(ground, guess);
-    const ses::Complex<double> gpu_ip = engine.inner_with_psi(ground_h);
+    const std::complex<double> cpu_ip = ses::inner_product(ground, guess);
+    const std::complex<double> gpu_ip = engine.inner_with_psi(ground_h);
     const double ip_err = std::max(std::abs(gpu_ip.real() - cpu_ip.real()),
                                    std::abs(gpu_ip.imag() - cpu_ip.imag()));
     const bool ip_ok = ip_err < 1e-6;
@@ -2024,18 +2023,18 @@ bool check_engine_project(ses_vk::DeviceContext& ctx) {
     double worst = 0.0;
     for (std::size_t s = 0; s < states.size(); ++s) {
         const ses::ProjectorState& st = states[s];
-        const ses::Complex<double> gpu = engine.project_amplitude(
+        const std::complex<double> gpu = engine.project_amplitude(
             u_by_level[static_cast<std::size_t>(st.level)], st.l, st.m);
-        const ses::Complex<double> ref =
+        const std::complex<double> ref =
             cpu.amp[s] * std::sqrt(cpu.norm2[static_cast<std::size_t>(s)]);
         const double e = std::max(std::abs(gpu.real() - ref.real()),
                                   std::abs(gpu.imag() - ref.imag())) /
                          (1.0 + std::abs(ref));
         worst = std::max(worst, e);
     }
-    const ses::Complex<double> a1 = engine.project_amplitude(u_by_level[1], 1, 0);
+    const std::complex<double> a1 = engine.project_amplitude(u_by_level[1], 1, 0);
     engine.project_psi();
-    const ses::Complex<double> a2 = engine.project_amplitude(u_by_level[1], 1, 0);
+    const std::complex<double> a2 = engine.project_amplitude(u_by_level[1], 1, 0);
     const bool deterministic = (a1 == a2);
     const bool ok = worst < 1e-3 && deterministic;
     std::printf(
@@ -2106,11 +2105,11 @@ bool check_engine_dipole_between(ses_vk::DeviceContext& ctx) {
             }
         }
     }
-    const ses::Complex<double> cpu[3] = {
-        ses::Complex<double>{d6[0] * dv, d6[1] * dv},
-        ses::Complex<double>{d6[2] * dv, d6[3] * dv},
-        ses::Complex<double>{d6[4] * dv, d6[5] * dv}};
-    const ses::Complex<double> gv[3] = {gpu.x, gpu.y, gpu.z};
+    const std::complex<double> cpu[3] = {
+        std::complex<double>{d6[0] * dv, d6[1] * dv},
+        std::complex<double>{d6[2] * dv, d6[3] * dv},
+        std::complex<double>{d6[4] * dv, d6[5] * dv}};
+    const std::complex<double> gv[3] = {gpu.x, gpu.y, gpu.z};
     double mag2 = 0.0;
     double err2 = 0.0;
     for (int c = 0; c < 3; ++c) {
@@ -2166,8 +2165,8 @@ bool check_engine_fp16_consumers(ses_vk::DeviceContext& ctx) {
     }
 
     // inner_with_psi: fp32 vs fp16 of the SAME state.
-    const ses::Complex<double> i32 = engine.inner_with_psi(s_f32);
-    const ses::Complex<double> i16 = engine.inner_with_psi(s_f16);
+    const std::complex<double> i32 = engine.inner_with_psi(s_f32);
+    const std::complex<double> i16 = engine.inner_with_psi(s_f16);
     const double inner_err = std::max(std::abs(i32.real() - i16.real()),
                                       std::abs(i32.imag() - i16.imag()));
 
@@ -2175,8 +2174,8 @@ bool check_engine_fp16_consumers(ses_vk::DeviceContext& ctx) {
     const ses::DipoleMatrixElement d32 = engine.dipole_between(s_f32, p_f32);
     const ses::DipoleMatrixElement d16 = engine.dipole_between(s_f16, p_f32);
     double dip_err = 0.0;
-    const ses::Complex<double> a[3] = {d32.x, d32.y, d32.z};
-    const ses::Complex<double> b[3] = {d16.x, d16.y, d16.z};
+    const std::complex<double> a[3] = {d32.x, d32.y, d32.z};
+    const std::complex<double> b[3] = {d16.x, d16.y, d16.z};
     for (int c = 0; c < 3; ++c) {
         dip_err = std::max(dip_err, std::abs(a[c].real() - b[c].real()));
         dip_err = std::max(dip_err, std::abs(a[c].imag() - b[c].imag()));

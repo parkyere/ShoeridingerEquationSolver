@@ -7,7 +7,6 @@
 // apply_mcwf_damping mirrors it.
 
 #include <complex>
-import ses.complex;
 #include <core/decay.hpp>
 
 #include <gtest/gtest.h>
@@ -17,17 +16,16 @@ import ses.complex;
 
 namespace {
 
-using ses::Complex;
 
-double pop(const std::vector<Complex<double>>& c, int i) {
-    return ses::norm_sq(c[static_cast<std::size_t>(i)]);
+double pop(const std::vector<std::complex<double>>& c, int i) {
+    return std::norm(c[static_cast<std::size_t>(i)]);
 }
 
 TEST(NoJumpDamping, IsIdentityOnAPureEigenstate) {
     // One occupied state: damping scales it, renorm restores it -- unchanged.
-    const std::vector<Complex<double>> c{{0.0, 0.0}, {0.6, -0.8}, {0.0, 0.0}};
+    const std::vector<std::complex<double>> c{{0.0, 0.0}, {0.6, -0.8}, {0.0, 0.0}};
     const std::vector<double> gamma{0.0, 0.13, 0.0};
-    const std::vector<Complex<double>> out =
+    const std::vector<std::complex<double>> out =
         ses::nojump_damped_amplitudes(c, gamma, 2.0);
     EXPECT_NEAR(out[1].real(), 0.6, 1e-12);
     EXPECT_NEAR(out[1].imag(), -0.8, 1e-12);
@@ -40,9 +38,9 @@ TEST(NoJumpDamping, DrainsTheFasterDecayingComponentAndConservesNorm) {
     // no-jump interval the stable one carries MORE than half, the decaying
     // one LESS, and the total is still 1.
     const double s = 1.0 / std::sqrt(2.0);
-    const std::vector<Complex<double>> c{{s, 0.0}, {s, 0.0}};
+    const std::vector<std::complex<double>> c{{s, 0.0}, {s, 0.0}};
     const std::vector<double> gamma{0.0, 0.4};
-    const std::vector<Complex<double>> out =
+    const std::vector<std::complex<double>> out =
         ses::nojump_damped_amplitudes(c, gamma, 1.0);
     EXPECT_GT(pop(out, 0), 0.5);
     EXPECT_LT(pop(out, 1), 0.5);
@@ -54,7 +52,7 @@ TEST(NoJumpDamping, DrainsTheFasterDecayingComponentAndConservesNorm) {
 TEST(NoJumpDamping, GroundGrowsMonotonicallyTowardOne) {
     // Repeated application (the app between jumps): the ground fraction rises
     // every interval and approaches 1 as the excited amplitude breathes out.
-    std::vector<Complex<double>> c{{0.5, 0.0}, {std::sqrt(0.75), 0.0}};
+    std::vector<std::complex<double>> c{{0.5, 0.0}, {std::sqrt(0.75), 0.0}};
     const std::vector<double> gamma{0.0, 0.25};
     double prev = pop(c, 0);
     for (int step = 0; step < 40; ++step) {
@@ -69,9 +67,9 @@ TEST(NoJumpDamping, DegenerateShellKeepsRelativeWeights) {
     // Two states sharing one gamma (a degenerate manifold): both scale by the
     // same factor, so their ratio survives -- damping drains the shell as a
     // whole, it does not repartition within it.
-    const std::vector<Complex<double>> c{{0.6, 0.0}, {0.0, 0.8}};
+    const std::vector<std::complex<double>> c{{0.6, 0.0}, {0.0, 0.8}};
     const std::vector<double> gamma{0.3, 0.3};
-    const std::vector<Complex<double>> out =
+    const std::vector<std::complex<double>> out =
         ses::nojump_damped_amplitudes(c, gamma, 1.5);
     EXPECT_NEAR(pop(out, 0) / pop(out, 1), 0.36 / 0.64, 1e-12);
     EXPECT_NEAR(pop(out, 0) + pop(out, 1), 1.0, 1e-12);

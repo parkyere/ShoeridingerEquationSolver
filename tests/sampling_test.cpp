@@ -12,7 +12,6 @@
 //    k*x to O((kh)^2) between grid points (tolerance-checked).
 
 #include <complex>
-import ses.complex;
 #include <core/field.hpp>
 import ses.grid;
 #include <core/marching_cubes.hpp>
@@ -29,7 +28,6 @@ import ses.colormap;
 
 namespace {
 
-using ses::Complex;
 using ses::Field3D;
 using ses::Grid1D;
 using ses::Grid3D;
@@ -44,17 +42,17 @@ Grid3D integer_grid() {
 
 TEST(TrilinearSample, ExactAtGridPoints) {
     Field3D f{integer_grid()};
-    f(2, 3, 4) = Complex<double>{1.5, -2.5};
-    const Complex<double> s = ses::sample_trilinear(f, Vec3d{2.0, 3.0, 4.0});
+    f(2, 3, 4) = std::complex<double>{1.5, -2.5};
+    const std::complex<double> s = ses::sample_trilinear(f, Vec3d{2.0, 3.0, 4.0});
     EXPECT_EQ(s.real(), 1.5);
     EXPECT_EQ(s.imag(), -2.5);
 }
 
 TEST(TrilinearSample, MidpointOfEdgeAveragesEndpoints) {
     Field3D f{integer_grid()};
-    f(2, 3, 4) = Complex<double>{1.0, 4.0};
-    f(3, 3, 4) = Complex<double>{3.0, -2.0};
-    const Complex<double> s = ses::sample_trilinear(f, Vec3d{2.5, 3.0, 4.0});
+    f(2, 3, 4) = std::complex<double>{1.0, 4.0};
+    f(3, 3, 4) = std::complex<double>{3.0, -2.0};
+    const std::complex<double> s = ses::sample_trilinear(f, Vec3d{2.5, 3.0, 4.0});
     EXPECT_DOUBLE_EQ(s.real(), 2.0);
     EXPECT_DOUBLE_EQ(s.imag(), 1.0);
 }
@@ -68,13 +66,13 @@ TEST(TrilinearSample, ReproducesLinearFieldsExactly) {
         for (int j = 0; j < g.y.n; ++j) {
             for (int i = 0; i < g.x.n; ++i) {
                 const double x = g.x.coord(i), y = g.y.coord(j), z = g.z.coord(k);
-                f(i, j, k) = Complex<double>{re(x, y, z), im(x, y, z)};
+                f(i, j, k) = std::complex<double>{re(x, y, z), im(x, y, z)};
             }
         }
     }
     const Vec3d probes[] = {{1.3, 4.7, 2.2}, {0.1, 0.9, 6.3}, {5.999, 3.5, 0.5}};
     for (const Vec3d& p : probes) {
-        const Complex<double> s = ses::sample_trilinear(f, p);
+        const std::complex<double> s = ses::sample_trilinear(f, p);
         EXPECT_NEAR(s.real(), re(p.x, p.y, p.z), 1e-12);
         EXPECT_NEAR(s.imag(), im(p.x, p.y, p.z), 1e-12);
     }
@@ -82,8 +80,8 @@ TEST(TrilinearSample, ReproducesLinearFieldsExactly) {
 
 TEST(TrilinearSample, WorksAtTheLastGridPoint) {
     Field3D f{integer_grid()};
-    f(7, 7, 7) = Complex<double>{9.0, -9.0};
-    const Complex<double> s = ses::sample_trilinear(f, Vec3d{7.0, 7.0, 7.0});
+    f(7, 7, 7) = std::complex<double>{9.0, -9.0};
+    const std::complex<double> s = ses::sample_trilinear(f, Vec3d{7.0, 7.0, 7.0});
     EXPECT_DOUBLE_EQ(s.real(), 9.0);
     EXPECT_DOUBLE_EQ(s.imag(), -9.0);
 }
@@ -100,7 +98,7 @@ TEST(PhaseColors, UniformPhaseGivesExactlyUniformColor) {
             for (int i = 0; i < g.x.n; ++i) {
                 const double x = g.x.coord(i), y = g.y.coord(j), z = g.z.coord(k);
                 const double a = std::exp(-(x * x + y * y + z * z) / 8.0);
-                psi(i, j, k) = Complex<double>{a * std::cos(phi0), a * std::sin(phi0)};
+                psi(i, j, k) = std::complex<double>{a * std::cos(phi0), a * std::sin(phi0)};
             }
         }
     }
@@ -129,7 +127,7 @@ TEST(PhaseColors, PlaneWavePhaseTracksKx) {
         for (int j = 0; j < g.y.n; ++j) {
             for (int i = 0; i < g.x.n; ++i) {
                 const double x = g.x.coord(i);
-                psi(i, j, k) = Complex<double>{std::cos(kx * x), std::sin(kx * x)};
+                psi(i, j, k) = std::complex<double>{std::cos(kx * x), std::sin(kx * x)};
             }
         }
     }
