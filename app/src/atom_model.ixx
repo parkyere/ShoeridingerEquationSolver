@@ -1,4 +1,17 @@
-#pragma once
+module;
+#include <complex>
+#include <array>
+#include <cmath>
+#include <cstdio>
+#include <utility>
+#include <vector>
+export module ses.app.atom_model;
+export import ses.app.manifold_spec;
+export import ses.vk.engine;
+export import ses.radial;
+export import ses.decay;
+export import ses.vram_budget;
+
 
 // The tracked-atom model: the radial solve, the on-demand eigenstate
 // synthesis bookkeeping (energies, grid norms, resident handles, fp16
@@ -6,22 +19,8 @@
 // ses_vk::Engine by reference; everything else is pure data/logic. UI
 // concerns (titles, timers, queues' frame pacing) stay in the shell.
 
-#include "manifold_spec.hpp"
-#include "vk_engine.hpp"
 
-#include <complex>
-
-#include <array>
-#include <cmath>
-#include <cstdio>
-#include <utility>
-#include <vector>
-import ses.radial;
-import ses.decay;
-
-import ses.vram_budget;
-
-namespace ses_shell {
+export namespace ses_shell {
 
 class AtomModel {
 public:

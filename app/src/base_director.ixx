@@ -1,16 +1,7 @@
-#pragma once
-
-// Shared machinery for potential-swap scenarios (harmonic trap, tunneling):
-// the CPU truth session, the ses_vk engine, and the generic frame/tick/
-// relax/measure flow with virtual hooks for the scenario-specific parts.
-// HydrogenDirector keeps its own bespoke flow and does not derive from this.
-
-#include "scenario.hpp"
-#include "vk_blobs.hpp"
-
-import ses.grid;
-import ses.vec;
-
+module;
+#include <complex>
+#include <cstddef>
+#include <utility>
 #include <algorithm>
 #include <cmath>
 #include <cstdarg>
@@ -19,17 +10,30 @@ import ses.vec;
 #include <random>
 #include <string>
 #include <vector>
-import ses.simulation;
-import ses.sampling;
-import ses.imaginary_time;
-import ses.observables;
-import ses.marching_cubes;
-import ses.field;
-import ses.potential;
+#include <volk.h>
+export module ses.app.base_director;
+export import ses.grid;
+export import ses.vk.blobs;
+export import ses.app.scenario;
+export import ses.simulation;
+export import ses.sampling;
+export import ses.imaginary_time;
+export import ses.observables;
+export import ses.marching_cubes;
+export import ses.field;
+export import ses.potential;
+export import ses.colormap;
 
-import ses.colormap;
 
-namespace ses_shell {
+// Shared machinery for potential-swap scenarios (harmonic trap, tunneling):
+// the CPU truth session, the ses_vk engine, and the generic frame/tick/
+// relax/measure flow with virtual hooks for the scenario-specific parts.
+// HydrogenDirector keeps its own bespoke flow and does not derive from this.
+// volk.h textually first: VK_* macros never cross module boundaries, and the
+// early textual claim inoculates against GMF/textual redefinitions.
+
+
+export namespace ses_shell {
 
 enum class BaseViewMode { Cloud, Surface };
 // RelaxingExcited is used only by HydrogenDirector (deflated relax); base's
@@ -167,7 +171,7 @@ public:
         }
     }
 
-    // Visualized time scale (see scenario.hpp): steps per tick, not dt.
+    // Visualized time scale (see ses.app.scenario): steps per tick, not dt.
     void set_time_scale(int scale) override {
         time_scale_ = std::clamp(scale, 1, 16);
     }

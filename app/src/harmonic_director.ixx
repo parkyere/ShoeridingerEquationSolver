@@ -1,13 +1,17 @@
-#pragma once
+module;
+#include <cmath>
+#include <string>
+export module ses.app.harmonic_director;
+export import ses.app.base_director;
+
 
 // The 3D isotropic harmonic trap scenario: a coherent state (the ground
 // Gaussian displaced by x0) oscillates rigidly at omega -- the textbook
 // oracle the core tests pin. Key 2 relaxes to the ground state
 // (E -> 3 omega / 2); R re-displaces a fresh coherent state.
 
-#include "base_director.hpp"
 
-namespace ses_shell {
+export namespace ses_shell {
 
 constexpr double kTrapOmega = 0.25;      // au; period 2 pi / w ~ 25 au
 constexpr double kTrapBox = 20.0;        // Bohr half-extent (h = 0.15625)

@@ -18,9 +18,19 @@
 // Exit codes: 0 = all checks PASS, 1 = FAIL, 77 = SKIP (no Vulkan runtime /
 // device on this machine; ctest maps 77 to SKIP).
 
-#define VMA_IMPLEMENTATION
-#include "vk_engine.hpp"
 
+// volk + VMA textually first: VK_*/VMA macros never cross module boundaries,
+// and the early claim inoculates against GMF/textual redefinitions.
+#include <volk.h>
+#if defined(_MSC_VER)
+#pragma warning(push, 0)
+#endif
+#define VMA_STATIC_VULKAN_FUNCTIONS 0
+#define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
+#include <vk_mem_alloc.h>
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 #include <complex>
 
 #include <phase_multiply_spv.h>
@@ -65,6 +75,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+import ses.vk.engine;
 import ses.magnetic;
 import ses.drive;
 import ses.projection;

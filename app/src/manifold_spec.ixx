@@ -1,9 +1,14 @@
-#pragma once
+export module ses.app.manifold_spec;
+
 
 // Tracked n<=6 eigenstate-manifold spec: state/level index tables (pure data).
-
 // The full m-resolved n <= 6 shell (kNumStates entries); n = 6 is
 // box-critical on the +-80 Bohr grid. First five indices frozen (selftests).
+
+
+// Global-namespace data by design (pure tables); exported as a block.
+export {
+
 enum StateIndex : int {
     kS1 = 0, kP2X = 1, kP2Y = 2, kP2Z = 3, kS2 = 4,
     k3S = 5, k3PX = 6, k3PY = 7, k3PZ = 8,
@@ -87,3 +92,5 @@ struct ShellChannel {
     double gamma_display;  // uniformly accelerated display rate
 };
 
+
+}  // export

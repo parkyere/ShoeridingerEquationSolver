@@ -1,4 +1,10 @@
-#pragma once
+module;
+#include <algorithm>
+#include <cstddef>
+#include <string>
+export module ses.app.tunneling_director;
+export import ses.app.base_director;
+
 
 // Quantum tunneling: a Gaussian packet fired at a rectangular barrier its
 // mean energy classically cannot cross (E < V0). The boundary absorber
@@ -6,9 +12,8 @@
 // of the slab (title-cadence readback) and the maximum transmitted
 // fraction -- nonzero T through a forbidden barrier IS the demo.
 
-#include "base_director.hpp"
 
-namespace ses_shell {
+export namespace ses_shell {
 
 constexpr double kTunnelBox = 80.0;      // Bohr half-extent (256^3, h = 0.625)
 constexpr double kTunnelV0 = 0.25;       // Ha; barrier height

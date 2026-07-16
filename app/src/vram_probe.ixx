@@ -1,21 +1,28 @@
-#pragma once
+module;
+#include <volk.h>
+#include <atomic>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <vector>
+#include <cstdint>
+#include <cstring>
+#include <vector>
+export module ses.app.vram_probe;
+export import ses.vram_budget;
+
 
 // Free VRAM in bytes via VK_EXT_memory_budget (heap budget minus current
 // usage, summed over device-local heaps), or ses::kVramUnknown when the
 // extension / entry points are absent. Pure volk -- call AFTER a
 // DeviceContext create()/adopt() has run volkLoadInstance. Physical-device
 // property queries only need the extension SUPPORTED, not enabled.
+// ses.vk.device's GMF set, textually pre-claimed: volk.h both supplies the
+// VK_* macros (macros never cross module boundaries) and inoculates the TU
+// against GMF/textual std redefinitions.
 
-#include "vk_device.hpp"
 
-
-#include <cstdint>
-#include <cstring>
-#include <vector>
-
-import ses.vram_budget;
-
-namespace ses_shell {
+export namespace ses_shell {
 
 inline std::int64_t query_free_vram_bytes(VkPhysicalDevice pd) {
     if (pd == VK_NULL_HANDLE) {

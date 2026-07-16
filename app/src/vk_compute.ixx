@@ -1,4 +1,19 @@
-#pragma once
+module;
+#include <volk.h>
+#include <atomic>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <vector>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <initializer_list>
+#include <source_location>
+#include <vector>
+export module ses.vk.compute;
+export import ses.vk.device;
+
 
 // ses_vk compute infrastructure: the thin, owned layer between raw Vulkan
 // and the kernels -- descriptor/pipeline-layout construction, one-shot frame
@@ -13,17 +28,14 @@
 //   barrier_*       the explicit hazard edges between recorded commands;
 //                   every one is spelled out and the validation layer
 //                   polices them.
+// ses.vk.device's GMF set, textually pre-claimed: volk.h both supplies the
+// VK_* macros (macros never cross module boundaries) and inoculates the TU
+// against GMF/textual std redefinitions. No VMA here: this module's purview
+// never names vma*; every vma-calling module (engine/render) carries its own
+// identically configured vk_mem_alloc.h in its own GMF.
 
-#include "vk_device.hpp"
 
-#include <cstddef>
-#include <cstdint>
-#include <cstdio>
-#include <initializer_list>
-#include <source_location>
-#include <vector>
-
-namespace ses_vk {
+export namespace ses_vk {
 
 // One descriptor binding of a compute kernel: index + type. Order in the
 // kernel's spec list is irrelevant; indices match the shader's layout().

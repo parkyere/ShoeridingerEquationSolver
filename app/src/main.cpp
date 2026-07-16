@@ -1,6 +1,6 @@
 // Humble Object shell -- the SDL3 boundary. SDL provides the window, input,
 // and the Vulkan surface; the shell OWNS the device (DeviceContext::create),
-// the swapchain (vk_present.hpp), and the main loop; Dear ImGui draws the
+// the swapchain (ses.vk.present), and the main loop; Dear ImGui draws the
 // control panel + status readout inside the presenter's pass. Everything the
 // demo IS lives behind ses_shell::ScenarioDirector (--scene= picks the
 // implementation). NO domain logic lives here (docs/ARCHITECTURE.md).
@@ -11,10 +11,9 @@
 // position, E = measure energy, D = decay off/on, L = laser (off -> Z -> X
 // -> off), F = flow particles, [ ] = thinner/denser cloud.
 
-// Std first, in full: the app headers below carry `import ses.*;` whose GMFs
-// reach these std headers -- a later FIRST textual include would C2572, so
-// this TU textually claims the whole set up front (later ones are guard
-// no-ops).
+// Std first, in full: the imported ses.* modules' GMFs reach these std
+// headers -- a later FIRST textual include would C2572, so this TU textually
+// claims the whole set up front (later ones are guard no-ops).
 #include <algorithm>
 #include <atomic>
 #include <cassert>
@@ -39,10 +38,9 @@
 
 // ses_vk before SDL/ImGui: volk (inside) defines VK_NO_PROTOTYPES and must
 // own the vulkan.h inclusion before SDL/ImGui pull their own Vulkan
-// declarations. This TU owns the app's single VMA implementation (vkcheck
-// has its own); no other TU may define VMA_IMPLEMENTATION.
-#define VMA_IMPLEMENTATION
-#include "vk_blobs.hpp"
+// declarations. The single VMA implementation lives in vma_impl.cpp inside
+// ses_app_modules (vma_impl.cpp, the single implementation TU).
+#include <volk.h>  // VK_* macros: modules cannot export them
 
 #include <blit_frag_spv.h>
 #include <blit_vert_spv.h>
@@ -54,15 +52,16 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <SDL3/SDL_main.h>
+import ses.app.tunneling_director;
 
-#include "harmonic_director.hpp"
-#include "hydrogen_director.hpp"
-#include "imgui_ui.hpp"
-#include "scheduler.hpp"
-#include "selftest_arcs.hpp"
-#include "tunneling_director.hpp"
-#include "vk_present.hpp"
-#include "vram_probe.hpp"
+import ses.app.scheduler;
+import ses.app.harmonic_director;
+import ses.app.hydrogen_director;
+import ses.app.selftest_arcs;
+import ses.vk.blobs;
+import ses.app.imgui_ui;
+import ses.vk.present;
+import ses.app.vram_probe;
 
 namespace {
 
@@ -75,8 +74,8 @@ namespace {
 constexpr std::uint64_t kTickMs = 16;
 
 // The shell: window + input + device + presentation + the main loop. The one
-// wrapper surface shared by the keyboard, the ImGui panel (imgui_ui.hpp), and
-// the selftest arcs (selftest_arcs.hpp).
+// wrapper surface shared by the keyboard, the ImGui panel (ses.app.imgui_ui),
+// and the selftest arcs (ses.app.selftest_arcs).
 class Shell {
 public:
     Shell(std::unique_ptr<ses_shell::ScenarioDirector> director,
@@ -311,7 +310,7 @@ public:
 
     // ---- control entry points every scene shares --------------------------
     // Scenario-specific controls/probes live behind director_->hydrogen() /
-    // director_->tunnel() (scenario.hpp); the panel and the selftest arcs
+    // director_->tunnel() (ses.app.scenario); the panel and the selftest arcs
     // reach them there.
     void toggle_pause() { paused_ = !paused_; }
     void set_real_time() {
@@ -705,7 +704,7 @@ int main(int argc, char* argv[]) {
     shell.init();
 
     // Verification + selftest arcs (--dump-frame*, --selftest-*): registered
-    // from selftest_arcs.hpp so main() stays a shell.
+    // from ses.app.selftest_arcs so main() stays a shell.
     ses_shell::register_verification_arcs(&shell);
 
     const int code = shell.run();

@@ -1,4 +1,22 @@
-#pragma once
+module;
+#include <volk.h>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <initializer_list>
+#include <source_location>
+#include <vector>
+#include <algorithm>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <functional>
+#include <vector>
+export module ses.vk.present;
+export import ses.vk.compute;
+
 
 // The shell's OWN presentation layer, raw Vulkan: a swapchain over the SDL
 // window's surface, one fullscreen-triangle pass sampling the SceneRenderer's
@@ -6,17 +24,12 @@
 // SHADER_READ_ONLY_OPTIMAL with fragment-read barriers -- exactly this), and
 // a UI-record callback riding the same pass (ImGui draws there). Frame model
 // matches the renderer's synchronous style: one frame in flight, fence-waited.
+// ses.vk GMF set, textually pre-claimed: volk.h supplies the VK_* macros
+// (macros never cross module boundaries) and inoculates against GMF/textual
+// redefinitions. No VMA here: the presenter never names vma*.
 
-#include "vk_compute.hpp"
 
-#include <algorithm>
-#include <cstdint>
-#include <cstdio>
-#include <cstring>
-#include <functional>
-#include <vector>
-
-namespace ses_shell {
+export namespace ses_shell {
 
 class SwapchainPresenter {
 public:

@@ -40,7 +40,7 @@ research-grade mean-field (DFT) project. We stay single-electron on purpose.
 
 - **`core` depends on nothing** (no GUI, no GPU, no windowing). Every behavior
   has an analytic or golden oracle and is unit-tested, test-first.
-- **`ses_vk`** (`app/src/vk_*.hpp`) is the GPU engine and scene renderer:
+- **`ses_vk`** (`app/src/vk_*.ixx`, C++20 modules `ses.vk.*`) is the GPU engine and scene renderer:
   framework-free Vulkan on top of `core` plus vendored infrastructure only
   (volk, VMA, VkFFT). It links no windowing at all — proven by
   `sesolver_vkcheck`, which drives every kernel and engine path against the
@@ -48,7 +48,7 @@ research-grade mean-field (DFT) project. We stay single-electron on purpose.
 - **The shell is thin and replaceable**: SDL3 gives the window, input, and the
   Vulkan surface; the shell itself owns the device (the same
   `DeviceContext::create` path vkcheck exercises), the swapchain + one
-  fullscreen-triangle pass sampling the renderer's image (`vk_present.hpp`),
+  fullscreen-triangle pass sampling the renderer's image (`ses.vk.present`),
   and the Dear ImGui control panel riding that pass. Only raw Khronos handles
   cross the shell <-> `ses_vk` seam. The shell holds
   **no domain logic**; anything worth testing is pushed down into `core` as

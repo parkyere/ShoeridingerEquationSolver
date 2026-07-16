@@ -1,25 +1,33 @@
-#pragma once
-
-// The scenario seam: everything a demo IS, behind one framework-neutral
-// interface. The shell owns exactly one ScenarioDirector (chosen by --scene=)
-// and talks to it through this contract; scenario-specific keys go through
-// handle_key (plain ASCII -- the shell maps its own key codes down to this).
-
-#include "vk_device.hpp"
-
-import ses.grid;
-
+module;
+#include <volk.h>
+#include <atomic>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <vector>
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
-import ses.marching_cubes;
+export module ses.app.scenario;
+export import ses.vk.device;
+export import ses.grid;
+export import ses.marching_cubes;
+export import ses.colormap;
 
-import ses.colormap;
 
-namespace ses_shell {
+// The scenario seam: everything a demo IS, behind one framework-neutral
+// interface. The shell owns exactly one ScenarioDirector (chosen by --scene=)
+// and talks to it through this contract; scenario-specific keys go through
+// handle_key (plain ASCII -- the shell maps its own key codes down to this).
+// ses.vk.device's GMF set, textually pre-claimed: volk.h both supplies the
+// VK_* macros (macros never cross module boundaries) and inoculates the TU
+// against GMF/textual std redefinitions.
+
+
+export namespace ses_shell {
 
 // Scenario-specific capability seams. The shell holds ONE ScenarioDirector
 // and never down-casts to a concrete type; a scene that supports these

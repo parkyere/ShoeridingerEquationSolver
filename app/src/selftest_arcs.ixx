@@ -1,4 +1,11 @@
-#pragma once
+module;
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <memory>
+export module ses.app.selftest_arcs;
+export import ses.app.manifold_spec;
+
 
 // Verification + selftest arcs: every --dump-frame* and --selftest-* arc,
 // registered against the live shell. Templated on the shell type so the
@@ -8,14 +15,8 @@
 // verdict. The shell provides: sched() (Scheduler), request_exit(code),
 // has_arg(name), dump_frame_bmp(path), and the control/probe wrappers.
 
-#include "manifold_spec.hpp"
 
-#include <algorithm>
-#include <cmath>
-#include <cstdio>
-#include <memory>
-
-namespace ses_shell {
+export namespace ses_shell {
 
 // Selftest helper: poll until the startup atlas build has produced the
 // channel table, then run the arc (slower GPUs just stretch the wait).

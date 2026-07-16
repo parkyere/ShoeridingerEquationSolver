@@ -1,4 +1,39 @@
-#pragma once
+module;
+#include <volk.h>
+#if defined(_MSC_VER)
+#pragma warning(push, 0)
+#endif
+#define VMA_STATIC_VULKAN_FUNCTIONS 0
+#define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
+#include <vk_mem_alloc.h>
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <initializer_list>
+#include <source_location>
+#include <vector>
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <vector>
+export module ses.vk.render;
+export import ses.vk.compute;
+export import ses.grid;
+export import ses.vec;
+export import ses.marching_cubes;
+export import ses.sphere;
+export import ses.camera;
+export import ses.colormap;
+export import ses.volume;
+
 
 // ses_vk::SceneRenderer: the whole scene -- isosurface mesh, proton marker,
 // axes gizmo, billboarded z label, and the front-to-back |psi|^2 volume
@@ -12,27 +47,13 @@
 // per-frame camera/staging inputs, then draw
 // color_image()/color_view() as one textured quad. That is the ENTIRE
 // remaining rendering responsibility of the framework.
+// ses.vk GMF set, textually pre-claimed: volk.h supplies the VK_* macros
+// (macros never cross module boundaries); vk_mem_alloc.h (same config as the
+// module GMFs) keeps direct vma* calls compiling; both inoculate the TU
+// against GMF/textual redefinitions.
 
-#include "vk_compute.hpp"
 
-import ses.grid;
-import ses.vec;
-
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstdint>
-#include <cstdio>
-#include <cstring>
-#include <vector>
-import ses.marching_cubes;
-import ses.sphere;
-
-import ses.camera;
-import ses.colormap;
-import ses.volume;
-
-namespace ses_vk {
+export namespace ses_vk {
 
 constexpr int kPhaseLutSize = 256;
 constexpr double kProtonMarkerRadius = 0.35;  // symbolic (real ~1e-5 Bohr)

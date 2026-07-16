@@ -1,4 +1,21 @@
-#pragma once
+module;
+#include <volk.h>
+#if defined(_MSC_VER)
+#pragma warning(push, 0)
+#endif
+#define VMA_STATIC_VULKAN_FUNCTIONS 0
+#define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
+#include <vk_mem_alloc.h>
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+#include <atomic>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <vector>
+export module ses.vk.device;
+
 
 // ses_vk: framework-free Vulkan bootstrap.
 //
@@ -18,25 +35,8 @@
 // validation ERROR is counted in validation_errors -- harnesses fail on a
 // nonzero count, which makes hand-authored barriers actually testable.
 
-#include <volk.h>
 
-#if defined(_MSC_VER)
-#pragma warning(push, 0)
-#endif
-#define VMA_STATIC_VULKAN_FUNCTIONS 0
-#define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
-#include <vk_mem_alloc.h>
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
-
-#include <atomic>
-#include <cstdint>
-#include <cstdio>
-#include <cstring>
-#include <vector>
-
-namespace ses_vk {
+export namespace ses_vk {
 
 // Validation-error tally, bumped by the debug-utils callback. Checked by
 // harnesses after their GPU work: nonzero means a barrier/usage bug even if
@@ -583,7 +583,7 @@ struct DeviceContext {
         }
     }
 
-    // The OneShot scratch sets (vk_compute.hpp): one persistent transient
+    // The OneShot scratch sets (ses.vk.compute): one persistent transient
     // pool + primary cb + fence per queue, reset per submission. The main
     // set serves the renderer/presenter (graphics queue); the compute set
     // serves the engine (compute queue -- pools are per-family).

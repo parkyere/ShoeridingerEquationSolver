@@ -1,19 +1,5 @@
-#pragma once
-
-// The hydrogen scenario (ScenarioDirector implementation): the CPU truth
-// session, the ses_vk engine, the AtomModel, and the atom demo state machine
-// (atlas build, decay, laser, fields, measurement, relaxation), plus the
-// cpu_is_truth_ sync invariant.
-
-#include "atom_model.hpp"
-#include "base_director.hpp"
-#include "manifold_spec.hpp"
-#include "scenario.hpp"
-#include "vk_engine.hpp"
-
-import ses.grid;
-import ses.vec;
-
+module;
+#include <complex>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -23,23 +9,34 @@ import ses.vec;
 #include <random>
 #include <string>
 #include <vector>
-import ses.simulation;
-import ses.magnetic;
-import ses.projection;
-import ses.imaginary_time;
-import ses.observables;
-import ses.measurement;
-import ses.decay;
-import ses.marching_cubes;
-import ses.field;
-import ses.potential;
+export module ses.app.hydrogen_director;
+export import ses.app.manifold_spec;
+export import ses.grid;
+export import ses.vec;
+export import ses.app.base_director;
+export import ses.app.atom_model;
+export import ses.vk.engine;
+export import ses.app.scenario;
+export import ses.simulation;
+export import ses.magnetic;
+export import ses.projection;
+export import ses.imaginary_time;
+export import ses.observables;
+export import ses.measurement;
+export import ses.decay;
+export import ses.field;
+export import ses.potential;
+export import ses.vram_budget;
+export import ses.emission;
 
-import ses.vram_budget;
+
+// The hydrogen scenario (ScenarioDirector implementation): the CPU truth
+// session, the ses_vk engine, the AtomModel, and the atom demo state machine
+// (atlas build, decay, laser, fields, measurement, relaxation), plus the
+// cpu_is_truth_ sync invariant.
 
 
-import ses.emission;
-
-namespace ses_shell {
+export namespace ses_shell {
 
 enum class LaserPol { Off, Z, X };
 enum class PartialBasis { None, NShell, LTotal, MZ };
@@ -96,7 +93,7 @@ public:
     // BaseDirector's ctor stages the initial mesh + volume from make_simulation().
     HydrogenDirector() : BaseDirector(make_simulation()) {}
 
-    // The specialized-control seam (scenario.hpp): the shell reaches these
+    // The specialized-control seam (ses.app.scenario): the shell reaches these
     // through HydrogenApi, never a concrete down-cast.
     HydrogenApi* hydrogen() override { return this; }
 

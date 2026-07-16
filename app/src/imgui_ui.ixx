@@ -1,4 +1,11 @@
-#pragma once
+module;
+#include <imgui.h>
+#include <initializer_list>
+#include <string>
+#include <utility>
+export module ses.app.imgui_ui;
+export import ses.app.scenario;  // HydrogenApi (the hydrogen panel's control seam)
+
 
 // The discoverable-controls panel, in Dear ImGui: a clickable mirror of the
 // hotkeys. Buttons mirror the hotkeys (which stay live: the shell only
@@ -6,15 +13,8 @@
 // proper Hamiltonian terms; the director's status_text() readout renders as a
 // wrapped status block. Templated on the shell type so main() stays a shell.
 
-#include "scenario.hpp"  // HydrogenApi (the hydrogen panel's control seam)
 
-#include <imgui.h>
-
-#include <initializer_list>
-#include <string>
-#include <utility>
-
-namespace ses_shell {
+export namespace ses_shell {
 
 // Shared UI state the sliders edit between frames (owned by the shell).
 struct UiState {

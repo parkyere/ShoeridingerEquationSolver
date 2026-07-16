@@ -1,16 +1,18 @@
-#pragma once
+module;
+#include <cstdint>
+#include <functional>
+#include <utility>
+#include <vector>
+export module ses.app.scheduler;
+
 
 // Wall-clock callback scheduler for the SDL main loop. after() fires once;
 // every() repeats until cancel(). poll(now_ms) runs due callbacks on the loop
 // thread; callbacks may schedule further work (the selftest arcs chain this
 // way).
 
-#include <cstdint>
-#include <functional>
-#include <utility>
-#include <vector>
 
-namespace ses_shell {
+export namespace ses_shell {
 
 class Scheduler {
 public:

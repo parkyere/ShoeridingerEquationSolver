@@ -1,14 +1,4 @@
-#pragma once
-
-// The app's embedded SPIR-V blobs: every compute kernel and render shader
-// the ses_vk engine/renderer runs, baked offline from the shader sources in
-// src/shaders/ -- the engine has no resource system, so main() hands it this
-// table. The line-FFT kernel is baked at concrete sizes; pick the one
-// matching the (cubic) grid.
-
-#include "vk_engine.hpp"
-#include "vk_render.hpp"
-
+module;
 #include <phase_multiply_spv.h>
 #include <half_mul_spv.h>
 #include <kin_mul_spv.h>
@@ -57,10 +47,20 @@
 #include <shadow_spv.h>
 #include <flow_vert_spv.h>
 #include <flow_frag_spv.h>
-
 #include <cstdio>
+export module ses.vk.blobs;
+export import ses.vk.render;
+export import ses.vk.engine;
 
-namespace ses_shell {
+
+// The app's embedded SPIR-V blobs: every compute kernel and render shader
+// the ses_vk engine/renderer runs, baked offline from the shader sources in
+// src/shaders/ -- the engine has no resource system, so main() hands it this
+// table. The line-FFT kernel is baked at concrete sizes; pick the one
+// matching the (cubic) grid.
+
+
+export namespace ses_shell {
 
 // Blobs for a cubic grid of side n; fft is null (engine init fails cleanly)
 // if no fft_line kernel was baked at that size.

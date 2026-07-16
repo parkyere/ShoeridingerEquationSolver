@@ -4,7 +4,7 @@
 # This layer holds NO domain logic. It links sesolver_core, owns the window /
 # input / main loop (SDL3), the Vulkan device (DeviceContext::create -- the
 # same owning path sesolver_vkcheck exercises headless), the swapchain
-# (vk_present.hpp), and the Dear ImGui control panel. It is verified manually
+# (ses.vk.present), and the Dear ImGui control panel. It is verified manually
 # rather than by unit tests (the chosen Humble Object pattern) -- plus the
 # --selftest-* arcs.
 #
@@ -165,6 +165,56 @@ target_link_libraries(ses_imgui PUBLIC volk::volk SDL3::SDL3)
 target_compile_features(ses_imgui PRIVATE cxx_std_20)
 
 # ---------------------------------------------------------------------------
+# ses_app_modules: the app layer's C++20 modules (ses.vk.* / ses.app.*). ONE
+# owner target so the app and the vkcheck harness import a SINGLE BMI per
+# module (per-target SES_HAVE_VKFFT would otherwise bake divergent engines).
+# vma_impl.cpp is the one VMA implementation TU for the whole ses_vk world.
+# ---------------------------------------------------------------------------
+add_library(ses_app_modules STATIC
+    src/vma_impl.cpp
+)
+target_sources(ses_app_modules
+    PUBLIC FILE_SET CXX_MODULES FILES
+        src/vk_device.ixx
+        src/scheduler.ixx
+        src/manifold_spec.ixx
+        src/vk_compute.ixx
+        src/scenario.ixx
+        src/vram_probe.ixx
+        src/vk_engine.ixx
+        src/vk_present.ixx
+        src/vk_render.ixx
+        src/imgui_ui.ixx
+        src/vk_blobs.ixx
+        src/atom_model.ixx
+        src/selftest_arcs.ixx
+        src/base_director.ixx
+        src/hydrogen_director.ixx
+        src/harmonic_director.ixx
+        src/tunneling_director.ixx)
+target_compile_features(ses_app_modules PUBLIC cxx_std_20)
+add_dependencies(ses_app_modules ses_spv_headers)
+target_include_directories(ses_app_modules PRIVATE "${_ses_vk_spv_dir}")
+# sesolver_core PUBLIC: app BMIs import core BMIs, and ses_arch codegen flags
+# must reach lib and exes identically (BMI/importer mismatch = ODR trap).
+# ses_imgui PUBLIC: imgui_ui.ixx's GMF needs <imgui.h> + the volk-riding
+# backend define; static linking keeps windowing objects out of vkcheck (it
+# never imports ses.app.* UI modules).
+target_link_libraries(ses_app_modules
+    PUBLIC
+        sesolver_core
+        volk::volk
+        GPUOpen::VulkanMemoryAllocator
+        Vulkan::Headers
+        ses_imgui
+    PRIVATE
+        ses_warnings)
+ses_enable_vkfft(ses_app_modules)
+if(MSVC)
+    target_compile_definitions(ses_app_modules PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
+# ---------------------------------------------------------------------------
 # The app.
 # ---------------------------------------------------------------------------
 add_executable(sesolver_app
@@ -181,6 +231,7 @@ add_dependencies(sesolver_app ses_spv_headers)
 target_include_directories(sesolver_app PRIVATE "${_ses_vk_spv_dir}")
 target_link_libraries(sesolver_app
     PRIVATE
+        ses_app_modules
         sesolver_core
         SDL3::SDL3
         ses_imgui
@@ -216,6 +267,7 @@ if(MSVC)
 endif()
 target_include_directories(sesolver_vkcheck PRIVATE "${_ses_vk_spv_dir}")
 target_link_libraries(sesolver_vkcheck PRIVATE
+    ses_app_modules
     sesolver_core
     volk::volk
     GPUOpen::VulkanMemoryAllocator

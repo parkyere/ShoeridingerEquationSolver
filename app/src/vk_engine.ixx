@@ -1,27 +1,23 @@
-#pragma once
-
-// ses_vk::Engine: the split-operator Strang step and imaginary-time
-// relaxation, on raw Vulkan via the vk_compute.hpp layer.
-// SPIR-V blobs are dependency-injected (EngineKernels), so the engine has
-// no resource system; the DeviceContext is passed in, so the same engine
-// runs on a self-created device (headless: checks, clusters) or on handles
-// adopted from the GUI shell.
-//
-// Numerical contract: Vulkan-GLSL kernels baked offline to SPIR-V, the
-// dispatch chain halfV . IFFT . kin . FFT . halfV (the inverse FFT = conj .
-// FFT . conj/N), std140 parameter blocks, host-double reduction finishes.
-// Synchronization is fully explicit: a compute-to-compute memory barrier
-// before every dispatch that aliases psi (all of them), transfer barriers
-// around uploads/readbacks, and a fence wait per submission.
-
-#include "vk_compute.hpp"
-
+module;
+#include <volk.h>
+#if defined(_MSC_VER)
+#pragma warning(push, 0)
+#endif
+#define VMA_STATIC_VULKAN_FUNCTIONS 0
+#define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
+#include <vk_mem_alloc.h>
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <initializer_list>
+#include <source_location>
+#include <vector>
 #ifdef SES_HAVE_VKFFT
-// volk (via vk_device.hpp) already defined VK_NO_PROTOTYPES and declared the
-// canonical vk* names as global function pointers, so header-only VkFFT
-// compiles and links against volk's dispatch unmodified -- no include-order
-// hack, no external command-buffer blocks: the engine owns the device and
-// records VkFFTAppend straight into its own primary command buffers.
 #if defined(_MSC_VER)
 #pragma warning(push)
 #pragma warning(disable : 4702)  // unreachable code inside vkFFT.h at /O2
@@ -31,25 +27,48 @@
 #pragma warning(pop)
 #endif
 #endif
-
-import ses.mc.tables;
-
 #include <complex>
-import ses.grid;
-import ses.spectral;
-import ses.vec;
-
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <vector>
-import ses.drive;
-import ses.rotation;
-import ses.decay;
+export module ses.vk.engine;
+export import ses.vk.compute;
+import ses.mc.tables;
+export import ses.grid;
+import ses.spectral;
+export import ses.vec;
+export import ses.drive;
+export import ses.decay;
 
-namespace ses_vk {
+
+// ses_vk::Engine: the split-operator Strang step and imaginary-time
+// relaxation, on raw Vulkan via the ses.vk.compute layer.
+// SPIR-V blobs are dependency-injected (EngineKernels), so the engine has
+// no resource system; the DeviceContext is passed in, so the same engine
+// runs on a self-created device (headless: checks, clusters) or on handles
+// adopted from the GUI shell.
+//
+// Numerical contract: Slang kernels baked offline to SPIR-V, the
+// dispatch chain halfV . IFFT . kin . FFT . halfV (the inverse FFT = conj .
+// FFT . conj/N), std140 parameter blocks, host-double reduction finishes.
+// Synchronization is fully explicit: a compute-to-compute memory barrier
+// before every dispatch that aliases psi (all of them), transfer barriers
+// around uploads/readbacks, and a fence wait per submission.
+// ses.vk GMF set, textually pre-claimed: volk.h supplies the VK_* macros
+// (macros never cross module boundaries); vk_mem_alloc.h (same config as the
+// module GMFs) keeps direct vma* calls compiling; both inoculate the TU
+// against GMF/textual redefinitions.
+// volk (this GMF's own include) already defined VK_NO_PROTOTYPES and declared the
+// canonical vk* names as global function pointers, so header-only VkFFT
+// compiles and links against volk's dispatch unmodified -- no include-order
+// hack, no external command-buffer blocks: the engine owns the device and
+// records VkFFTAppend straight into its own primary command buffers.
+
+
+export namespace ses_vk {
 
 // The SPIR-V blobs the engine's core propagation needs. The caller owns the
 // storage (embedded C arrays in the harness; a file loader later).
