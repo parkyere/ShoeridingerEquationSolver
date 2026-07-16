@@ -1,11 +1,14 @@
-// Probability current / Bohmian velocity + streakline fade (core/flow.hpp).
+// Probability current / Bohmian velocity + streakline fade (ses.flow).
 // The current's handedness is the physical anchor: e^{+i phi} (m=+1) must
 // circulate counterclockwise about z -- the same convention the L_z
 // measurement labels +m (measurement.hpp).
 
-#include <core/flow.hpp>
+#include <core/complex.hpp>
+#include <core/vec.hpp>
 
 #include <gtest/gtest.h>
+
+import ses.flow;
 
 namespace {
 

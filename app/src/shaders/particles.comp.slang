@@ -2,7 +2,7 @@
 // slots) of its recent positions; every animated frame the head is advected
 // one Bohmian step and the trail shifts down (oldest slot drops). The velocity
 // is v = j / rho, j = Im(conj(psi) grad psi) (atomic units) -- the same current
-// as core/flow.hpp::probability_current -- read from the fp32 velocity volume
+// as ses.flow::probability_current -- read from the fp32 velocity volume
 // (vel_tex); density from the fp16 display volume (psi_tex). Streaks respawn
 // (whole trail collapsed to a fresh seed) by rejection sampling against
 // |psi|^2, so they stay |psi|^2-distributed (equivariance): the streaks you

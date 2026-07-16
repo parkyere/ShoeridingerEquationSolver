@@ -2,7 +2,7 @@
 //   SV_InstanceID = streak,  SV_VertexID = trail slot
 //   (0 = oldest tail .. trail_len-1 = newest head).
 // Premultiplied WHITE with a tail->head alpha fade (a weather-map Lagrangian
-// flux streak). Fade matches core/flow.hpp::trail_fade. gl_VertexIndex /
+// flux streak). Fade matches ses.flow::trail_fade. gl_VertexIndex /
 // gl_InstanceIndex (glsl module) map to the raw SPIR-V VertexIndex /
 // InstanceIndex builtins -- unlike SV_VertexID/SV_InstanceID they need no
 // shaderDrawParameters capability.

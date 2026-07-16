@@ -7,7 +7,6 @@
 // composite, NOT by a per-fragment GPU oracle (there is none).
 
 #include <core/complex.hpp>
-#include <core/cross_section.hpp>
 #include <core/grid.hpp>
 #include <core/vec.hpp>
 
@@ -16,6 +15,7 @@
 #include <cmath>
 
 import ses.colormap;
+import ses.cross_section;
 
 namespace {
 
