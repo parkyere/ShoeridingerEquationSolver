@@ -25,16 +25,19 @@ export import ses.grid;
 export namespace ses {
 
 // Wavefunction phasor curve, one vertex per grid point, x ascending.
+// Algebraic form of the polar mapping: with r = s |psi|^2 and phi = arg,
+//     r cos(phi) = s |psi| Re(psi),   r sin(phi) = s |psi| Im(psi)
+// -- identical values, no transcendentals (the 64k-point curve rebuilds
+// every frame).
 inline std::vector<float> phasor_curve(const Field1D& psi, double r_scale) {
     const Grid1D& g = psi.grid();
     std::vector<float> v(static_cast<std::size_t>(3 * g.n));
     for (int i = 0; i < g.n; ++i) {
-        const double r = r_scale * std::norm(psi[i]);
-        const double phi = std::arg(psi[i]);
+        const double a = r_scale * std::abs(psi[i]);
         const std::size_t o = static_cast<std::size_t>(3 * i);
         v[o + 0] = static_cast<float>(g.coord(i));
-        v[o + 1] = static_cast<float>(r * std::cos(phi));
-        v[o + 2] = static_cast<float>(r * std::sin(phi));
+        v[o + 1] = static_cast<float>(a * psi[i].real());
+        v[o + 2] = static_cast<float>(a * psi[i].imag());
     }
     return v;
 }

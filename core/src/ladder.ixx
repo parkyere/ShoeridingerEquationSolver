@@ -148,19 +148,19 @@ inline int ho_level_cap(const Grid1D& g, double omega) {
     const std::vector<double> k = wavenumbers(g);
     // The Hermite chain kept ACROSS levels (ho_eigenstate's recurrence,
     // advanced one rung per iteration): O(total grid work) instead of the
-    // O(levels^2) of rebuilding each level from scratch -- this runs on
-    // every omega-slider notch. Energy checks are scale-invariant, so the
-    // missing per-level discrete renormalization changes nothing.
+    // O(levels^2) of rebuilding each level from scratch. Energy checks are
+    // scale-invariant, so the missing per-level discrete renormalization
+    // changes nothing.
     const double pi = 3.14159265358979323846;
-    Field1D prev{g};
-    Field1D cur{g};
     const double a0 = std::pow(omega / pi, 0.25);
-    for (int i = 0; i < g.n; ++i) {
-        const double x = g.coord(i);
-        cur[i] = a0 * std::exp(-0.5 * omega * x * x);
-    }
-    int cap = 0;
-    for (int n = 1; n <= 400; ++n) {
+    auto seed = [&](Field1D& prev, Field1D& cur) {
+        for (int i = 0; i < g.n; ++i) {
+            const double x = g.coord(i);
+            prev[i] = 0.0;
+            cur[i] = a0 * std::exp(-0.5 * omega * x * x);
+        }
+    };
+    auto advance = [&](Field1D& prev, Field1D& cur, int n) {
         const double c1 = std::sqrt(2.0 * omega / n);
         const double c2 = std::sqrt(static_cast<double>(n - 1) / n);
         Field1D next{g};
@@ -169,7 +169,9 @@ inline int ho_level_cap(const Grid1D& g, double omega) {
         }
         prev = std::move(cur);
         cur = std::move(next);
-        // <H> spectrally (T in k-space) + V in real space, scale-invariant.
+    };
+    // <H> spectrally (T in k-space) + V in real space, scale-invariant.
+    auto faithful = [&](const Field1D& cur, int n) {
         std::vector<std::complex<double>> phi = cur.data();
         fft(phi);
         double num_t = 0.0;
@@ -188,12 +190,45 @@ inline int ho_level_cap(const Grid1D& g, double omega) {
         }
         const double e = num_t / den_k + num_v / den_x;
         const double e_exact = (n + 0.5) * omega;
-        if (std::abs(e - e_exact) > 1e-3 * e_exact) {
-            break;
+        return std::abs(e - e_exact) <= 1e-3 * e_exact;
+    };
+    // Representability is MONOTONE in n (higher n = wider turning points
+    // AND higher k content: once lost, never regained), so a stride scan
+    // + sequential refine of the last window returns the same cap as a
+    // full scan with ~1/10 the FFT energy checks -- this runs on every
+    // omega-slider notch, at up to 64k points per level.
+    constexpr int kStride = 16;
+    constexpr int kMaxLevel = 400;
+    Field1D prev{g};
+    Field1D cur{g};
+    seed(prev, cur);
+    int last_good = 0;
+    int first_bad = -1;
+    for (int n = 1; n <= kMaxLevel; ++n) {
+        advance(prev, cur, n);
+        if (n % kStride == 0 || n == kMaxLevel) {
+            if (faithful(cur, n)) {
+                last_good = n;
+            } else {
+                first_bad = n;
+                break;
+            }
         }
-        cap = n;
     }
-    return cap;
+    if (first_bad < 0) {
+        return last_good;  // clean through the probe bound
+    }
+    seed(prev, cur);
+    for (int n = 1; n <= last_good; ++n) {
+        advance(prev, cur, n);  // replay the verified prefix, no checks
+    }
+    for (int n = last_good + 1; n < first_bad; ++n) {
+        advance(prev, cur, n);
+        if (!faithful(cur, n)) {
+            return n - 1;
+        }
+    }
+    return first_bad - 1;
 }
 
 // Ladder step computed in the truncated Fock basis |0..n_top> -- the
@@ -213,10 +248,35 @@ inline double ladder_fock(Field1D& psi, double omega, bool up, int n_top,
     const Grid1D& g = psi.grid();
     const double h = g.spacing();
     const int nb = (up ? n_top + 1 : n_top) + 1;  // up shifts into n_top+1
+    // Basis built by ONE incremental Hermite chain (each stored level gets
+    // its own discrete normalize, exactly ho_eigenstate's output): O(band)
+    // instead of O(band^2) -- this runs per keypress on 64k-point grids.
     std::vector<Field1D> basis;
     basis.reserve(static_cast<std::size_t>(nb));
-    for (int n = 0; n < nb; ++n) {
-        basis.push_back(ho_eigenstate(g, omega, n));
+    {
+        const double pi = 3.14159265358979323846;
+        Field1D prev{g};
+        Field1D cur{g};
+        const double a0 = std::pow(omega / pi, 0.25);
+        for (int i = 0; i < g.n; ++i) {
+            const double x = g.coord(i);
+            cur[i] = a0 * std::exp(-0.5 * omega * x * x);
+        }
+        for (int n = 0; n < nb; ++n) {
+            if (n > 0) {
+                const double c1 = std::sqrt(2.0 * omega / n);
+                const double c2 = std::sqrt(static_cast<double>(n - 1) / n);
+                Field1D next{g};
+                for (int i = 0; i < g.n; ++i) {
+                    next[i] = c1 * g.coord(i) * cur[i] - c2 * prev[i];
+                }
+                prev = std::move(cur);
+                cur = std::move(next);
+            }
+            Field1D level = cur;
+            normalize(level);
+            basis.push_back(std::move(level));
+        }
     }
     std::vector<std::complex<double>> c(static_cast<std::size_t>(n_top + 1));
     double inside = 0.0;
