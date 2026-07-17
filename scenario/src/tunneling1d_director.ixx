@@ -19,11 +19,11 @@ import ses.wavepacket;
 export namespace ses_shell {
 
 constexpr double kTun1dBox = 80.0;   // Bohr half-extent
-// 4096 points (h ~ 0.04): a 1D line is ~4 decades cheaper than the 3D
-// volumes, so oversample generously -- the phasor curve resolves the
-// incident/reflected interference ripples and the evanescent decay
-// smoothly. No ladder here, so the larger k_max costs nothing.
-constexpr int kTun1dPoints = 4096;
+// 65536 points (2^16, h ~ 0.0024): a 1D line is ~4 decades cheaper than
+// the 3D volumes, so oversample generously -- the phasor curve resolves
+// the incident/reflected interference ripples and the evanescent decay
+// smoothly. No ladder here, so the huge k_max costs nothing.
+constexpr int kTun1dPoints = 65536;
 constexpr double kTun1dV0 = 0.25;    // Ha
 constexpr double kTun1dXLo = 0.0;    // slab [0, 5): kappa = 0.5, ~2-Bohr glow
 constexpr double kTun1dXHi = 5.0;

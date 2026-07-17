@@ -37,14 +37,15 @@ constexpr double kHo1dOmegaMin = 0.05;
 // (~13 at w = 4): cranking the well past the peak now visibly LOWERS the
 // ladder cap, the payoff of the empirical ladder_cap probe.
 constexpr double kHo1dOmegaMax = 4.0;
-// A 1D line is ~4 decades cheaper than the 256^3 volumes, so the box is
+// A 1D line is ~4 decades cheaper than the 256^3 volumes: the box is
 // widened to raise the BOX-LIMITED level ceiling (turning point x_n =
-// sqrt((2n+1)/w) must fit): +-60 holds n ~ 450 at w = 0.25 vs ~42 in the
-// old +-20 box. 2048 points keep h fine; the raw spectral chain hates the
-// larger k_max, but eigenstates rung via the stable oracle path and
-// superpositions via the Fock-basis path -- neither cares about k_max.
+// sqrt((2n+1)/w) must fit: +-60 holds n ~ 450 at w = 0.25 vs ~42 in the
+// old +-20 box), and the line runs at 65536 points (2^16, h ~ 0.0018 --
+// still 1/256th of one 256^3 volume). The huge k_max ~ 1700 would murder
+// the raw spectral chain, but eigenstates rung via the stable oracle path
+// and superpositions via the Fock-basis path -- neither cares about k_max.
 constexpr double kHo1dBox = 60.0;     // Bohr half-extent
-constexpr int kHo1dPoints = 2048;
+constexpr int kHo1dPoints = 65536;
 // Fock band for superposition laddering (ladder_fock): plenty above any
 // state the scene builds, capped by representability at soft omega.
 constexpr int kHo1dFockTop = 63;
@@ -148,16 +149,15 @@ public:
 
     void random_superposition() override {
         // Complex-Gaussian amplitudes over n = 0..kHo1dRandomTop, each
-        // basis state built by the clean ladder chain from the ground --
-        // a PURE coherent superposition (mixtures are not representable).
+        // basis state built DIRECTLY from the Hermite oracle (clean at any
+        // grid k_max; the raw raise chain would already be noise-corrupted
+        // here) -- a PURE coherent superposition (mixtures are not
+        // representable in a wavefunction solver).
         ses::Field1D acc{grid1d_};
-        ses::Field1D basis = ground();
         std::normal_distribution<double> gauss;
         const int top = std::min(kHo1dRandomTop, fock_top());
         for (int n = 0; n <= top; ++n) {
-            if (n > 0) {
-                ses::ladder_raise(basis, omega_);
-            }
+            const ses::Field1D basis = ses::ho_eigenstate(grid1d_, omega_, n);
             const std::complex<double> c{gauss(rng_), gauss(rng_)};
             for (int i = 0; i < acc.size(); ++i) {
                 acc[i] += c * basis[i];
