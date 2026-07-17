@@ -39,12 +39,14 @@ constexpr double kHo1dOmegaMin = 0.05;
 constexpr double kHo1dOmegaMax = 4.0;
 // A 1D line is ~4 decades cheaper than the 256^3 volumes: the box is
 // widened to raise the BOX-LIMITED level ceiling (turning point x_n =
-// sqrt((2n+1)/w) must fit: +-60 holds n ~ 450 at w = 0.25 vs ~42 in the
-// old +-20 box), and the line runs at 65536 points (2^16, h ~ 0.0018 --
-// still 1/256th of one 256^3 volume). The huge k_max ~ 1700 would murder
-// the raw spectral chain, but eigenstates rung via the stable oracle path
-// and superpositions via the Fock-basis path -- neither cares about k_max.
-constexpr double kHo1dBox = 60.0;     // Bohr half-extent
+// sqrt((2n+1)/w) must fit): +-100 holds n ~ 1200 at w = 0.25 and ~250
+// even at the softest slider stop (w = 0.05, where +-60 capped at ~89),
+// so the probe bound (400) is the binding cap over most of the dial. The
+// line runs at 65536 points (2^16, h ~ 0.003 -- still 1/256th of one
+// 256^3 volume, k_max ~ 1000). The huge k_max would murder the raw
+// spectral chain, but eigenstates rung via the stable oracle path and
+// superpositions via the Fock-basis path -- neither cares about k_max.
+constexpr double kHo1dBox = 100.0;    // Bohr half-extent
 constexpr int kHo1dPoints = 65536;
 // Fock band for superposition laddering (ladder_fock): plenty above any
 // state the scene builds, capped by representability at soft omega.
