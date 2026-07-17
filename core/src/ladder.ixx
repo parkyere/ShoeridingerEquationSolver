@@ -118,6 +118,64 @@ inline Field1D ho_eigenstate(const Grid1D& g, double omega, int n) {
     return cur;
 }
 
+// Noise-free ladder rung for a state KNOWN to be the eigenstate |n_from>
+// (up to a global phase; the caller's Var(H) classifier is the gate). The
+// raw spectral operator is still what ACTS: it supplies the counting
+// norm^2 (n+1 / n) and the global phase of the result. Only the state
+// body is then rebuilt from the direct Hermite oracle carrying that phase
+// -- the same mathematical object (adag|n> = sqrt(n+1)|n+1>) computed by
+// the stable route, so the round-off floor RESETS at every rung instead
+// of compounding. Descending is the payoff: the raw chain's noise gains
+// (derivative k_max/sqrt(2w), x-term x_max*sqrt(w/2)) amplify residue
+// FASTER on the way down (signal shrinks as sqrt(n)), which showed up as
+// visible high-k garbage; stable rungs kill it, and the usable range
+// becomes the grid's representability ceiling (ho_level_cap), not the
+// raw-chain noise cap. Down at the ground still refuses via the operator
+// itself (returns ~0, psi untouched). If psi is NOT the claimed
+// eigenstate (oracle overlap < 1/2), the raw result is kept as-is: the
+// caller misclassified, and the honest operator output stands.
+// The REPRESENTABILITY ceiling: the largest level whose direct Hermite
+// oracle is still faithful on the grid (discrete energy within 0.1% of
+// (n+1/2)w). Box-limited for a soft well (wide turning points), Nyquist-
+// band-limited for a stiff one; peaks near omega = k_max/x_max where the
+// two meet. This is what caps the STABLE rungs -- far above ladder_cap.
+inline int ho_level_cap(const Grid1D& g, double omega) {
+    std::vector<double> v(static_cast<std::size_t>(g.n));
+    for (int i = 0; i < g.n; ++i) {
+        const double x = g.coord(i);
+        v[static_cast<std::size_t>(i)] = 0.5 * omega * omega * x * x;
+    }
+    const std::vector<double> k = wavenumbers(g);
+    int cap = 0;
+    for (int n = 1; n <= 400; ++n) {
+        const Field1D psi = ho_eigenstate(g, omega, n);
+        // <H> spectrally (T in k-space) + V in real space, scale-invariant.
+        std::vector<std::complex<double>> phi = psi.data();
+        fft(phi);
+        double num_t = 0.0;
+        double den_k = 0.0;
+        for (std::size_t j = 0; j < phi.size(); ++j) {
+            const double w = std::norm(phi[j]);
+            num_t += 0.5 * k[j] * k[j] * w;
+            den_k += w;
+        }
+        double num_v = 0.0;
+        double den_x = 0.0;
+        for (int i = 0; i < g.n; ++i) {
+            const double w = std::norm(psi[i]);
+            num_v += v[static_cast<std::size_t>(i)] * w;
+            den_x += w;
+        }
+        const double e = num_t / den_k + num_v / den_x;
+        const double e_exact = (n + 0.5) * omega;
+        if (std::abs(e - e_exact) > 1e-3 * e_exact) {
+            break;
+        }
+        cap = n;
+    }
+    return cap;
+}
+
 // The largest Fock level the FFT ladder reaches cleanly on a given grid --
 // MEASURED, not modeled. a-dag carries two competing round-off gains: the
 // derivative term k_max/sqrt(2w) (worse for a soft, wide well) and the x
@@ -159,6 +217,53 @@ inline double ladder_lower(Field1D& psi, double omega, double vanish_eps = 1e-6)
         return norm2;
     }
     ladder_detail::store_normalized(psi, out, norm2);
+    return norm2;
+}
+
+// Noise-free ladder rung for a state KNOWN to be the eigenstate |n_from>
+// (up to a global phase; the caller's Var(H) classifier is the gate). The
+// raw spectral operator is still what ACTS: it supplies the counting
+// norm^2 (n+1 / n) and the global phase of the result. Only the state
+// body is then rebuilt from the direct Hermite oracle carrying that phase
+// -- the same mathematical object (adag|n> = sqrt(n+1)|n+1>) computed by
+// the stable route, so the round-off floor RESETS at every rung instead
+// of compounding. Descending is the payoff: the raw chain's noise gains
+// (derivative k_max/sqrt(2w), x-term x_max*sqrt(w/2)) amplify residue
+// FASTER on the way down (the signal shrinks as sqrt(n)), which showed up
+// as visible high-k garbage in the scene; stable rungs kill it, and the
+// usable range becomes the grid's representability ceiling (ho_level_cap),
+// not the raw-chain noise cap. Down at the ground still refuses via the
+// operator itself (returns ~0, psi untouched). If psi is NOT the claimed
+// eigenstate (oracle overlap < 1/2), the raw result is kept as-is: the
+// caller misclassified, and the honest operator output stands.
+inline double ladder_rung_stable(Field1D& psi, double omega, int n_from,
+                                 bool up, double vanish_eps = 1e-6) {
+    const Grid1D& g = psi.grid();
+    Field1D raw = psi;
+    double norm2 = 0.0;
+    if (up) {
+        norm2 = ladder_raise(raw, omega);
+    } else {
+        norm2 = ladder_lower(raw, omega, vanish_eps);
+        if (norm2 < vanish_eps) {
+            return norm2;  // annihilation: psi untouched, caller's signal
+        }
+    }
+    const int target = up ? n_from + 1 : n_from - 1;
+    const Field1D oracle = ho_eigenstate(g, omega, target);
+    std::complex<double> ov{};
+    for (int i = 0; i < g.n; ++i) {
+        ov += std::conj(oracle[i]) * raw[i];
+    }
+    ov *= g.spacing();
+    if (std::norm(ov) < 0.5) {
+        psi = std::move(raw);  // misclassified input: keep the raw output
+        return norm2;
+    }
+    const std::complex<double> phase = ov / std::abs(ov);
+    for (int i = 0; i < g.n; ++i) {
+        psi[i] = phase * oracle[i];
+    }
     return norm2;
 }
 
