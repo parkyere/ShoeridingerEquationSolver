@@ -36,7 +36,13 @@ import ses.wavepacket;
 namespace {
 
 constexpr double kOmega = 0.25;
-const ses::Grid1D kGrid{-20.0, 20.0, 1024};
+// Nyquist matched to the physics band: the spectral derivative in a-dag
+// amplifies round-off noise at k_max = pi/h by k_max/sqrt(2 omega) per
+// raise, so an oversampled grid (k_max >> the state's k content) walks the
+// noise floor up the Fock chain exponentially. 256 points over +-20 gives
+// k_max ~ 20 vs psi_8 k content ~ 2.5: clean to ~1e-13 through n = 8, while
+// 1024 points (k_max ~ 80) already loses the chain at n = 8.
+const ses::Grid1D kGrid{-20.0, 20.0, 256};
 
 ses::Field1D ho_ground() {
     // sigma = 1/sqrt(2 omega) makes the Gaussian the exact HO ground state.
