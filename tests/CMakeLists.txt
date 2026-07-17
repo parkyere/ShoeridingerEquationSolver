@@ -44,6 +44,7 @@ add_executable(sesolver_tests
     hydrogen3_test.cpp
     imaginary_tables_test.cpp
     imaginary_time_test.cpp
+    ladder_test.cpp
     magnetic_test.cpp
     marching_cubes_test.cpp
     mcwf_test.cpp
