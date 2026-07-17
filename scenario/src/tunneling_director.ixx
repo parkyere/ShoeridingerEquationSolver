@@ -38,6 +38,19 @@ protected:
     double absorber_width() const override { return 10.0; }
     bool relax_allowed() const override { return false; }  // no bound target
 
+    // No nucleus here: the origin dot would misread as one. Instead the
+    // renderer composites the slab itself into the raymarch.
+    bool center_marker() const override { return false; }
+    bool barrier_slab(double& lo, double& hi) const override {
+        lo = kTunnelXLo;
+        hi = kTunnelXHi;
+        return true;
+    }
+    // Near side-on: the wall reads as a thin vertical pane with the packet
+    // approaching from the left; a slight angle keeps the 3D depth cue.
+    double default_camera_azimuth() const override { return 0.18; }
+    double default_camera_elevation() const override { return 0.22; }
+
     std::string title_suffix() override {
         return strf("  V0 = %.2f Ha, E = %.3f Ha (forbidden)  P(x<%.0f) %.3f | "
                     "P(x>%.0f) %.3f (max T %.3f)",

@@ -111,6 +111,13 @@ public:
         bool flow = false;          // draw the probability-flow particles
         bool flow_animate = false;  // advance the advection (false = paused)
         bool volume_changed = false;  // psi/absorbance changed: rebuild aux
+        // Scene props: the origin marker (hydrogen's proton, the trap's
+        // center) and a visualized potential slab [lo, hi) on x (the
+        // tunneling barrier), raymarch-composited with the cloud.
+        bool marker = true;
+        bool barrier_on = false;
+        float barrier_lo = 0.0f;
+        float barrier_hi = 0.0f;
         VkImageView psi_volume = VK_NULL_HANDLE;  // engine bridge; null -> CPU fallback
         VkImageView flow_velocity = VK_NULL_HANDLE;  // fp32 Bohmian v (streaklines)
         const ses::Mesh* mesh = nullptr;          // non-null: upload isosurface
@@ -396,9 +403,11 @@ public:
             vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, mesh_pipe_);
             vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                     mesh_pl_, 0, 1, &scene_set_, 0, nullptr);
-            vkCmdBindVertexBuffers(cb, 0, 1, &proton_vbuf_.buf, &zero_off);
-            vkCmdDraw(cb, static_cast<std::uint32_t>(proton_vertex_count_), 1,
-                      0, 0);
+            if (in.marker) {
+                vkCmdBindVertexBuffers(cb, 0, 1, &proton_vbuf_.buf, &zero_off);
+                vkCmdDraw(cb, static_cast<std::uint32_t>(proton_vertex_count_),
+                          1, 0, 0);
+            }
             if (in.gpu_mesh_vbuf != VK_NULL_HANDLE &&
                 in.gpu_mesh_indirect != VK_NULL_HANDLE) {
                 // GPU-extracted mesh: the vertex count lives on the GPU
@@ -596,6 +605,9 @@ private:
         float jitter_frame = 0.0f;  // temporal raymarch jitter rotation
         float clip[4] = {0, 2, 1, 0};   // enable, axis, sign, offset
         float slice[4] = {0, 2, 0, 0};  // enable, axis, offset, map mode
+        // Appended LAST: the shorter Ubo the vert/slice stages declare stays
+        // layout-compatible (std140 offsets of earlier fields unchanged).
+        float barrier[4] = {0, 0, 0, 0};  // enable, x_lo, x_hi, fog density
     };
 
     struct DslHolder {
@@ -1815,7 +1827,10 @@ private:
         vol_u.inv_peak =
             static_cast<float>(in.peak > 0.0 ? 1.0 / in.peak : 0.0);
         vol_u.absorbance = static_cast<float>(in.absorbance);
-        vol_u.proton_radius = static_cast<float>(kProtonMarkerRadius);
+        // Radius 0 = no marker: the shader's sphere test then never hits
+        // (scene-controlled; tunneling has no nucleus to suggest).
+        vol_u.proton_radius =
+            in.marker ? static_cast<float>(kProtonMarkerRadius) : 0.0f;
         // Rotate the raymarch jitter ONLY while accumulating: a still frame
         // averages the rotating pattern into hundreds of effective samples,
         // while a moving/evolving scene keeps a STATIC dither (no shimmer --
@@ -1829,6 +1844,12 @@ private:
         vol_u.slice[1] = static_cast<float>(in.slice_axis);
         vol_u.slice[2] = in.slice_offset;
         vol_u.slice[3] = static_cast<float>(in.slice_map);
+        vol_u.barrier[0] = in.barrier_on ? 1.0f : 0.0f;
+        vol_u.barrier[1] = in.barrier_lo;
+        vol_u.barrier[2] = in.barrier_hi;
+        // Fog density: a perpendicular crossing of the 2-Bohr slab reads
+        // ~50% opaque (1 - e^{-0.35*2}); grazing rays thicken naturally.
+        vol_u.barrier[3] = 0.35f;
         std::memcpy(volume_ubuf_.mapped, &vol_u, sizeof(vol_u));
 
         vmaFlushAllocation(ctx_->allocator, scene_ubuf_.alloc, 0,

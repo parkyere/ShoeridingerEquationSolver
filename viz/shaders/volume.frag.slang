@@ -23,6 +23,7 @@ struct Ubo {
     float jitter_frame;  // temporal rotation of the raymarch jitter
     float4 clip;   // .x enable, .y axis(0/1/2), .z sign(+-1), .w offset
     float4 slice;  // (slice pass only; here to share the UBO layout)
+    float4 barrier;  // .x enable, .y x_lo, .z x_hi, .w fog density
 };
 [[vk::binding(0, 0)]] ConstantBuffer<Ubo, Std140DataLayout> ubo;
 
@@ -114,12 +115,18 @@ float4 main(FSIn input) : SV_Target {
 
     float3 C = float3(0.0, 0.0, 0.0);
     float A = 0.0;
+    float A_b = 0.0;  // barrier slab's own opacity budget (see below)
     float t_cur = tn + jitter * step_len;
     int fine_budget = kSteps;
     while (t_cur < t_stop && fine_budget > 0) {
         float3 pc = ubo.eye.xyz + t_cur * dir;
         float3 uvw_c = (pc - ubo.box_min.xyz) / ext;
-        if (occ_tex.Sample(uvw_c).r < 1e-5) {
+        // The barrier slab has no psi occupancy of its own: never block-skip
+        // near it or the wall would vanish wherever the cloud is empty.
+        bool near_slab = ubo.barrier.x > 0.5 &&
+                         pc.x >= ubo.barrier.y - skip_len &&
+                         pc.x < ubo.barrier.z + skip_len;
+        if (!near_slab && occ_tex.Sample(uvw_c).r < 1e-5) {
             t_cur += skip_len;
             continue;
         }
@@ -140,6 +147,20 @@ float4 main(FSIn input) : SV_Target {
             float w = (1.0 - A) * alpha;
             C += w * col;
             A += w;
+            // Visualized potential slab (the tunneling barrier): constant
+            // cool-grey fog in the SAME march, so cloud in front fogs the
+            // wall and cloud behind is dimmed by it -- the crossing reads.
+            // The slab's own opacity is CAPPED: a grazing ray's path through
+            // the 2-Bohr wall is unbounded and would white the screen out;
+            // the cap keeps it a uniform translucent pane at every angle.
+            if (ubo.barrier.x > 0.5 && p.x >= ubo.barrier.y &&
+                p.x < ubo.barrier.z && A_b < 0.35) {
+                float ba = 1.0 - exp(-ubo.barrier.w * step_len);
+                float bw = min((1.0 - A) * ba, 0.35 - A_b);
+                C += bw * float3(0.50, 0.56, 0.68);
+                A += bw;
+                A_b += bw;
+            }
             t_cur += step_len;
             --fine_budget;
         }

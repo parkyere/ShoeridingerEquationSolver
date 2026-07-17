@@ -95,6 +95,8 @@ public:
           scene_index_(scene_index),
           args_(std::move(args)) {
         distance_ = director_->default_camera_distance();
+        azimuth_ = director_->default_camera_azimuth();
+        elevation_ = director_->default_camera_elevation();
         // Verification arcs run HEADLESS: pure GPGPU on the same windowless
         // device path sesolver_vkcheck uses -- no window, no surface, no
         // swapchain, no ImGui. Presenting would tie the loop to vsync AND to
@@ -449,6 +451,8 @@ private:
         }
         ui_ = app::UiState{};  // sliders must not carry stale field values
         distance_ = director_->default_camera_distance();
+        azimuth_ = director_->default_camera_azimuth();
+        elevation_ = director_->default_camera_elevation();
         acc_prev_ = {};
         paused_ = false;
         compute_init_done_ = false;
@@ -648,6 +652,13 @@ private:
             volume_written || absorbance_ != acc_prev_.absorbance;
         acc_prev_ = {azimuth_, elevation_, distance_, in.peak, absorbance_,
                      in.flash, in.cloud, plane_tag};
+        // Scene props: origin marker + visualized barrier slab.
+        in.marker = director_->center_marker();
+        double barrier_lo = 0.0;
+        double barrier_hi = 0.0;
+        in.barrier_on = director_->barrier_slab(barrier_lo, barrier_hi);
+        in.barrier_lo = static_cast<float>(barrier_lo);
+        in.barrier_hi = static_cast<float>(barrier_hi);
         // The psi display volume: the engine's bridge image on the GPU path;
         // null lets the renderer fall back to its CPU-staged texture.
         in.psi_volume = director_->psi_volume_view();

@@ -83,6 +83,21 @@ public:
     // both this and HydrogenApi).
     virtual long long photon_count() const { return 0; }
 
+    // Scene-prop hints for the renderer (display only, physics never reads
+    // them): the origin marker (hydrogen's proton, the trap's center -- a
+    // barrier scene has NO point to suggest), and a visualized potential
+    // slab [lo, hi) on x (the tunneling barrier).
+    virtual bool center_marker() const { return true; }
+    virtual bool barrier_slab(double& /*lo*/, double& /*hi*/) const {
+        return false;
+    }
+
+    // Scene-chosen boot camera (the shell owns it afterwards). The generic
+    // 3/4 view suits central scenes; the tunneling scene wants the slab
+    // edge-on (packet left, wall a thin stripe, transmission right).
+    virtual double default_camera_azimuth() const { return 0.6; }
+    virtual double default_camera_elevation() const { return 0.4; }
+
     // ---- lifecycle ----
     virtual const ses::Grid3D& grid() const = 0;
     virtual void init_compute(ses_vk::DeviceContext& ctx, bool device_ok,
