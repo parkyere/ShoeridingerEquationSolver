@@ -72,14 +72,28 @@ namespace {
 
 constexpr std::uint64_t kTickMs = 16;
 
+// The three demo scenes, panel-selectable at runtime (and picked at boot by
+// --scene=). Index order is the panel combo's order.
+constexpr const char* kSceneNames[] = {"hydrogen", "harmonic", "tunnel"};
+std::unique_ptr<ses_shell::ScenarioDirector> make_scene_director(int idx) {
+    if (idx == 1) {
+        return std::make_unique<ses_shell::HarmonicDirector>();
+    }
+    if (idx == 2) {
+        return std::make_unique<ses_shell::TunnelingDirector>();
+    }
+    return std::make_unique<ses_shell::HydrogenDirector>();
+}
+
 // The shell: window + input + device + presentation + the main loop. The one
 // wrapper surface shared by the keyboard, the ImGui panel (app.imgui_ui),
 // and the selftest arcs (ses.scenario.selftest_arcs).
 class Shell {
 public:
-    Shell(std::unique_ptr<ses_shell::ScenarioDirector> director,
-          std::vector<std::string> args)
-        : director_(std::move(director)), args_(std::move(args)) {
+    Shell(int scene_index, std::vector<std::string> args)
+        : director_(make_scene_director(scene_index)),
+          scene_index_(scene_index),
+          args_(std::move(args)) {
         distance_ = director_->default_camera_distance();
         // Verification arcs run HEADLESS: pure GPGPU on the same windowless
         // device path sesolver_vkcheck uses -- no window, no surface, no
@@ -211,6 +225,7 @@ public:
         last_tick_ = SDL_GetTicks();
         while (!exit_requested_) {
             pump_events();
+            apply_pending_scene();
             if (!headless_) {
                 // Acquire EARLY: the FIFO/vsync wait lands here, so the sim
                 // batch and the scene render below run during time that used
@@ -355,6 +370,14 @@ public:
         }
     }
 
+    // ---- runtime scene switch (panel combo / selftest arc) ------------------
+    int scene_index() const { return scene_index_; }
+    void request_scene(int idx) {
+        if (idx >= 0 && idx < 3) {
+            pending_scene_ = idx;
+        }
+    }
+
     // ---- selftest / verification hooks --------------------------------------
     // The scenario itself + its capability seams (single accessors): the arcs
     // call e.g. hy()->channel_a().
@@ -390,6 +413,44 @@ public:
     const std::string& status_text() const { return status_text_; }
 
 private:
+    // Deferred scene switch: the director owns live GPU work, so the swap
+    // waits for boot's compute init, idles the device, tears the old scene
+    // down, rebuilds the grid-shaped renderer, and re-runs the SAME deferred
+    // compute-init path boot uses (the window stays live through the new
+    // scene's engine init / radial solve).
+    void apply_pending_scene() {
+        if (pending_scene_ < 0 || !compute_init_done_) {
+            return;
+        }
+        const int idx = pending_scene_;
+        pending_scene_ = -1;
+        if (idx == scene_index_) {
+            return;
+        }
+        std::fprintf(stderr, "scene: switching to %s\n", kSceneNames[idx]);
+        vkDeviceWaitIdle(vk_ctx_.device);
+        director_->release_gpu();
+        director_ = make_scene_director(idx);
+        scene_index_ = idx;
+        if (!headless_ || needs_render_) {
+            // Grid-shaped resources (volume extent, box) must match the new
+            // scene: full renderer rebuild (destroy() resets its memos --
+            // the reinit-safety the --dump-frame-switch arc pins).
+            vk_renderer_.destroy();
+            if (!vk_renderer_.initialize(vk_ctx_, director_->grid(),
+                                         ses_vk::render_blobs())) {
+                fatal_shell_error("render resources",
+                                  "renderer re-init after scene switch failed");
+            }
+        }
+        ui_ = app::UiState{};  // sliders must not carry stale field values
+        distance_ = director_->default_camera_distance();
+        acc_prev_ = {};
+        paused_ = false;
+        compute_init_done_ = false;
+        refresh_status();
+    }
+
     void init_imgui() {
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
@@ -615,6 +676,8 @@ private:
     ses_shell::SwapchainPresenter presenter_;
 
     std::unique_ptr<ses_shell::ScenarioDirector> director_;
+    int scene_index_ = 0;    // index into kSceneNames
+    int pending_scene_ = -1; // panel-requested switch, applied at frame top
 
     SDL_Window* window_ = nullptr;
     VkSurfaceKHR surface_ = VK_NULL_HANDLE;
@@ -686,20 +749,17 @@ int main(int argc, char* argv[]) {
             }
         }
     }
-    std::unique_ptr<ses_shell::ScenarioDirector> director;
+    int scene_index = 0;
     if (scene == "tunnel") {
-        director = std::make_unique<ses_shell::TunnelingDirector>();
+        scene_index = 2;
     } else if (scene == "harmonic") {
-        director = std::make_unique<ses_shell::HarmonicDirector>();
-    } else {
-        if (scene != "hydrogen") {
-            std::fprintf(stderr, "scene: unknown '%s' -- using hydrogen\n",
-                         scene.c_str());
-        }
-        director = std::make_unique<ses_shell::HydrogenDirector>();
+        scene_index = 1;
+    } else if (scene != "hydrogen") {
+        std::fprintf(stderr, "scene: unknown '%s' -- using hydrogen\n",
+                     scene.c_str());
     }
 
-    Shell shell{std::move(director), std::move(args)};
+    Shell shell{scene_index, std::move(args)};
     shell.init();
 
     // Verification + selftest arcs (--dump-frame*, --selftest-*): registered

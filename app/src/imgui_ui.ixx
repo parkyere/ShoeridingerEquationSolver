@@ -85,6 +85,25 @@ void draw_cross_section(ShellT& shell, UiState& ui) {
     }
 }
 
+// Scene picker, shared by every scenario panel: the three demos, switchable
+// live -- the shell swaps the director with the device idle and re-runs the
+// deferred compute init (the same path boot uses), so the window never
+// blocks. Switching to Hydrogen replays its startup atlas build.
+template <typename ShellT>
+void draw_scene_picker(ShellT& shell) {
+    int cur = shell.scene_index();
+    ImGui::SetNextItemWidth(200.0f);
+    if (ImGui::Combo("Scene", &cur,
+                     "Hydrogen atom\0Harmonic trap\0Tunneling barrier\0")) {
+        shell.request_scene(cur);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Switch the demo live. Hydrogen re-runs its atlas "
+                          "build; the trap and the barrier start instantly.");
+    }
+    ImGui::Separator();
+}
+
 // Performance readout, shared by every scenario panel: rendering fps (ImGui's
 // rolling average) and the ACHIEVED simulated-time rate with its multiple of
 // the 1x baseline -- the honest counterpart of the time-scale slider (the
@@ -122,6 +141,7 @@ void draw_hydrogen_panel(ShellT& shell, UiState& ui, ses_shell::HydrogenApi& hy)
     ImGui::SetNextWindowPos(ImVec2(8, 8), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(430, 0), ImGuiCond_FirstUseEver);
     ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_NoCollapse);
+    draw_scene_picker(shell);
     draw_perf_readout(shell);
 
     if (ImGui::Button("Measure (M)")) shell.measure_now();
@@ -241,6 +261,7 @@ void draw_generic_panel(ShellT& shell, UiState& ui,
     ImGui::SetNextWindowPos(ImVec2(8, 8), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(430, 0), ImGuiCond_FirstUseEver);
     ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_NoCollapse);
+    draw_scene_picker(shell);
     draw_perf_readout(shell);
     if (ImGui::Button("Real time (1)")) shell.set_real_time();
     ImGui::SameLine();

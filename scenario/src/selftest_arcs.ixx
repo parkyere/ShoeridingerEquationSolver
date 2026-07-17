@@ -30,6 +30,32 @@ void run_when_manifold_ready(ShellT* shell, F fn) {
                          [shell, fn] { run_when_manifold_ready(shell, fn); });
 }
 
+// --selftest-scene helper: poll (500 ms) until the CURRENT scene's sim time
+// has advanced >= 0.2 au from its value at the first poll after the switch
+// settles; ~30 s of no progress is the failure verdict. Logs the observed
+// rate so a slow scene is diagnosable from the transcript.
+template <typename ShellT, typename Done>
+void selftest_scene_wait_running(ShellT* shell, const char* name, int polls,
+                                 Done done, double t_start = -1.0) {
+    constexpr int kMaxPolls = 60;
+    const double t = shell->director().sim_time();
+    if (t_start >= 0.0 && t - t_start >= 0.2) {
+        std::fprintf(stderr, "selftest-scene: %s advanced %.2f au in %d polls\n",
+                     name, t - t_start, polls);
+        done(true);
+        return;
+    }
+    if (polls >= kMaxPolls) {
+        std::fprintf(stderr, "selftest-scene: %s STALLED at %.3f au\n", name, t);
+        done(false);
+        return;
+    }
+    const double anchor = t_start >= 0.0 ? t_start : t;
+    shell->sched().after(500, [shell, name, polls, done, anchor] {
+        selftest_scene_wait_running(shell, name, polls + 1, done, anchor);
+    });
+}
+
 template <typename ShellT>
 void register_verification_arcs(ShellT* shell) {
     // Render verification: read the finished scene image back to
@@ -89,6 +115,55 @@ void register_verification_arcs(ShellT* shell) {
             shell->sched().after(2500, [shell] {
                 const bool ok = shell->dump_frame_bmp("frame_dump_slice.bmp");
                 std::fprintf(stderr, "dump-frame-slice: %ux%u  [%s]\n",
+                             shell->frame_width(), shell->frame_height(),
+                             ok ? "PASS" : "FAIL");
+                shell->request_exit(ok ? 0 : 1);
+            });
+        });
+    }
+
+    // Live scene switching (the panel combo's path): hydrogen -> harmonic ->
+    // tunnel through the shell's deferred device-idle swap. Each hop must
+    // produce a RUNNING scene: poll until sim time has advanced >= 0.2 au
+    // (5 steps), chained not wall-clocked (repo lesson: fixed deadlines
+    // false-fail on slower GPUs). Registered without the manifold wait on
+    // purpose: switching away MID-atlas-build is part of the contract.
+    if (shell->has_arg("--selftest-scene")) {
+        shell->sched().after(2000, [shell] {
+            const bool hy_ok = shell->hy() != nullptr;
+            shell->request_scene(1);  // harmonic trap
+            selftest_scene_wait_running(shell, "harmonic", 0, [shell, hy_ok](
+                                                                 bool harm_runs) {
+                const bool harm_ok =
+                    shell->hy() == nullptr && shell->tn() == nullptr;
+                shell->request_scene(2);  // tunneling barrier
+                selftest_scene_wait_running(
+                    shell, "tunnel", 0,
+                    [shell, hy_ok, harm_ok, harm_runs](bool tn_runs) {
+                        const bool tn_ok = shell->tn() != nullptr;
+                        const bool pass = hy_ok && harm_ok && harm_runs &&
+                                          tn_ok && tn_runs;
+                        std::fprintf(
+                            stderr,
+                            "selftest-scene: hydrogen %d, harmonic %d "
+                            "(runs %d), tunnel %d (runs %d)  [%s]\n",
+                            hy_ok, harm_ok, harm_runs, tn_ok, tn_runs,
+                            pass ? "PASS" : "FAIL");
+                        shell->request_exit(pass ? 0 : 1);
+                    });
+            });
+        });
+    }
+
+    // Renderer survival across a scene switch: swap to the harmonic trap
+    // (different grid -> full SceneRenderer rebuild) and dump the finished
+    // frame -- the windowed combo's renderer path, verified headless.
+    if (shell->has_arg("--dump-frame-switch")) {
+        shell->sched().after(2000, [shell] {
+            shell->request_scene(1);  // harmonic trap
+            shell->sched().after(2500, [shell] {
+                const bool ok = shell->dump_frame_bmp("frame_dump_switch.bmp");
+                std::fprintf(stderr, "dump-frame-switch: %ux%u  [%s]\n",
                              shell->frame_width(), shell->frame_height(),
                              ok ? "PASS" : "FAIL");
                 shell->request_exit(ok ? 0 : 1);
