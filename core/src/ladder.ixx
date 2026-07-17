@@ -83,6 +83,31 @@ inline double ladder_raise(Field1D& psi, double omega) {
     return norm2;
 }
 
+// The largest Fock level the FFT ladder reaches cleanly on a given grid.
+// Each raise amplifies the k_max round-off floor by g/sqrt(n+1) with
+// g = k_max/sqrt(2 omega) (the derivative term's top-of-band gain), so the
+// accumulated noise amplitude after N raises is ~ eps0 g^N / sqrt(N!).
+// The cap is the last N keeping that below a display-invisible bound
+// (norm^2 error <~ 1e-8). eps0 ~ 3e-16 is the measured effective FFT
+// round-off floor per apply (see tests/ladder_test.cpp for the calibration
+// history: 1024 points, g ~ 114, lost the chain at n = 8 exactly as this
+// model predicts).
+inline int ladder_cap(double omega, double k_max) noexcept {
+    const double gain = k_max / std::sqrt(2.0 * omega);
+    const double eps0 = 3e-16;   // effective per-apply round-off floor
+    const double bound = 1e-4;   // noise amplitude ceiling (norm^2 ~ 1e-8)
+    double amp = eps0;
+    int n = 0;
+    while (n < 64) {
+        amp *= gain / std::sqrt(n + 1.0);
+        if (amp > bound) {
+            break;
+        }
+        ++n;
+    }
+    return n;
+}
+
 // a: psi <- a psi / ||a psi|| unless annihilated (||a psi||^2 < vanish_eps,
 // e.g. the ground state), in which case psi is untouched; returns ||a psi||^2
 // (n on |n>, <N> in general) either way.

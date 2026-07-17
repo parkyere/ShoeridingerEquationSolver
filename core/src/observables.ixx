@@ -97,6 +97,33 @@ inline double mean_energy(const Field1D& f, const std::vector<double>& potential
     return obs_ratio(num_v, den_x) + obs_ratio(num_t, den_k);
 }
 
+// Var(H) = <H^2> - <H>^2, scale-invariant. H psi is built spectrally
+// (T = k^2/2 in k-space) + V in real space, so <H^2> = ||H psi||^2 needs no
+// operator squaring. The honest eigenstate discriminator: zero (to
+// round-off) iff psi is an H eigenstate -- no measurement, no basis
+// bookkeeping (drives the 1D scene's eigenstate-vs-superposition HUD).
+inline double energy_variance(const Field1D& f, const std::vector<double>& potential) {
+    std::vector<std::complex<double>> hpsi = f.data();
+    fft(hpsi);
+    const std::vector<double> k = wavenumbers(f.grid());
+    for (std::size_t j = 0; j < hpsi.size(); ++j) {
+        hpsi[j] *= 0.5 * k[j] * k[j];
+    }
+    ifft(hpsi);
+    double num_h2 = 0.0;
+    double num_h = 0.0;
+    double den = 0.0;
+    for (int i = 0; i < f.size(); ++i) {
+        const std::size_t s = static_cast<std::size_t>(i);
+        hpsi[s] += potential[s] * f[i];
+        den += std::norm(f[i]);
+        num_h2 += std::norm(hpsi[s]);
+        num_h += (std::conj(f[i]) * hpsi[s]).real();
+    }
+    const double mean = obs_ratio(num_h, den);
+    return std::max(0.0, obs_ratio(num_h2, den) - mean * mean);
+}
+
 // Absolute probability content of the half-open interval [a, b):
 //     P = sum_{a <= x_i < b} |psi_i|^2 h
 // Deliberately NOT scale-invariant (unlike the observables above): the
