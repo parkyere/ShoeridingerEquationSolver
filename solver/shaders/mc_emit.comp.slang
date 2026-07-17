@@ -59,9 +59,7 @@ float3 gradient_at(int3 p) {
             (2.0 * params.cell_h.z));
 }
 
-// Trilinear complex sample + the ISOLUMINANT cyclic phase wheel
-// (core/src/colormap.ixx phase_color, verbatim: a circle in the two
-// zero-luminance chroma axes, so w . rgb is constant for every phase).
+// Trilinear complex sample + cyclic HSV phase wheel (core verbatim).
 float3 phase_color_at(float3 pos) {
     float3 s = (pos - params.box_min.xyz) / params.cell_h.xyz;
     int3 i0 = clamp(int3(floor(s)), int3(0, 0, 0), params.npts.xyz - 2);
@@ -75,17 +73,16 @@ float3 phase_color_at(float3 pos) {
                       psi[flat_at(i0 + int3(1, 1, 1))], t.x);
     Complex c = mix(mix(c00, c10, t.y), mix(c01, c11, t.y), t.z);
     float theta = arg(c);
-    const float kY0 = 0.5;
-    const float kWr = 0.2126;
-    const float kWb = 0.0722;
-    float cs = cos(theta);
-    float sn = sin(theta);
-    float dr = cs * (1.0 - kWr) - sn * kWb;
-    float dg = -cs * kWr - sn * kWb;
-    float db = -cs * kWr + sn * (1.0 - kWb);
-    float m = max(max(abs(dr), abs(dg)), abs(db));
-    float sc = 0.475 / m;  // per-hue gamut-maximal chroma (core verbatim)
-    return float3(kY0 + sc * dr, kY0 + sc * dg, kY0 + sc * db);
+    float h = (theta + PI) / (2.0 * PI) * 6.0;
+    h = h - 6.0 * floor(h / 6.0);
+    float x = 1.0 - abs(fmod(h, 2.0) - 1.0);
+    int hi = int(h);
+    if (hi == 0) return float3(1.0, x, 0.0);
+    if (hi == 1) return float3(x, 1.0, 0.0);
+    if (hi == 2) return float3(0.0, 1.0, x);
+    if (hi == 3) return float3(0.0, x, 1.0);
+    if (hi == 4) return float3(x, 0.0, 1.0);
+    return float3(1.0, 0.0, x);
 }
 
 [shader("compute")]
