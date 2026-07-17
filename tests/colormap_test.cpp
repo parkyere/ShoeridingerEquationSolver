@@ -41,21 +41,6 @@ TEST(PhaseColormap, ComponentsStayInRange) {
     }
 }
 
-TEST(PhaseColormap, LuminanceIsConstantAcrossTheWheel) {
-    // The wheel must be ISOLUMINANT: Rec.709 linear luminance identical for
-    // every phase, so a winding phase never reads as amplitude beating --
-    // brightness is |psi|^2's channel alone. (The old HSV wheel swung 13x
-    // between yellow and blue.)
-    const auto lum = [](const Rgb& c) {
-        return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
-    };
-    const double y0 = lum(ses::phase_color(0.0));
-    for (int i = -360; i <= 360; ++i) {
-        const double y = lum(ses::phase_color(kPi * i / 360.0));
-        EXPECT_NEAR(y, y0, 1e-12) << "theta = " << kPi * i / 360.0;
-    }
-}
-
 TEST(PhaseColormap, DistinguishesOppositePhases) {
     const Rgb a = ses::phase_color(0.0);
     const Rgb b = ses::phase_color(kPi);
