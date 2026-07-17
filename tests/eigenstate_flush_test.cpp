@@ -49,9 +49,14 @@ using ses::Vec3d;
 const Grid3D kGrid{Grid1D{-12.0, 12.0, 32}, Grid1D{-12.0, 12.0, 32},
                    Grid1D{-12.0, 12.0, 32}};
 
-// The director's burst budget (kRelaxDtau = 0.05; 6 steps -> tau = 0.3).
+// The director's burst budgets (kRelaxDtau = 0.05): 6 steps (tau = 0.3) for
+// excited targets (bounded on purpose -- longer drains them downward), 24
+// steps (tau = 1.2) for the 1s target, which is the ITP fixed point and so
+// cannot be overshot: 6 steps left a user-visible offset from the grid
+// ground state.
 constexpr double kBurstDtau = 0.05;
 constexpr int kBurstSteps = 6;
+constexpr int kBurstStepsGround = 24;
 
 const std::vector<double>& reg_potential() {
     static const std::vector<double> v =
@@ -134,6 +139,25 @@ TEST(EigenstateFlush, OneSBurstFlushesJunkTenfoldAndKeepsIdentity) {
     EXPECT_LT(var1, 0.1 * var0);          // (1) the junk is flushed
     EXPECT_GT(population(psi0, psi), 0.97);  // (2) identity in sampled basis
     EXPECT_LT(e1, e0);                    // ITP is monotone toward the grid 1s
+}
+
+TEST(EigenstateFlush, GroundDeepBurstConvergesToTheGridGroundState) {
+    Field3D psi = synth(0, 0, 0);
+    const Field3D psi0 = psi;
+    const ses::ImaginaryTimePropagator3D relaxer{kGrid, reg_potential(),
+                                                 kBurstDtau};
+    // Converged reference: the same flow run to its fixed point.
+    Field3D ref = psi;
+    relaxer.relax(ref, 400);
+    const double e_ref = ses::mean_energy(ref, reg_potential());
+
+    relaxer.relax(psi, kBurstStepsGround);
+
+    // "Properly converged": the deep burst must land within 5 mHa of the
+    // grid ground state (the 6-step budget visibly does not) while the
+    // state still reads as 1s in the sampled basis.
+    EXPECT_NEAR(ses::mean_energy(psi, reg_potential()), e_ref, 5e-3);
+    EXPECT_GT(population(psi0, psi), 0.99);
 }
 
 TEST(EigenstateFlush, TwoPzBurstOpensNoParityForbiddenOneSChannel) {
