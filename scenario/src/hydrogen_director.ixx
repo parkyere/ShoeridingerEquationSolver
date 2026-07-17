@@ -44,12 +44,16 @@ enum class PartialBasis { None, NShell, LTotal, MZ };
 constexpr int kStepsPerTick = 1;
 constexpr int kRelaxStepsPerTick = 1;
 constexpr double kRelaxDtau = 0.05;
-// Post-collapse flush budget (tau = 0.3): flushes the Ha-scale cusp junk of
-// a freshly synthesized collapse target (~92% of its <H> offset, contract in
-// tests/eigenstate_flush_test.cpp) while excited-target drain toward 1s stays
-// negligible. FIXED by design -- a longer or adaptive burst becomes
-// non-radiative decay (see start_excited_relax's deflation footgun).
+// Post-collapse flush budgets (contract: tests/eigenstate_flush_test.cpp).
+// Excited targets get tau = 0.3: enough for the Ha-scale cusp junk (~92% of
+// the <H> offset) while drain toward 1s stays negligible -- FIXED by design,
+// a longer or adaptive burst becomes non-radiative decay (see
+// start_excited_relax's deflation footgun). The 1s target is the ITP fixed
+// point (nothing below to drain into), so it gets the deeper tau = 1.2 that
+// actually CONVERGES to the grid ground state (6 steps left a visible
+// offset).
 constexpr int kFlushSteps = 6;
+constexpr int kFlushStepsGround = 24;
 constexpr double kIsoFraction = 0.25;
 constexpr double kMeasureSigma = 1.25;  // Bohr; sigma keeps the measurement
                                         // back-action 3/(8 sigma^2) = 0.24 Ha
@@ -1511,7 +1515,8 @@ private:
         if (laser_pol_ != LaserPol::Off || !ensure_relax_tables()) {
             return;
         }
-        const ses_vk::Engine::RelaxStats stats = engine_.relax_step(kFlushSteps);
+        const ses_vk::Engine::RelaxStats stats = engine_.relax_step(
+            target == kS1 ? kFlushStepsGround : kFlushSteps);
         if (!decay_on_) {
             drop_relax_tables();
         }
