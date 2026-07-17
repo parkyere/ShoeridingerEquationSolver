@@ -73,11 +73,25 @@ struct TunnelApi {
 // 1D harmonic-oscillator ladder controls (the textbook 1D trap scene).
 struct Ladder1dApi {
     virtual ~Ladder1dApi() = default;
-    virtual int level() const = 0;           // current Fock level n
+    // Current Fock level n; -1 = the state is a superposition (classified
+    // honestly by Var(H), not bookkeeping).
+    virtual int level() const = 0;
     virtual double level_energy() const = 0;  // live <H> (Ha)
     // Apply a-dag (up) / a (down); false = refused (a|0> = 0, or the
     // spectral-band cap on the way up).
     virtual bool ladder(bool up) = 0;
+    // Well stiffness omega (width ~ 1/sqrt(w)). Setting it is a sudden
+    // QUENCH: psi is kept and breathes in the new well; the reset target
+    // becomes the new ground.
+    virtual void set_omega(double w) = 0;
+    virtual double omega() const = 0;
+    // Largest ladder level the FFT chain reaches cleanly on this grid at
+    // the current omega (ses.ladder ladder_cap).
+    virtual int max_level() const = 0;
+    // Prepare a random coherent superposition over the low Fock levels (a
+    // PURE state -- a density-matrix mixture is not representable in a
+    // wavefunction solver).
+    virtual void random_superposition() = 0;
 };
 
 // A 1D-scene overlay polyline: packed (x, y, z) float triples drawn as one

@@ -138,10 +138,12 @@ protected:
           potential_(std::move(potential)),
           dt_(dt),
           r_scale_(r_scale),
+          e_scale_(e_scale),
+          y_clamp_(y_clamp),
           psi_(g),
           initial_(g) {
         prop_ = std::make_unique<ses::SplitOperator1D>(grid1d_, potential_, dt_);
-        pot_curve_ = ses::potential_curve(grid1d_, potential_, e_scale, y_clamp);
+        pot_curve_ = ses::potential_curve(grid1d_, potential_, e_scale_, y_clamp_);
     }
 
     // Scenario-specific hooks.
@@ -161,6 +163,27 @@ protected:
     }
     // Boundary absorber (tunneling): psi *= mask each step.
     void set_mask(std::vector<double> mask) { mask_ = std::move(mask); }
+
+    // Swap the potential on the SAME grid/dt: rebuilds the propagator
+    // tables and the red profile. psi is deliberately untouched -- a
+    // sudden quench is legitimate physics (the state persists, the well
+    // changes under it).
+    void set_potential(std::vector<double> v) {
+        potential_ = std::move(v);
+        prop_ = std::make_unique<ses::SplitOperator1D>(grid1d_, potential_, dt_);
+        pot_curve_ = ses::potential_curve(grid1d_, potential_, e_scale_, y_clamp_);
+        display_changed_ = true;
+        title_dirty_ = true;
+    }
+    // Retarget reset without touching the live psi (quench bookkeeping).
+    void set_reset_target(ses::Field1D f) { initial_ = std::move(f); }
+    // Replace the live psi without touching the reset target.
+    void replace_state(ses::Field1D f) {
+        psi_ = std::move(f);
+        psi_curve_ = ses::phasor_curve(psi_, r_scale_);
+        display_changed_ = true;
+        title_dirty_ = true;
+    }
 
     void step_batch(int n) {
         for (int s = 0; s < n; ++s) {
@@ -187,6 +210,8 @@ protected:
     std::vector<double> potential_;
     double dt_;
     double r_scale_;
+    double e_scale_;
+    double y_clamp_;
     std::unique_ptr<ses::SplitOperator1D> prop_;
     ses::Field1D psi_;
     ses::Field1D initial_;

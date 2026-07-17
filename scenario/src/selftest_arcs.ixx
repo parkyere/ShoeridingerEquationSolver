@@ -560,11 +560,28 @@ void register_verification_arcs(ShellT* shell) {
                 const bool down_ok = ln->ladder(false) && ln->ladder(false) &&
                                      ln->level() == 0;
                 const bool refuse_ok = !ln->ladder(false) && ln->level() == 0;
-                const bool pass = up_ok && e_ok && down_ok && refuse_ok;
+                // Superposition: Var(H) must classify it (level -1), and
+                // the ladder must act on it linearly (no refusal -- every
+                // component is reachable).
+                ln->random_superposition();
+                const bool mix_ok = ln->level() == -1 && ln->ladder(true) &&
+                                    ln->level() == -1;
+                // Quench: stiffen the well under the kept psi, then reset
+                // must land in the NEW well's ground at E = w/2 = 0.25 Ha.
+                ln->set_omega(0.5);
+                shell->reset_simulation();
+                const bool quench_ok =
+                    ln->omega() == 0.5 && ln->level() == 0 &&
+                    std::abs(ln->level_energy() - 0.25) < 1e-3 &&
+                    ln->max_level() > 10;  // stiffer well: higher clean cap
+                const bool pass = up_ok && e_ok && down_ok && refuse_ok &&
+                                  mix_ok && quench_ok;
                 std::fprintf(stderr,
                              "selftest-ladder1d: up %d (E2 = %.4f Ha, ok %d), "
-                             "down %d, ground-refuse %d  [%s]\n",
-                             up_ok, e2, e_ok, down_ok, refuse_ok,
+                             "down %d, ground-refuse %d, superposition %d, "
+                             "quench %d (cap %d)  [%s]\n",
+                             up_ok, e2, e_ok, down_ok, refuse_ok, mix_ok,
+                             quench_ok, ln->max_level(),
                              pass ? "PASS" : "FAIL");
                 shell->request_exit(pass ? 0 : 1);
             });
