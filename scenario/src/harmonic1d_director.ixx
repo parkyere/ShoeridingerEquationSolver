@@ -31,7 +31,11 @@ export namespace ses_shell {
 
 constexpr double kHo1dOmega = 0.25;   // boot default; panel-adjustable
 constexpr double kHo1dOmegaMin = 0.05;
-constexpr double kHo1dOmegaMax = 1.0;
+// Widened past the old 1.0 to span the MEASURED clean-cap peak (~16 at
+// w ~ 1, where the a-dag derivative and x gains balance) and its fall-off
+// (~13 at w = 4): cranking the well past the peak now visibly LOWERS the
+// ladder cap, the payoff of the empirical ladder_cap probe.
+constexpr double kHo1dOmegaMax = 4.0;
 constexpr double kHo1dBox = 20.0;     // Bohr half-extent
 // 256 points: k_max ~ 20 vs the low-n band -- see tests/ladder_test.cpp
 // (grid Nyquist matched to the physics band keeps the chain clean).

@@ -313,15 +313,15 @@ void draw_ladder1d_panel(ShellT& shell, UiState& ui, ses_shell::Ladder1dApi& ld)
     if (ImGui::Button("Reset (R)")) shell.reset_simulation();
     ImGui::SameLine();
     if (ImGui::Button("Pause (Space)")) shell.toggle_pause();
-    if (ImGui::SliderFloat("Well omega (au)", &ui.ho_omega, 0.05f, 1.0f,
+    if (ImGui::SliderFloat("Well omega (au)", &ui.ho_omega, 0.05f, 4.0f,
                            "%.2f")) {
         ld.set_omega(static_cast<double>(ui.ho_omega));
     }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Well stiffness w (width ~ 1/sqrt(w)).\nChanging "
                           "it is a sudden QUENCH: psi is kept and breathes "
-                          "in\nthe new well; the ladder cap adapts (now "
-                          "n <= %d).",
+                          "in\nthe new well. The MEASURED clean ladder cap "
+                          "peaks near\nw ~ 1 then falls -- now n <= %d.",
                           ld.max_level());
     }
     draw_time_scale(shell, ui);
