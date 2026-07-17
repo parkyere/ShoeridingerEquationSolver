@@ -62,6 +62,83 @@ double overlap_sq(const ses::Field1D& a, const ses::Field1D& b) {
     return std::norm(acc);
 }
 
+// Count interior sign changes of a real field (the eigenstate node count).
+int node_count(const ses::Field1D& f) {
+    int nodes = 0;
+    double prev = 0.0;
+    const double tiny = 1e-6;
+    for (int i = 0; i < f.size(); ++i) {
+        const double re = f[i].real();
+        if (std::abs(re) < tiny) {
+            continue;  // skip the amplitude-zero tails / node itself
+        }
+        if (prev != 0.0 && (re > 0.0) != (prev > 0.0)) {
+            ++nodes;
+        }
+        prev = re;
+    }
+    return nodes;
+}
+
+// RED: ho_eigenstate(grid, omega, n) -- the exact HO eigenstate built
+// DIRECTLY from the normalized Hermite-Gauss recurrence in x-space (no
+// derivative, so NO spectral round-off amplification). This is the ground-
+// truth oracle the ladder chain is measured against, and lets the scene
+// display any grid-representable level without the ladder noise cap.
+TEST(HoEigenstate, IsNormalizedWithExactEnergyAndZeroVariance) {
+    const std::vector<double> v = ses::harmonic_potential(kGrid, kOmega);
+    for (int n = 0; n <= 12; ++n) {
+        const ses::Field1D psi = ses::ho_eigenstate(kGrid, kOmega, n);
+        EXPECT_NEAR(ses::norm_sq(psi), 1.0, 1e-10) << "norm at n = " << n;
+        EXPECT_NEAR(ses::mean_energy(psi, v), (n + 0.5) * kOmega, 1e-6)
+            << "energy at n = " << n;
+        EXPECT_LT(ses::energy_variance(psi, v), 1e-8) << "variance at n = " << n;
+    }
+}
+
+TEST(HoEigenstate, HasNNodes) {
+    for (int n = 0; n <= 8; ++n) {
+        EXPECT_EQ(node_count(ses::ho_eigenstate(kGrid, kOmega, n)), n)
+            << "node count at n = " << n;
+    }
+}
+
+TEST(HoEigenstate, IsOrthonormalAcrossLevels) {
+    for (int m = 0; m <= 6; ++m) {
+        for (int n = 0; n <= 6; ++n) {
+            const double ov = overlap_sq(ses::ho_eigenstate(kGrid, kOmega, m),
+                                         ses::ho_eigenstate(kGrid, kOmega, n));
+            EXPECT_NEAR(ov, m == n ? 1.0 : 0.0, 1e-9)
+                << "<" << m << "|" << n << ">^2";
+        }
+    }
+}
+
+TEST(HoEigenstate, MatchesTheCleanLadderChainAtLowLevels) {
+    // Where the ladder is still clean (n <= 4 at omega = 0.25), the direct
+    // oracle and the ladder-built state are the same physical state (equal
+    // up to a global phase, so overlap^2 = 1).
+    ses::Field1D psi = ho_ground();
+    for (int n = 1; n <= 4; ++n) {
+        ses::ladder_raise(psi, kOmega);
+        EXPECT_NEAR(overlap_sq(psi, ses::ho_eigenstate(kGrid, kOmega, n)), 1.0,
+                    1e-7)
+            << "ladder vs oracle at n = " << n;
+    }
+}
+
+TEST(HoEigenstate, IsOmegaGeneric) {
+    // A stiffer well (narrower ground): still exact.
+    const double w = 0.75;
+    const std::vector<double> v = ses::harmonic_potential(kGrid, w);
+    for (int n = 0; n <= 6; ++n) {
+        const ses::Field1D psi = ses::ho_eigenstate(kGrid, w, n);
+        EXPECT_NEAR(ses::mean_energy(psi, v), (n + 0.5) * w, 1e-6)
+            << "energy at n = " << n;
+        EXPECT_LT(ses::energy_variance(psi, v), 1e-8);
+    }
+}
+
 TEST(Ladder, GroundStateSetupHasEnergyHalfOmega) {
     const ses::Field1D psi = ho_ground();
     const std::vector<double> v = ses::harmonic_potential(kGrid, kOmega);
