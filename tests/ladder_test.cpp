@@ -204,20 +204,74 @@ TEST(Ladder, ChainIsOmegaGeneric) {
     }
 }
 
-TEST(LadderCap, TracksTheSpectralNoiseModel) {
-    // ladder_cap(omega, k_max): the largest Fock level the FFT ladder
-    // reaches before the k_max round-off floor, amplified by
-    // g/sqrt(n+1) per raise (g = k_max/sqrt(2 omega)), would become
-    // display-visible. Anchors pin the tuned model at the scene grid
-    // (k_max = pi/h, h = 40/256); monotone: stiffer well (larger omega)
-    // -> lower gain -> higher cap, finer grid -> higher k_max -> lower cap.
-    const double k_max = std::numbers::pi / (40.0 / 256.0);
-    EXPECT_EQ(ses::ladder_cap(0.25, k_max), 10);  // the fixed cap it replaces
-    EXPECT_EQ(ses::ladder_cap(1.0, k_max), 15);
-    EXPECT_EQ(ses::ladder_cap(0.05, k_max), 7);
-    EXPECT_LE(ses::ladder_cap(0.25, 2.0 * k_max), 10);
-    EXPECT_GE(ses::ladder_cap(0.5, k_max), ses::ladder_cap(0.25, k_max));
-    EXPECT_GE(ses::ladder_cap(0.05, k_max), 1);
+// Measure the TRUE clean ladder cap at omega: raise from the ground and
+// stop at the first level where EITHER the ladder-built state diverges from
+// the direct Hermite oracle (spectral noise) OR the oracle itself stops
+// being grid-representable (its energy drifts off (n+1/2)w -- the band
+// ceiling). The usable cap is the min of the two, measured not modeled.
+int measure_clean_cap(double w, const ses::Grid1D& g) {
+    const std::vector<double> v = ses::harmonic_potential(g, w);
+    ses::Field1D psi = ses::ho_eigenstate(g, w, 0);
+    int cap = 0;
+    for (int n = 1; n <= 60; ++n) {
+        ses::ladder_raise(psi, w);
+        const ses::Field1D oracle = ses::ho_eigenstate(g, w, n);
+        const double e = ses::mean_energy(oracle, v);
+        const double e_exact = (n + 0.5) * w;
+        const bool oracle_representable =
+            std::abs(e - e_exact) < 1e-3 * e_exact;
+        if (!oracle_representable) {
+            break;  // grid band ceiling: no method reaches this level cleanly
+        }
+        const double defect = 1.0 - overlap_sq(psi, oracle);
+        if (defect > 1e-6) {  // ~0.1% amplitude corruption: display-visible
+            break;
+        }
+        cap = n;
+    }
+    return cap;
+}
+
+TEST(LadderCap, MatchesTheIndependentlyMeasuredCleanCap) {
+    // ladder_cap(grid, omega) IS an empirical probe -- it raises from the
+    // ground and finds where the ladder-built state diverges from the
+    // direct Hermite oracle. Cross-check it against measure_clean_cap here,
+    // an INDEPENDENT reimplementation (which also guards on oracle
+    // representability), across the omega sweep.
+    for (double w : {0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0}) {
+        EXPECT_LE(std::abs(ses::ladder_cap(kGrid, w) - measure_clean_cap(w, kGrid)),
+                  1)
+            << "omega=" << w;
+    }
+}
+
+TEST(LadderCap, IsNonMonotonicPeakingNearMatchedNyquist) {
+    // Two competing noise gains in a-dag: the derivative term k_max/sqrt(2w)
+    // (worse at small w) and the x term x_max*sqrt(w/2) (worse at large w).
+    // They balance at w = k_max/x_max ~ 1 on this grid, where the clean cap
+    // peaks -- measured, not modeled.
+    const auto cap = [](double w) { return ses::ladder_cap(kGrid, w); };
+    EXPECT_GT(cap(1.0), cap(0.05));  // rising branch (derivative-limited)
+    EXPECT_GT(cap(1.0), cap(8.0));   // falling branch (x-term-limited)
+    EXPECT_GE(cap(1.0), 14);         // the peak is a genuinely useful range
+    EXPECT_LE(cap(0.05), 3);         // soft well: the chain collapses fast
+    EXPECT_LE(cap(8.0), 9);          // stiff well: falls again
+}
+
+TEST(LadderCap, ReproducesTheRecordedMeasuredCurve) {
+    // Regression lock of the measured clean cap on the scene grid
+    // (-20..20, 256 pts). These are MEASURED values (ladder vs oracle
+    // divergence at 0.1% amplitude), recorded so a change of grid, tol, or
+    // FFT path that shifts the usable range trips the test.
+    const struct {
+        double w;
+        int cap;
+    } pts[] = {{0.05, 1}, {0.1, 5},  {0.25, 12}, {0.5, 14},
+               {1.0, 16}, {2.0, 15}, {4.0, 13},  {8.0, 7}};
+    for (const auto& p : pts) {
+        EXPECT_LE(std::abs(ses::ladder_cap(kGrid, p.w) - p.cap), 1)
+            << "omega=" << p.w;
+    }
 }
 
 TEST(Ladder, LowerOnSuperpositionKeepsTheReachablePart) {
