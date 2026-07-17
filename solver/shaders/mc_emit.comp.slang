@@ -78,11 +78,14 @@ float3 phase_color_at(float3 pos) {
     const float kY0 = 0.5;
     const float kWr = 0.2126;
     const float kWb = 0.0722;
-    float cu = 0.55 * cos(theta);
-    float sv = 0.50 * sin(theta);
-    return float3(kY0 + cu * (1.0 - kWr) - sv * kWb,
-                  kY0 - cu * kWr - sv * kWb,
-                  kY0 - cu * kWr + sv * (1.0 - kWb));
+    float cs = cos(theta);
+    float sn = sin(theta);
+    float dr = cs * (1.0 - kWr) - sn * kWb;
+    float dg = -cs * kWr - sn * kWb;
+    float db = -cs * kWr + sn * (1.0 - kWb);
+    float m = max(max(abs(dr), abs(dg)), abs(db));
+    float sc = 0.475 / m;  // per-hue gamut-maximal chroma (core verbatim)
+    return float3(kY0 + sc * dr, kY0 + sc * dg, kY0 + sc * db);
 }
 
 [shader("compute")]
