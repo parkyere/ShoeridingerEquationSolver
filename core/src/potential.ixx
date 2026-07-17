@@ -73,6 +73,20 @@ inline std::vector<double> soft_coulomb_potential(const Grid3D& g, double Z, dou
 // -Z * this / h.
 inline constexpr double kCoulombCellAverage = 2.3800774;
 
+// Rectangular barrier: V = v0 on the half-open interval [x_lo, x_hi),
+// 0 elsewhere (the 1D textbook tunneling potential).
+inline std::vector<double> barrier_potential(const Grid1D& g, double v0,
+                                             double x_lo, double x_hi) {
+    std::vector<double> v(static_cast<std::size_t>(g.n), 0.0);
+    for (int i = 0; i < g.n; ++i) {
+        const double x = g.coord(i);
+        if (x >= x_lo && x < x_hi) {
+            v[static_cast<std::size_t>(i)] = v0;
+        }
+    }
+    return v;
+}
+
 // Rectangular barrier slab: V = v0 on the half-open x-slab [x_lo, x_hi),
 // 0 elsewhere; y/z-independent (the tunneling scenario's potential).
 inline std::vector<double> barrier_potential(const Grid3D& g, double v0,
@@ -115,37 +129,34 @@ inline std::vector<double> regularized_coulomb_potential(const Grid3D& g, double
     return v;
 }
 
-// Absorbing mask for the periodic box: exactly 1 in the interior, per-axis
-// cos^2 ramps to 0 within `width` of each wall. psi *= mask each real-time
-// step damps outgoing (ionized) flux instead of periodic wrap-around; never
-// applied during imaginary-time state prep.
-inline std::vector<double> absorbing_mask(const Grid3D& g, double width) {
-    auto axis = [width](const Grid1D& ax, int i) {
-        const double x = ax.coord(i);
-        const double d_lo = x - ax.xmin;
-        const double d_hi = ax.xmax - x;
+// Absorbing mask for the periodic box: exactly 1 in the interior, cos^2
+// ramp to 0 within `width` of each wall. psi *= mask each real-time step
+// damps outgoing flux instead of periodic wrap-around; never applied during
+// imaginary-time state prep.
+inline std::vector<double> absorbing_mask(const Grid1D& g, double width) {
+    std::vector<double> m(static_cast<std::size_t>(g.n));
+    for (int i = 0; i < g.n; ++i) {
+        const double x = g.coord(i);
+        const double d_lo = x - g.xmin;
+        const double d_hi = g.xmax - x;
         const double d = d_lo < d_hi ? d_lo : d_hi;  // distance to nearest wall
         if (d >= width) {
-            return 1.0;
+            m[static_cast<std::size_t>(i)] = 1.0;
+            continue;
         }
         const double t = d / width;  // 0 at the wall, 1 at the layer inner edge
         const double s = std::sin(0.5 * 3.14159265358979323846 * t);
-        return s * s;  // smooth cos^2 ramp
-    };
-    // Per-axis ramp tables (3n sin calls instead of 3n^3); the cell value is
-    // the x*y*z product of the per-axis factors.
-    std::vector<double> mx(static_cast<std::size_t>(g.x.n));
-    std::vector<double> my(static_cast<std::size_t>(g.y.n));
-    std::vector<double> mz(static_cast<std::size_t>(g.z.n));
-    for (int i = 0; i < g.x.n; ++i) {
-        mx[static_cast<std::size_t>(i)] = axis(g.x, i);
+        m[static_cast<std::size_t>(i)] = s * s;  // smooth cos^2 ramp
     }
-    for (int j = 0; j < g.y.n; ++j) {
-        my[static_cast<std::size_t>(j)] = axis(g.y, j);
-    }
-    for (int k = 0; k < g.z.n; ++k) {
-        mz[static_cast<std::size_t>(k)] = axis(g.z, k);
-    }
+    return m;
+}
+
+// 3D mask: the cell value is the x*y*z product of the per-axis 1D ramps
+// (3n sin calls instead of 3n^3; identical factor formula as above).
+inline std::vector<double> absorbing_mask(const Grid3D& g, double width) {
+    const std::vector<double> mx = absorbing_mask(g.x, width);
+    const std::vector<double> my = absorbing_mask(g.y, width);
+    const std::vector<double> mz = absorbing_mask(g.z, width);
     std::vector<double> m(static_cast<std::size_t>(g.size()));
     for (int k = 0; k < g.z.n; ++k) {
         for (int j = 0; j < g.y.n; ++j) {

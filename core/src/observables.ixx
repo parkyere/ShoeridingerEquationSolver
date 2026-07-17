@@ -97,6 +97,23 @@ inline double mean_energy(const Field1D& f, const std::vector<double>& potential
     return obs_ratio(num_v, den_x) + obs_ratio(num_t, den_k);
 }
 
+// Absolute probability content of the half-open interval [a, b):
+//     P = sum_{a <= x_i < b} |psi_i|^2 h
+// Deliberately NOT scale-invariant (unlike the observables above): the
+// tunneling readout T = P(right of barrier) is measured against the initial
+// unit norm, so flux removed by the absorbing mask must reduce -- never
+// inflate -- the report. Whole-box total equals norm_sq.
+inline double probability_in_range(const Field1D& f, double a, double b) noexcept {
+    double acc = 0.0;
+    for (int i = 0; i < f.size(); ++i) {
+        const double x = f.grid().coord(i);
+        if (x >= a && x < b) {
+            acc += std::norm(f[i]);
+        }
+    }
+    return acc * f.grid().spacing();
+}
+
 // ---- 3D observables (per-axis, scale-invariant) ----
 
 inline Vec3d mean_position(const Field3D& f) noexcept {
