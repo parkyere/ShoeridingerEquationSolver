@@ -52,6 +52,7 @@ add_executable(sesolver_tests
     multichannel_decay_test.cpp
     observables_test.cpp
     parallel_test.cpp
+    phasor_test.cpp
     potential_test.cpp
     projection_test.cpp
     propagator_tables_test.cpp
