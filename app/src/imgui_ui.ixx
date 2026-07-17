@@ -30,6 +30,9 @@ struct UiState {
     int slice_axis = 2;
     float slice_offset = 0.0f;
     int slice_map = 0;       // 0 density, 1 Re(psi), 2 phase
+    // 1D harmonic scene: live well stiffness (matches kHo1dOmega at boot;
+    // UiState resets on scene switch, so the slider and director agree).
+    float ho_omega = 0.25f;
 };
 
 // The x/y/z axis-cycle button shared by the cross-section controls.
@@ -277,6 +280,50 @@ void draw_generic_panel(ShellT& shell, UiState& ui,
     if (ImGui::Button("Cloud/Surface (Tab)")) shell.toggle_view_mode();
     ImGui::SameLine();
     if (ImGui::Button("Pause (Space)")) shell.toggle_pause();
+    draw_time_scale(shell, ui);
+    ImGui::Separator();
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(shell.status_text().c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::End();
+}
+
+// The 1D harmonic-ladder panel: ladder/superposition controls + the live
+// well-stiffness slider (a sudden quench -- psi is kept; the director
+// re-derives the spectral-band ladder cap).
+template <typename ShellT>
+void draw_ladder1d_panel(ShellT& shell, UiState& ui, ses_shell::Ladder1dApi& ld) {
+    ImGui::SetNextWindowPos(ImVec2(8, 8), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(430, 0), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_NoCollapse);
+    draw_scene_picker(shell);
+    draw_perf_readout(shell);
+    if (ImGui::Button("Ladder up (U)")) shell.press('U');
+    ImGui::SameLine();
+    if (ImGui::Button("Ladder down (D)")) shell.press('D');
+    ImGui::SameLine();
+    if (ImGui::Button("Random mix (S)")) shell.press('S');
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Random coherent superposition over n = 0..5 (a "
+                          "pure state).\nThe phasor curve sloshes -- watch "
+                          "the ladder act on EVERY component.");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Ground (2)")) shell.press('2');
+    if (ImGui::Button("Reset (R)")) shell.reset_simulation();
+    ImGui::SameLine();
+    if (ImGui::Button("Pause (Space)")) shell.toggle_pause();
+    if (ImGui::SliderFloat("Well omega (au)", &ui.ho_omega, 0.05f, 1.0f,
+                           "%.2f")) {
+        ld.set_omega(static_cast<double>(ui.ho_omega));
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Well stiffness w (width ~ 1/sqrt(w)).\nChanging "
+                          "it is a sudden QUENCH: psi is kept and breathes "
+                          "in\nthe new well; the ladder cap adapts (now "
+                          "n <= %d).",
+                          ld.max_level());
+    }
     draw_time_scale(shell, ui);
     ImGui::Separator();
     ImGui::PushTextWrapPos(0.0f);

@@ -309,11 +309,8 @@ public:
             ImGui::NewFrame();
             if (auto* hy = director_->hydrogen()) {
                 app::draw_hydrogen_panel(*this, ui_, *hy);
-            } else if (director_->ladder1d() != nullptr) {
-                app::draw_generic_panel(*this, ui_,
-                                        {{"Ladder up (U)", 'U'},
-                                         {"Ladder down (D)", 'D'},
-                                         {"Ground state (2)", '2'}});
+            } else if (auto* ld = director_->ladder1d()) {
+                app::draw_ladder1d_panel(*this, ui_, *ld);
             } else if (director_->tunnel() != nullptr) {
                 app::draw_generic_panel(*this, ui_, {});
             } else {
