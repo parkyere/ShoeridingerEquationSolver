@@ -63,6 +63,7 @@ add_executable(sesolver_tests
     simulation_test.cpp
     spectral_test.cpp
     sphere_test.cpp
+    trap_ladder_test.cpp
     volume_test.cpp
     vram_budget_test.cpp
     wavepacket3_test.cpp
