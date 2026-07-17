@@ -1,6 +1,7 @@
 module;
 #include <complex>
 #include <array>
+#include <cassert>
 #include <cmath>
 #include <cstdio>
 #include <vector>
@@ -13,35 +14,58 @@ export import ses.vram_budget;
 import ses.harmonics;
 
 
-// The tracked-atom model: the radial solve, the on-demand eigenstate
-// synthesis bookkeeping (energies, grid norms, resident handles, fp16
-// policy), and the E1 decay channel table. Engine-backed operations take
-// ses_vk::Engine by reference; everything else is pure data/logic. UI
-// concerns (titles, timers, queues' frame pacing) stay in the shell.
+// The tracked-manifold model for a CENTRAL potential: the radial solve, the
+// on-demand eigenstate synthesis bookkeeping (energies, grid norms, resident
+// handles, fp16 policy), and the E1 decay channel table. Hydrogen passes the
+// bare -1/r + kStateSpec; any central scene (harmonic trap) passes its own
+// spec + radial potential -- the machinery is identical. Engine-backed
+// operations take ses_vk::Engine by reference; everything else is pure
+// data/logic. UI concerns (titles, timers, frame pacing) stay in the shell.
 
 
 export namespace ses_shell {
 
 class AtomModel {
 public:
-    // Solve the radial atom once (blocking, well under a second): in-box
-    // levels (u(R_box) = 0) back the tracked manifold; the free-atom table
-    // to n = 10 is printed for the record.
-    void solve_radial_atom(double r_box) {
-        radial_grid_ = ses::RadialGrid{r_box, 5119};
-        std::vector<double> v(static_cast<std::size_t>(radial_grid_.n));
-        for (int i = 0; i < radial_grid_.n; ++i) {
-            v[static_cast<std::size_t>(i)] = -1.0 / radial_grid_.r(i);  // r=(i+1)h>0
-        }
-        for (int lev = 0; lev < kNumLevels; ++lev) {
+    // Solve the radial levels of a central potential (values vr on grid rg)
+    // and adopt the given manifold spec. SPEC CONVENTION: index 0 is the
+    // ground state; if a p_z-like state exists at index kP2Z the laser drive
+    // strength is captured for free (hydrogen's frozen first-five layout).
+    // Capacities are the hydrogen spec's (kNumStates/kNumLevels).
+    void solve_radial_manifold(const ses::RadialGrid& rg,
+                               const std::vector<double>& vr,
+                               const StateSpec* states, int n_states,
+                               const RadialLevelSpec* levels, int n_levels) {
+        assert(n_states <= kNumStates && n_levels <= kNumLevels);
+        spec_ = states;
+        n_states_ = n_states;
+        radial_grid_ = rg;
+        for (int lev = 0; lev < n_levels; ++lev) {
             const ses::RadialState st = ses::radial_eigenstate(
                 radial_grid_,
-                ses::radial_hamiltonian(radial_grid_, v, kLevelSpec[lev].l),
-                kLevelSpec[lev].k);
+                ses::radial_hamiltonian(radial_grid_, vr, levels[lev].l),
+                levels[lev].k);
             radial_u_[static_cast<std::size_t>(lev)] = st.u;
             radial_energy_[static_cast<std::size_t>(lev)] = st.energy;
         }
         radial_ready_ = true;
+    }
+
+    int n_states() const { return n_states_; }
+    const StateSpec& state_spec(int idx) const {
+        return spec_[static_cast<std::size_t>(idx)];
+    }
+
+    // Hydrogen: bare -1/r levels + the kStateSpec manifold (blocking, well
+    // under a second), plus the free-atom lifetime table for the record.
+    void solve_radial_atom(double r_box) {
+        const ses::RadialGrid rg{r_box, 5119};
+        std::vector<double> v(static_cast<std::size_t>(rg.n));
+        for (int i = 0; i < rg.n; ++i) {
+            v[static_cast<std::size_t>(i)] = -1.0 / rg.r(i);  // r=(i+1)h>0
+        }
+        solve_radial_manifold(rg, v, kStateSpec, kNumStates, kLevelSpec,
+                              kNumLevels);
 
         // The full free-atom lifetime table to n = 10 (55 levels).
         const ses::RadialGrid free_grid{600.0, 14999};
@@ -104,7 +128,7 @@ public:
     int gpu_synthesize(ses_vk::Engine& engine, int idx,
                        double* out_peak = nullptr) {
         const std::size_t s = static_cast<std::size_t>(idx);
-        const StateSpec& sp = kStateSpec[s];
+        const StateSpec& sp = spec_[s];
         state_energy_[s] = radial_energy_[static_cast<std::size_t>(sp.level)];
         if (state_is_fp16(idx)) {
             return engine.synthesize_state_half(
@@ -122,7 +146,7 @@ public:
     // (the MCWF no-jump damping consumes it; population = |amplitude|^2).
     std::complex<double> project_state_amplitude(const ses_vk::Engine& engine,
                                                  int idx) const {
-        const StateSpec& sp = kStateSpec[static_cast<std::size_t>(idx)];
+        const StateSpec& sp = spec_[static_cast<std::size_t>(idx)];
         const double n2 = state_norm2_[static_cast<std::size_t>(idx)];
         if (n2 <= 0.0) {
             return {};
@@ -136,7 +160,7 @@ public:
     // radial dot g_lm . u_nl, grid-normalized so the value equals a full 3D
     // inner product against the grid-normalized orbital.
     double project_population(const ses_vk::Engine& engine, int idx) const {
-        const StateSpec& sp = kStateSpec[static_cast<std::size_t>(idx)];
+        const StateSpec& sp = spec_[static_cast<std::size_t>(idx)];
         const double n2 = state_norm2_[static_cast<std::size_t>(idx)];
         if (n2 <= 0.0) {
             return 0.0;
@@ -149,7 +173,7 @@ public:
     // Collapse psi onto eigenstate `idx` by synthesizing it ON DEMAND (no
     // resident atlas): psi is overwritten with the normalized orbital.
     void collapse_onto(ses_vk::Engine& engine, int idx) {
-        const StateSpec& sp = kStateSpec[static_cast<std::size_t>(idx)];
+        const StateSpec& sp = spec_[static_cast<std::size_t>(idx)];
         engine.synthesize_into_psi(radial_u_[static_cast<std::size_t>(sp.level)],
                                    sp.l, sp.m, radial_grid_.h(), radial_grid_.rmax,
                                    radial_grid_.n);
@@ -161,7 +185,7 @@ public:
     int synth_transient(ses_vk::Engine& engine, int idx,
                         double* out_peak = nullptr) {
         const std::size_t s = static_cast<std::size_t>(idx);
-        const StateSpec& sp = kStateSpec[s];
+        const StateSpec& sp = spec_[s];
         state_energy_[s] = radial_energy_[static_cast<std::size_t>(sp.level)];
         return engine.synthesize_state(radial_u_[static_cast<std::size_t>(sp.level)],
                                        sp.l, sp.m, radial_grid_.h(), radial_grid_.rmax,
@@ -174,7 +198,7 @@ public:
     bool mcwf_term(int idx, std::complex<double> d,
                    ses_vk::Engine::McwfTerm* out) const {
         const std::size_t s = static_cast<std::size_t>(idx);
-        const StateSpec& sp = kStateSpec[s];
+        const StateSpec& sp = spec_[s];
         const double n2 = state_norm2_[s];
         if (n2 <= 0.0) {
             return false;
@@ -189,7 +213,7 @@ public:
     // device-idle + reallocate each time). Bookkeeping = synth_transient.
     bool synth_over(ses_vk::Engine& engine, int handle, int idx) {
         const std::size_t s = static_cast<std::size_t>(idx);
-        const StateSpec& sp = kStateSpec[s];
+        const StateSpec& sp = spec_[s];
         state_energy_[s] = radial_energy_[static_cast<std::size_t>(sp.level)];
         return engine.synthesize_state_over(
             handle, radial_u_[static_cast<std::size_t>(sp.level)], sp.l, sp.m,
@@ -220,14 +244,14 @@ public:
         channels_.clear();
         std::array<std::array<double, kNumLevels>, kNumLevels> rint{};
         std::array<std::array<bool, kNumLevels>, kNumLevels> have{};
-        for (int s = 0; s < kNumStates; ++s) {
+        for (int s = 0; s < n_states_; ++s) {
             state_energy_[static_cast<std::size_t>(s)] = radial_energy_[
-                static_cast<std::size_t>(kStateSpec[s].level)];
+                static_cast<std::size_t>(spec_[s].level)];
         }
-        for (int from = 0; from < kNumStates; ++from) {
-            const StateSpec& sf = kStateSpec[from];
-            for (int to = 0; to < kNumStates; ++to) {
-                const StateSpec& st = kStateSpec[to];
+        for (int from = 0; from < n_states_; ++from) {
+            const StateSpec& sf = spec_[from];
+            for (int to = 0; to < n_states_; ++to) {
+                const StateSpec& st = spec_[to];
                 const double gap =
                     state_energy_[static_cast<std::size_t>(from)] -
                     state_energy_[static_cast<std::size_t>(to)];
@@ -272,13 +296,13 @@ public:
             c.gamma_display = c.a_true * accel_display_;
         }
         std::fprintf(stderr, "manifold: display acceleration x%.3e\n", accel_display_);
-        for (int s = 0; s < kNumStates; ++s) {
-            std::fprintf(stderr, "manifold: E(%s) = %.6f Ha\n", kStateSpec[s].name,
+        for (int s = 0; s < n_states_; ++s) {
+            std::fprintf(stderr, "manifold: E(%s) = %.6f Ha\n", spec_[s].name,
                          state_energy_[static_cast<std::size_t>(s)]);
         }
         for (const ShellChannel& c : channels_) {
             std::fprintf(stderr, "manifold: %s -> %s  A = %.3e /au  tau = %.3e au%s\n",
-                         kStateSpec[c.from].name, kStateSpec[c.to].name, c.a_true,
+                         spec_[c.from].name, spec_[c.to].name, c.a_true,
                          c.a_true > 0.0 ? 1.0 / c.a_true : 0.0,
                          c.a_true < 1e-3 * a_max ? "  [forbidden/suppressed]" : "");
         }
@@ -336,7 +360,7 @@ public:
         // projections and the MCWF terms divide by; the channel table itself
         // is the factorized CPU build.
         bool ok = true;
-        for (int idx = 0; idx < kNumStates && ok; ++idx) {
+        for (int idx = 0; idx < n_states_ && ok; ++idx) {
             ok = ensure_state(engine, idx);
         }
         if (!ok) {
@@ -355,6 +379,11 @@ private:
 
     // Radial solve products (the 1-D atom).
     ses::RadialGrid radial_grid_{};
+    // The adopted manifold spec (defaults: hydrogen); arrays below are
+    // hydrogen-capacity, the first n_states_/levels entries are live.
+    const StateSpec* spec_ = kStateSpec;
+    int n_states_ = kNumStates;
+
     std::array<std::vector<double>, kNumLevels> radial_u_;
     std::array<double, kNumLevels> radial_energy_{};
     bool radial_ready_ = false;
