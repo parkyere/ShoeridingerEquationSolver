@@ -17,8 +17,14 @@ export namespace ses_shell {
 
 constexpr double kTunnelBox = 80.0;      // Bohr half-extent (256^3, h = 0.625)
 constexpr double kTunnelV0 = 0.25;       // Ha; barrier height
-constexpr double kTunnelXLo = 0.0;       // slab [0, 2) Bohr
-constexpr double kTunnelXHi = 2.0;
+// Slab [0, 5): a quarter of the packet's visible size (4 sigma = 20), thick
+// enough that the evanescent decay INSIDE the wall is a visible region (the
+// old 2-Bohr slab was ~3 grid cells). Density decays as e^{-2 kappa x},
+// kappa = sqrt(2(V0-E)) = 0.5 -> a ~2-Bohr glow fading into the wall;
+// plane-wave T = [1 + sinh^2(kappa w)]^{-1} ~ 2.7% (still clearly nonzero
+// through a forbidden barrier -- the demo).
+constexpr double kTunnelXLo = 0.0;
+constexpr double kTunnelXHi = 5.0;
 constexpr double kTunnelK0 = 0.5;        // mean E = k^2/2 = 0.125 < V0
 constexpr double kTunnelLaunchX = -30.0;
 constexpr double kTunnelSigma = 5.0;
