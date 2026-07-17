@@ -574,23 +574,40 @@ void register_verification_arcs(ShellT* shell) {
                     ln->omega() == 0.5 && ln->level() == 0 &&
                     std::abs(ln->level_energy() - 0.25) < 1e-3 &&
                     ln->max_level() > 10;  // stiffer well: higher clean cap
+                // Stable-rung round trip: 20 up + 20 down at w = 0.5 --
+                // far past the raw chain's cap (14), where the raw
+                // operators disintegrate into high-k garbage on descent
+                // (the observed ladder-down instability). Stable rungs
+                // must land exactly back on the ground.
+                bool trip_ok = ln->level() == 0;
+                for (int i = 0; i < 20 && trip_ok; ++i) {
+                    trip_ok = ln->ladder(true);
+                }
+                trip_ok = trip_ok && ln->level() == 20;
+                for (int i = 0; i < 20 && trip_ok; ++i) {
+                    trip_ok = ln->ladder(false);
+                }
+                trip_ok = trip_ok && ln->level() == 0 &&
+                          std::abs(ln->level_energy() - 0.25) < 1e-3;
                 // Measured cap peaks near w ~ 1 then FALLS: cranking the
                 // well past the peak lowers the clean ladder cap (the whole
-                // point of the empirical probe + widened slider).
+                // point of the empirical probe + widened slider). The
+                // quenched state is a superposition, so these report the
+                // raw-chain caps.
                 ln->set_omega(1.0);
                 const int cap_peak = ln->max_level();
                 ln->set_omega(4.0);
                 const int cap_high = ln->max_level();
                 const bool peak_ok = cap_peak >= 14 && cap_peak > cap_high;
                 const bool pass = up_ok && e_ok && down_ok && refuse_ok &&
-                                  mix_ok && quench_ok && peak_ok;
+                                  mix_ok && quench_ok && trip_ok && peak_ok;
                 std::fprintf(stderr,
                              "selftest-ladder1d: up %d (E2 = %.4f Ha, ok %d), "
                              "down %d, ground-refuse %d, superposition %d, "
-                             "quench %d, cap-peak %d (w=1 cap %d > w=4 cap %d)  "
-                             "[%s]\n",
+                             "quench %d, stable-trip20 %d, cap-peak %d "
+                             "(w=1 cap %d > w=4 cap %d)  [%s]\n",
                              up_ok, e2, e_ok, down_ok, refuse_ok, mix_ok,
-                             quench_ok, peak_ok, cap_peak, cap_high,
+                             quench_ok, trip_ok, peak_ok, cap_peak, cap_high,
                              pass ? "PASS" : "FAIL");
                 shell->request_exit(pass ? 0 : 1);
             });

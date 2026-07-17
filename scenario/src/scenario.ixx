@@ -85,8 +85,10 @@ struct Ladder1dApi {
     // becomes the new ground.
     virtual void set_omega(double w) = 0;
     virtual double omega() const = 0;
-    // Largest ladder level the FFT chain reaches cleanly on this grid at
-    // the current omega (ses.ladder ladder_cap).
+    // Largest ladder level reachable cleanly from the CURRENT state: an
+    // eigenstate rungs via the stable oracle-rebuilt path (grid
+    // representability ceiling, ses.ladder ho_level_cap); a superposition
+    // takes the raw spectral chain (noise cap, ses.ladder ladder_cap).
     virtual int max_level() const = 0;
     // Prepare a random coherent superposition over the low Fock levels (a
     // PURE state -- a density-matrix mixture is not representable in a

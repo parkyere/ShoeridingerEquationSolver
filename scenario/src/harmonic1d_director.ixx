@@ -61,7 +61,7 @@ public:
                              kHo1dOmega),
                          kHo1dDt, kHo1dRScale, kHo1dEScale, kHo1dYClamp),
           rng_(20260718u) {
-        cap_ = ses::ladder_cap(grid1d_, omega_);
+        remeasure_caps();
         set_state(ground());
     }
 
@@ -72,24 +72,39 @@ public:
     double level_energy() const override {
         return ses::mean_energy(psi_, potential_);
     }
-    int max_level() const override { return cap_; }
+    // Two regimes, two caps: a classified EIGENSTATE rungs via the stable
+    // oracle-rebuilt path (noise resets every rung -> the grid's
+    // representability ceiling applies); a superposition must take the raw
+    // spectral operator (no single oracle to rebuild from), so the raw
+    // chain's noise cap applies -- superpositions live at low n anyway.
+    int max_level() const override {
+        return level_ >= 0 ? cap_level_ : cap_raw_;
+    }
     double omega() const override { return omega_; }
 
     bool ladder(bool up) override {
+        const bool eigen = level_ >= 0;
         if (up) {
-            // Cap on the honest mean level (covers superpositions too): the
-            // noise model bounds how high the FFT chain stays clean.
+            const int cap = eigen ? cap_level_ : cap_raw_;
             const double mean_n =
                 ses::mean_energy(psi_, potential_) / omega_ - 0.5;
-            if (mean_n >= static_cast<double>(cap_)) {
-                note_ = strf("n = %d cap (spectral band)", cap_);
+            if (mean_n >= static_cast<double>(cap)) {
+                note_ = strf("n = %d cap (%s)", cap,
+                             eigen ? "grid band" : "raw-chain noise");
                 title_dirty_ = true;
                 return false;
             }
-            ses::ladder_raise(psi_, omega_);
+            if (eigen) {
+                ses::ladder_rung_stable(psi_, omega_, level_, true);
+            } else {
+                ses::ladder_raise(psi_, omega_);
+            }
         } else {
             // ||a psi||^2 = <N>; ~0 means annihilation (psi untouched).
-            if (ses::ladder_lower(psi_, omega_) < 1e-6) {
+            const double norm2 =
+                eigen ? ses::ladder_rung_stable(psi_, omega_, level_, false)
+                      : ses::ladder_lower(psi_, omega_);
+            if (norm2 < 1e-6) {
                 note_ = "a|0> = 0: refused";
                 title_dirty_ = true;
                 return false;
@@ -105,10 +120,10 @@ public:
     void set_omega(double w) override {
         omega_ = std::clamp(w, kHo1dOmegaMin, kHo1dOmegaMax);
         // Sudden quench: swap the well under the LIVE psi (kept), retarget
-        // reset at the new ground, re-measure the clean ladder cap.
+        // reset at the new ground, re-measure both caps.
         set_potential(ses::harmonic_potential(grid1d_, omega_));
         set_reset_target(ground());
-        cap_ = ses::ladder_cap(grid1d_, omega_);
+        remeasure_caps();
         note_ = "quench: psi kept";
         classify();
     }
@@ -120,7 +135,7 @@ public:
         ses::Field1D acc{grid1d_};
         ses::Field1D basis = ground();
         std::normal_distribution<double> gauss;
-        const int top = std::min(kHo1dRandomTop, cap_);
+        const int top = std::min(kHo1dRandomTop, cap_raw_);
         for (int n = 0; n <= top; ++n) {
             if (n > 0) {
                 ses::ladder_raise(basis, omega_);
@@ -169,7 +184,7 @@ protected:
         if (level_ >= 0) {
             s = strf("  w = %.2f  n = %d (cap %d)  <H> = %.4f Ha "
                      "((n+1/2)w = %.4f)",
-                     omega_, level_, cap_, e, (level_ + 0.5) * omega_);
+                     omega_, level_, cap_level_, e, (level_ + 0.5) * omega_);
         } else {
             s = strf("  w = %.2f  superposition  <N> = %.2f  <H> = %.4f Ha  "
                      "Var(H) = %.1e",
@@ -206,8 +221,14 @@ private:
         }
     }
 
+    void remeasure_caps() {
+        cap_level_ = ses::ho_level_cap(grid1d_, omega_);
+        cap_raw_ = ses::ladder_cap(grid1d_, omega_);
+    }
+
     double omega_ = kHo1dOmega;
-    int cap_ = 0;
+    int cap_level_ = 0;  // stable rungs: grid representability ceiling
+    int cap_raw_ = 0;    // raw spectral chain (superpositions): noise cap
     int level_ = 0;
     std::string note_;
     std::mt19937 rng_;
