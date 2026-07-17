@@ -146,11 +146,31 @@ inline int ho_level_cap(const Grid1D& g, double omega) {
         v[static_cast<std::size_t>(i)] = 0.5 * omega * omega * x * x;
     }
     const std::vector<double> k = wavenumbers(g);
+    // The Hermite chain kept ACROSS levels (ho_eigenstate's recurrence,
+    // advanced one rung per iteration): O(total grid work) instead of the
+    // O(levels^2) of rebuilding each level from scratch -- this runs on
+    // every omega-slider notch. Energy checks are scale-invariant, so the
+    // missing per-level discrete renormalization changes nothing.
+    const double pi = 3.14159265358979323846;
+    Field1D prev{g};
+    Field1D cur{g};
+    const double a0 = std::pow(omega / pi, 0.25);
+    for (int i = 0; i < g.n; ++i) {
+        const double x = g.coord(i);
+        cur[i] = a0 * std::exp(-0.5 * omega * x * x);
+    }
     int cap = 0;
     for (int n = 1; n <= 400; ++n) {
-        const Field1D psi = ho_eigenstate(g, omega, n);
+        const double c1 = std::sqrt(2.0 * omega / n);
+        const double c2 = std::sqrt(static_cast<double>(n - 1) / n);
+        Field1D next{g};
+        for (int i = 0; i < g.n; ++i) {
+            next[i] = c1 * g.coord(i) * cur[i] - c2 * prev[i];
+        }
+        prev = std::move(cur);
+        cur = std::move(next);
         // <H> spectrally (T in k-space) + V in real space, scale-invariant.
-        std::vector<std::complex<double>> phi = psi.data();
+        std::vector<std::complex<double>> phi = cur.data();
         fft(phi);
         double num_t = 0.0;
         double den_k = 0.0;
@@ -162,7 +182,7 @@ inline int ho_level_cap(const Grid1D& g, double omega) {
         double num_v = 0.0;
         double den_x = 0.0;
         for (int i = 0; i < g.n; ++i) {
-            const double w = std::norm(psi[i]);
+            const double w = std::norm(cur[i]);
             num_v += v[static_cast<std::size_t>(i)] * w;
             den_x += w;
         }
@@ -174,6 +194,72 @@ inline int ho_level_cap(const Grid1D& g, double omega) {
         cap = n;
     }
     return cap;
+}
+
+// Ladder step computed in the truncated Fock basis |0..n_top> -- the
+// superposition counterpart of ladder_rung_stable. Project c_n = <n|psi>,
+// act EXACTLY on the coefficients (adag: c'_{n+1} = sqrt(n+1) c_n;
+// a: c'_n = sqrt(n+1) c_{n+1}), resynthesize from the noise-free oracles.
+// The same linear operator, computed in the basis where it is trivial --
+// no spectral derivative, so it works at ANY grid k_max (the raw chain's
+// noise gain grows with k_max and dies on fine grids). *out_residual gets
+// the input's outside-band weight; psi is written only when the band holds
+// the state (residual <= 1/2) AND the result does not vanish (annihilation
+// on lowering the ground). Returns the counting norm^2 inside the band
+// (== <N>+1 / <N> for in-band states).
+inline double ladder_fock(Field1D& psi, double omega, bool up, int n_top,
+                          double* out_residual = nullptr,
+                          double vanish_eps = 1e-6) {
+    const Grid1D& g = psi.grid();
+    const double h = g.spacing();
+    const int nb = (up ? n_top + 1 : n_top) + 1;  // up shifts into n_top+1
+    std::vector<Field1D> basis;
+    basis.reserve(static_cast<std::size_t>(nb));
+    for (int n = 0; n < nb; ++n) {
+        basis.push_back(ho_eigenstate(g, omega, n));
+    }
+    std::vector<std::complex<double>> c(static_cast<std::size_t>(n_top + 1));
+    double inside = 0.0;
+    for (int n = 0; n <= n_top; ++n) {
+        std::complex<double> acc{};
+        for (int i = 0; i < g.n; ++i) {
+            acc += std::conj(basis[static_cast<std::size_t>(n)][i]) * psi[i];
+        }
+        c[static_cast<std::size_t>(n)] = acc * h;
+        inside += std::norm(c[static_cast<std::size_t>(n)]);
+    }
+    const double residual = std::max(0.0, 1.0 - inside / norm_sq(psi));
+    if (out_residual != nullptr) {
+        *out_residual = residual;
+    }
+    std::vector<std::complex<double>> d(static_cast<std::size_t>(nb));
+    double norm2 = 0.0;
+    if (up) {
+        for (int n = 0; n <= n_top; ++n) {
+            d[static_cast<std::size_t>(n + 1)] =
+                std::sqrt(n + 1.0) * c[static_cast<std::size_t>(n)];
+            norm2 += (n + 1.0) * std::norm(c[static_cast<std::size_t>(n)]);
+        }
+    } else {
+        for (int n = 0; n + 1 <= n_top; ++n) {
+            d[static_cast<std::size_t>(n)] =
+                std::sqrt(n + 1.0) * c[static_cast<std::size_t>(n + 1)];
+            norm2 += (n + 1.0) * std::norm(c[static_cast<std::size_t>(n + 1)]);
+        }
+    }
+    if (residual > 0.5 || norm2 < vanish_eps) {
+        return norm2;  // outside the band, or annihilated: psi untouched
+    }
+    const double inv = 1.0 / std::sqrt(norm2);
+    for (int i = 0; i < g.n; ++i) {
+        std::complex<double> acc{};
+        for (int n = 0; n < nb; ++n) {
+            acc += d[static_cast<std::size_t>(n)] *
+                   basis[static_cast<std::size_t>(n)][i];
+        }
+        psi[i] = inv * acc;
+    }
+    return norm2;
 }
 
 // The largest Fock level the FFT ladder reaches cleanly on a given grid --
