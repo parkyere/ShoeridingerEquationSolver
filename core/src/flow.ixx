@@ -14,10 +14,7 @@ import ses.vec;
 
 export namespace ses {
 
-// Probability current  j = Im(conj(psi) grad psi)  (the Madelung/Bohmian flux
-// rho v), component-wise j_a = Re(psi) Im(d_a psi) - Im(psi) Re(d_a psi). It
-// circulates +phi for the e^{+i phi} (m=+1) ring and vanishes for a real
-// (standing-wave) state.
+// Probability current j = Im(conj(psi) grad psi) = rho v (Madelung).
 inline Vec3d probability_current(std::complex<double> psi, std::complex<double> dpsi_dx,
                                  std::complex<double> dpsi_dy,
                                  std::complex<double> dpsi_dz) noexcept {

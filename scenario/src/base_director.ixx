@@ -362,9 +362,7 @@ protected:
                 absorber_width() == 0.0) {
                 engine_.scale(static_cast<float>(1.0 / std::sqrt(np.sum)));
             }
-            // Semiclassical Larmor readout, valid for ANY potential: an
-            // accelerating charge radiates (a trap coherent state visibly
-            // oscillates); ~0 for a stationary state.
+            // Semiclassical Larmor readout, valid for ANY potential; ~0 for a stationary state.
             radiated_power_ = ses::larmor_power(engine_.mean_force());
         }
         // ASYNC: overlaps this frame's render (previous display volume);

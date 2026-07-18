@@ -11,14 +11,13 @@ export import ses.scenario.lattice2d_director;
 import ses.parallel;
 
 
-// The quantum corral -- Crommie, Lutz & Eigler (IBM, 1993): 48 iron
-// adatoms placed in a ring on Cu(111), the surface electrons trapped
-// inside as circular standing waves (the iconic STM ripple image). Here:
-// 48 Gaussian bumps on a ring of radius R, states relaxed INSIDE the
-// leaky fence by lattice imaginary time with Gram-Schmidt deflation --
-// [2] re-relaxes the ground (the central dome + rings), [3] captures the
-// next state (higher ripple modes), [F] scatters a packet off the fence
-// live. The adatoms render as shaded iron balls (the marker machinery).
+// Quantum corral (Crommie, Lutz & Eigler, IBM 1993): 48 Fe adatom ring
+// on Cu(111), circular standing waves. Here: 48 Gaussian bumps on a
+// ring of radius R, states relaxed INSIDE the leaky fence by lattice
+// imaginary time with Gram-Schmidt deflation -- [2] re-relaxes the
+// ground, [3] captures the next state, [F] scatters a packet off the
+// fence live. The adatoms render as shaded iron balls (the marker
+// machinery).
 
 
 export namespace ses_shell {

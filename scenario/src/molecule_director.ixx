@@ -14,21 +14,17 @@ import ses.wavepacket;
 // propagates the single electron in a multi-center Coulomb landscape; the
 // nuclei are geometry, not dynamics. Two scenes share the machinery:
 //
-//  - H2+ (two bare protons, regularized cells): sigma_g piles bond charge
-//    between the nuclei, the deflated sigma_u carries the nodal plane; the
-//    R knob scans E_total(R) = E_elec + 1/R -- the chemical bond is its
-//    minimum. (H2+ separates in prolate spheroidal coordinates: it is the
-//    two-center member of the "solvable" family.)
-//  - Stripped benzene: ALL electrons removed, then the FIRST electron of
-//    C6H6^41+ over the BARE nuclei (Z_C = 6, Z_H = 1, regularized cells,
-//    centers lattice-snapped). No soft cores, no free parameters, and the
-//    REAL (uniform, X-ray) geometry only -- the project rules are bare
-//    regularized Coulomb everywhere and no counterfactual knobs. The low
-//    spectrum is a deep quasi-degenerate carbon-core band (inter-carbon
-//    hopping at 1s(Z=6) size is ~e^{-16}: core orbitals, not a delocalized
-//    pi system -- the honest physics of the stripped molecule's first
-//    electron). CPK-convention markers: carbon-black and hydrogen-white
-//    atom discs over a gray bond skeleton.
+//  - H2+ (two bare protons, regularized cells): sigma_g bonding + deflated
+//    sigma_u (nodal plane); the R knob scans E_total(R) = E_elec + 1/R --
+//    the chemical bond is its minimum.
+//  - Stripped benzene: the FIRST electron of C6H6^41+ over the BARE nuclei
+//    (Z_C = 6, Z_H = 1, regularized cells, centers lattice-snapped). No
+//    soft cores, no free parameters, REAL (uniform, X-ray) geometry only
+//    -- project rules: bare regularized Coulomb everywhere, no
+//    counterfactual knobs. Low spectrum: deep quasi-degenerate carbon-core
+//    band (1s(Z=6) inter-carbon hopping ~e^{-16}: core orbitals, not a
+//    delocalized pi system). CPK-convention markers: carbon-black and
+//    hydrogen-white atom discs over a gray bond skeleton.
 //
 // State preparation is a CHAIN: ITP ground, then deflated excited states
 // against the captured lower ones (fp32 state buffers, engine-resident),
@@ -154,11 +150,10 @@ protected:
         }
     }
 
-    // Boot straight into the ground state: an un-relaxed Gaussian seed is
-    // NOT an eigenstate -- its unbound components disperse and wrap the
-    // periodic (absorber-free) box as lattice-wide ripples, and its deep
-    // core components phase-rotate at |E| dt ~ rad/step. Auto-relaxing
-    // makes the scene open on the stationary physics.
+    // Boot straight into the ground state: an un-relaxed (non-eigenstate)
+    // Gaussian seed wraps the periodic (absorber-free) box as ripples and
+    // its core phase-rotates at |E| dt ~ rad/step; auto-relax opens the
+    // scene on the stationary physics.
     void on_gpu_ready() override { prepare(0); }
 
     void advance_chain() {

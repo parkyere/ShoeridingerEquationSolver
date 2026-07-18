@@ -80,12 +80,10 @@ struct JumpResult {
     double p_jump{};
 };
 
-// One Poisson decay trial over an interval dt: jump probability
-// p = 1 - exp(-gamma * P_e * dt) with P_e = |<excited|psi>|^2. On a jump the
-// state collapses onto the ground state (the photon carries the rest away);
-// on survival psi is untouched HERE -- callers add the MCWF no-jump H_eff
-// damping separately (the app's GPU path does). u in [0,1) is the caller's
-// uniform draw.
+// One Poisson decay trial over dt: p = 1 - exp(-gamma * P_e * dt),
+// P_e = |<excited|psi>|^2; jump -> psi = ground. On survival psi is untouched
+// HERE -- callers add the MCWF no-jump H_eff damping separately (the app's
+// GPU path does). u in [0,1) is the caller's uniform draw.
 inline JumpResult quantum_jump(Field3D& psi, const Field3D& excited, const Field3D& ground,
                                double gamma, double dt, double u) {
     const double p_e = std::norm(inner_product(excited, psi));
@@ -97,12 +95,10 @@ inline JumpResult quantum_jump(Field3D& psi, const Field3D& excited, const Field
     return JumpResult{false, p};
 }
 
-// MCWF NO-JUMP evolution over an interval dt, conditioned on no photon: each
-// amplitude decays by its survival factor exp(-gamma_n dt/2), then the state
-// renormalizes (non-Hermitian H_eff + renorm). Identity on a pure eigenstate;
-// a superposition's faster-decaying components drain away relative to the
-// stable ones (the visible "breathe-out" between jumps). This is the single
-// source of truth the app's GPU apply_mcwf_damping mirrors in the {|n>} basis.
+// MCWF NO-JUMP over dt: c_n *= exp(-gamma_n * dt / 2), then renormalize
+// (non-Hermitian H_eff + renorm) -- the visible "breathe-out" between jumps.
+// Single source of truth the app's GPU apply_mcwf_damping mirrors in the
+// {|n>} basis.
 inline std::vector<std::complex<double>> nojump_damped_amplitudes(
     const std::vector<std::complex<double>>& c, const std::vector<double>& gamma,
     double dt) {

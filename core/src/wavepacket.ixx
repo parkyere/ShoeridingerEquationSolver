@@ -8,11 +8,8 @@ export import ses.grid;
 export import ses.vec;
 
 
-// Gaussian wavepacket factory (atomic units):
-//     psi(x) = (2 pi s^2)^(-1/4) exp(-(x-x0)^2 / (4 s^2)) exp(i k0 x)
-// |psi|^2 is Gaussian(mean x0, std dev s); the exp(i k0 x) phase carries mean
-// momentum k0. The result is normalized on the grid (the continuum amplitude
-// is already unit-norm; a final discrete normalize absorbs sampling error).
+// Gaussian wavepacket factory (atomic units): psi = (2 pi s^2)^(-1/4) exp(-(x-x0)^2/(4 s^2)) exp(i k0 x).
+// Continuum amplitude is unit-norm; final discrete normalize absorbs grid sampling error.
 
 
 export namespace ses {

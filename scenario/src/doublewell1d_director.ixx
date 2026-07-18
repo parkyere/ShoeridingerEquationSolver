@@ -10,14 +10,11 @@ export import ses.scenario.line1d_director;
 import ses.spectrum1d;
 
 
-// The double-well tunneling oscillation (the ammonia-inversion demo): the
-// ground doublet psi_0 (symmetric) / psi_1 (antisymmetric) is split by dE,
-// and psi_L = (psi_0 + psi_1)/sqrt(2) -- the "particle in the left well" --
-// coherently transfers to the right well at t = pi/dE and back. dE depends
-// EXPONENTIALLY on the barrier: the panel slider makes the oscillation
-// crawl or race. The doublet comes from ses.spectrum1d (the radial FD
-// solver); the license physics (splitting drives a full transfer through
-// the real split-step propagator) is tests/solvable_wells_test.cpp.
+// Double-well tunneling (ammonia inversion): psi_L = (psi_0+psi_1)/sqrt(2),
+// transfer T = pi/dE, dE exponential in barrier -- so the panel slider makes
+// the oscillation crawl or race. Doublet from ses.spectrum1d (radial FD
+// solver); splitting-drives-full-transfer contract through the real
+// split-step propagator: tests/solvable_wells_test.cpp.
 
 
 export namespace ses_shell {

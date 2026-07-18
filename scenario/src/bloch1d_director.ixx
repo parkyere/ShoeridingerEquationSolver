@@ -12,16 +12,12 @@ import ses.bloch;
 import ses.wavepacket;
 
 
-// 1D periodic lattice (solid state): V(x) = V0 sin^2(kL x) -- SMOOTH so
-// the FFT split-operator keeps spectral accuracy (Kronig-Penney's kinks
-// would Gibbs-ring; this is the optical-lattice / Mathieu problem). The
-// inset (amber) draws the EXACT band structure E_n(q) from the
-// tridiagonal central equation; the marker (cyan) rides band 0 at the
-// packet's live quasimomentum. A tilt force F -- implemented exactly as
-// the comoving gauge A(t) = -F t -- makes q sweep the Brillouin zone at
-// rate F: instead of accelerating away, <x> oscillates with the Bloch
-// period T_B = G/F while the marker wraps the zone. F = 0 shows plain
-// band-limited dispersion in the lattice.
+// 1D optical lattice (Mathieu problem): V(x) = V0 sin^2(kL x) -- SMOOTH
+// so the FFT split-operator keeps spectral accuracy (Kronig-Penney kinks
+// would Gibbs-ring). Amber inset: exact E_n(q) from the tridiagonal
+// central equation; cyan marker: live q on band 0. Tilt F implemented as
+// the comoving gauge A(t) = -F t; Bloch oscillation T_B = G/F (F = 0:
+// plain band-limited dispersion).
 
 
 export namespace ses_shell {

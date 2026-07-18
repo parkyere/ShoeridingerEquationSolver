@@ -18,16 +18,12 @@ export import ses.lattice2d;
 import ses.parallel;
 
 
-// Landau levels / cyclotron motion: a 2D electron in a uniform B along z
-// (the Peierls lattice's uniform plaquette flux -- gauge-exact, tested).
-// A packet launched with mechanical momentum k0 rides the cyclotron
-// orbit: radius k0/B, angular rate omega_c = B, COUNTERCLOCKWISE (the
-// lattice's A_x = +B y gauge). The amber overlay draws the PREDICTED
-// orbit circle and center cross; the white breadcrumb trail records the
-// MEASURED <r>(t) -- watch it close on itself after T = 2 pi / B, when
-// the equally spaced Landau ladder (E_n = B(n + 1/2)) also re-coheres
-// the whole state. HUD reads the Landau index <n> = <E>/B - 1/2 off the
-// live lattice energy.
+// Landau levels / cyclotron: 2D electron, uniform B along z (Peierls
+// lattice uniform plaquette flux -- gauge-exact, tested). Orbit:
+// r = k0/B, omega_c = B, CCW in the lattice's A_x = +B y gauge.
+// Amber overlay = PREDICTED orbit circle + center cross; white
+// breadcrumb trail = MEASURED <r>(t), closing at T = 2 pi / B (ladder
+// E_n = B(n + 1/2) revival). HUD: <n> = <E>/B - 1/2 off live lattice energy.
 
 
 export namespace ses_shell {

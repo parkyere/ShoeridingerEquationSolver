@@ -11,14 +11,12 @@ import ses.spectral;
 import ses.wavepacket;
 
 
-// The reflectionless well: V = -l(l+1)/(2 a^2) sech^2(x/a) at INTEGER l
-// transmits every incident energy with zero reflection (the KdV soliton
-// potential) -- while an equal-depth, equal-area square well reflects a
-// visible fraction at the same energy. Key W swaps the two wells and
-// relaunches the same packet; the HUD tracks R as the NEGATIVE-momentum
-// probability (the definition of reflection -- position gates would be
-// polluted by the slow transmitted tail), frozen once the absorber has
-// eaten most of the norm so absorbed flux cannot inflate the ratio.
+// Poschl-Teller V = -l(l+1)/(2 a^2) sech^2(x/a), integer l: reflectionless
+// (KdV soliton potential); the equal-depth/area square well is not. Key W
+// swaps the wells and relaunches the same packet; the HUD tracks R as the
+// NEGATIVE-momentum probability (position gates would be polluted by the
+// slow transmitted tail), frozen once the absorber has eaten most of the
+// norm so absorbed flux cannot inflate the ratio.
 // License physics: tests/solvable_wells_test.cpp (R_pt < 5e-3, R_sq > 3e-2).
 
 

@@ -13,14 +13,11 @@ import ses.parallel;
 import ses.spectral;
 
 
-// 1D harmonic-oscillator ladder operators (atomic units, m = hbar = 1):
-//
-//     a    = sqrt(omega/2) x + 1/sqrt(2 omega) d/dx
-//     adag = sqrt(omega/2) x - 1/sqrt(2 omega) d/dx
-//
-// acting on eigenstates: adag|n> = sqrt(n+1)|n+1>, a|n> = sqrt(n)|n-1>,
-// a|0> = 0. The derivative is spectral (FFT ik multiply), consistent with
-// the split-operator periodic grid, so repeated applications climb/descend
+// 1D HO ladder operators (atomic units, m = hbar = 1):
+//     a, adag = sqrt(omega/2) x +- 1/sqrt(2 omega) d/dx;
+//     adag|n> = sqrt(n+1)|n+1>, a|n> = sqrt(n)|n-1>, a|0> = 0.
+// The derivative is spectral (FFT ik multiply), consistent with the
+// split-operator periodic grid, so repeated applications climb/descend
 // the Fock chain cleanly to near machine epsilon.
 //
 // Both entry points return ||O psi||^2 BEFORE the internal renormalization

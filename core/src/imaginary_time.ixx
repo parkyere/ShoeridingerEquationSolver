@@ -111,9 +111,7 @@ public:
         }
     }
 
-    // Relax within the orthogonal complement of the given lower eigenstates:
-    // each step projects them out (Gram-Schmidt deflation), so the flow
-    // converges to the NEXT excited state instead of falling back down.
+    // Gram-Schmidt deflation of `lower` each step -> converges to the next excited state.
     void relax_deflated(Field3D& psi, const std::vector<const Field3D*>& lower,
                         int nsteps) const {
         assert(psi.data().size() == half_v_.size());

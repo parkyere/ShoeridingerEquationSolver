@@ -41,20 +41,8 @@ inline const double s165_pi = std::sqrt(165.0 / kPi);
 inline const double s11_pi = std::sqrt(11.0 / kPi);
 }  // namespace ynorm
 
-// Real Y_lm evaluated at direction (x, y, z)/r. Convention (m = -l..l):
-//   l=1: -1 -> y, 0 -> z, +1 -> x
-//   l=2: -2 -> xy, -1 -> yz, 0 -> 3z^2-r^2, +1 -> zx, +2 -> x^2-y^2
-//   l=3: -3 -> y(3x^2-y^2), -2 -> xyz, -1 -> y(5z^2-r^2), 0 -> z(5z^2-3r^2),
-//        +1 -> x(5z^2-r^2), +2 -> z(x^2-y^2), +3 -> x(x^2-3y^2)
-//   l=4: -4 -> xy(x^2-y^2), -3 -> yz(3x^2-y^2), -2 -> xy(7z^2-r^2),
-//        -1 -> yz(7z^2-3r^2), 0 -> 35z^4-30z^2r^2+3r^4, +1 -> xz(7z^2-3r^2),
-//        +2 -> (x^2-y^2)(7z^2-r^2), +3 -> xz(x^2-3y^2), +4 -> x^4-6x^2y^2+y^4
-//   l=5 (canonical (x+iy)^m real/imag parts): -5 -> y(5x^4-10x^2y^2+y^4),
-//        -4 -> xy(x^2-y^2)z, -3 -> y(3x^2-y^2)(9z^2-r^2), -2 -> xyz(3z^2-r^2),
-//        -1 -> y(21z^4-14z^2r^2+r^4), 0 -> z(63z^4-70z^2r^2+15r^4),
-//        +1 -> x(21z^4-14z^2r^2+r^4), +2 -> (x^2-y^2)z(3z^2-r^2),
-//        +3 -> x(x^2-3y^2)(9z^2-r^2), +4 -> (x^4-6x^2y^2+y^4)z,
-//        +5 -> x(x^4-10x^2y^2+5y^4)
+// Real tesseral Y_lm at (x, y, z)/r, m = -l..l: m < 0 sin / m > 0 cos sector,
+// canonical (x+iy)^|m| real/imag parts (l=1 anchor: -1 -> y, 0 -> z, +1 -> x).
 inline double real_spherical_harmonic(int l, int m, double x, double y, double z) noexcept {
     const double r2 = x * x + y * y + z * z;
     if (l == 0) {

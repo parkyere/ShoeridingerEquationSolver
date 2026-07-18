@@ -9,14 +9,9 @@ export import ses.scenario.line1d_director;
 import ses.spectrum1d;
 
 
-// The Morse well: the exactly solvable anharmonic diatomic-vibration model,
-// E_n = w0 (n + 1/2) - (alpha^2/2)(n + 1/2)^2 with w0 = alpha sqrt(2 d) --
-// a ladder whose spacing SHRINKS toward the dissociation limit d, with a
-// FINITE number of bound states (contrast the harmonic scene's equal
-// rungs). [U]/[D] jump between the numerically solved eigenstates (the
-// closed form locks them in tests/solvable_wells_test.cpp), [S] prepares
-// the (n, n+1) pair whose beat period 2 pi / gap LENGTHENS up the ladder
-// -- the anharmonicity made visible, [2] returns to the ground state.
+// Morse well: E_n = w0 (n + 1/2) - (alpha^2/2)(n + 1/2)^2, w0 = alpha sqrt(2 d);
+// finite bound set below d. [U]/[D] jump eigenstates (closed form locked in
+// tests/solvable_wells_test.cpp), [S] (n, n+1) pair beat T = 2pi/gap, [2] ground.
 
 
 export namespace ses_shell {

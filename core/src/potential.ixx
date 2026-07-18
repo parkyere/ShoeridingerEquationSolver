@@ -81,9 +81,7 @@ inline std::vector<double> double_well_potential(const Grid1D& g, double vb, dou
     return v;
 }
 
-// V(x) = -v0 sech^2((x - x0)/a): the Poschl-Teller well. At the magic
-// depths v0 = l(l+1)/(2 a^2), integer l, it is REFLECTIONLESS for every
-// incident energy (the KdV soliton potential).
+// V(x) = -v0 sech^2((x - x0)/a): Poschl-Teller; reflectionless at v0 = l(l+1)/(2 a^2).
 inline std::vector<double> poschl_teller_potential(const Grid1D& g, double v0,
                                                    double a, double x0 = 0.0) {
     std::vector<double> v(static_cast<std::size_t>(g.n));
@@ -94,10 +92,8 @@ inline std::vector<double> poschl_teller_potential(const Grid1D& g, double v0,
     return v;
 }
 
-// V(x) = d (1 - e^{-alpha (x - x0)})^2: the Morse well -- minimum 0 at x0,
-// dissociation limit d on the right, steep exponential wall on the left.
-// Exactly solvable: E_n = w0 (n + 1/2) - (alpha^2/2)(n + 1/2)^2 with
-// w0 = alpha sqrt(2 d) (the anharmonic vibrational ladder).
+// V(x) = d (1 - e^{-alpha (x - x0)})^2: Morse well.
+// E_n = w0 (n + 1/2) - (alpha^2/2)(n + 1/2)^2, w0 = alpha sqrt(2 d).
 inline std::vector<double> morse_potential(const Grid1D& g, double d,
                                            double alpha, double x0) {
     std::vector<double> v(static_cast<std::size_t>(g.n));

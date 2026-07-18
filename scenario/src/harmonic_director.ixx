@@ -187,9 +187,8 @@ protected:
     }
 
 private:
-    // Coherent state: sigma = 1/sqrt(2 w) is the ground |psi|^2 width (var
-    // 1/(2w)), so the displaced Gaussian oscillates rigidly without breathing
-    // -- the same width harmonic_dynamics_test pins (kSigmaGs).
+    // Coherent state: sigma = 1/sqrt(2 w) (ground |psi|^2 width) -- no
+    // breathing; the same width harmonic_dynamics_test pins (kSigmaGs).
     static ses::WavepacketSimulation make() {
         const ses::Grid1D axis{-kTrapBox, kTrapBox, 256};
         const ses::Grid3D grid{axis, axis, axis};

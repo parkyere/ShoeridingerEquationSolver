@@ -6,13 +6,9 @@ export import ses.scenario.line1d_director;
 import ses.wavepacket;
 
 
-// Textbook 1D tunneling: the same physics as the 3D tunneling scene (same
-// V0, slab, launch, k0 -- E = k^2/2 = 0.125 < V0 = 0.25, classically
-// forbidden) reduced to its textbook axis. The barrier is VISIBLE as the
-// red potential profile (a rectangle), the packet as the white phasor
-// curve: incident + reflected interference ripples left of the wall, the
-// evanescent decay inside it, and the small transmitted curl escaping
-// right. The boundary absorber swallows outgoing flux; T is reported
+// 1D reduction of the 3D tunneling scene (same V0, slab, launch, k0;
+// E = k0^2/2 = 0.125 Ha < V0 = 0.25, forbidden); red V(x) + white phasor
+// curve. The boundary absorber swallows outgoing flux; T is reported
 // against the initial unit norm (probability_in_range is absolute).
 
 

@@ -25,9 +25,8 @@ import ses.parallel;
 // hides INSIDE the wall between the slits; a screen line on the right
 // accumulates the arrival density over time. Physics is the Peierls
 // lattice propagator (ses.lattice2d): the flux enters as EXACT link
-// phases -- B = 0 in every plaquette the electron can reach, so any fringe
-// shift is pure Aharonov-Bohm topology, and one flux quantum (2 pi)
-// restores the pattern exactly.
+// phases, B = 0 in every plaquette the electron can reach -- pure AB
+// fringe shift, period 2 pi.
 //
 // The 2D plane is displayed through the volume path: physics lives on one
 // z-plane (nz = 1), the staging replicates it into a thin display slab, and

@@ -18,18 +18,13 @@ import ses.spectral;
 // optical-lattice / Mathieu problem). Lattice constant a = pi / kL,
 // reciprocal vector G = 2 kL.
 //
-// Band structure: V0 sin^2 = V0/2 - (V0/4)(e^{iGx} + e^{-iGx}) has ONE
-// harmonic, so the central equation in the plane-wave basis {q + m G} is
-// symmetric TRIDIAGONAL: diagonal (q + m G)^2/2 + V0/2, off-diagonal
-// -V0/4. lattice_bands finds its lowest eigenvalues by Sturm bisection
-// (deterministic, no iteration-order noise).
+// Central equation for sin^2 (single harmonic): symmetric TRIDIAGONAL over
+// {q + m G}, diag (q + m G)^2/2 + V0/2, off-diag -V0/4. lattice_bands:
+// Sturm bisection (deterministic, no iteration-order noise).
 //
-// Bloch driving: a uniform force F is the potential -F x, which breaks
-// the periodic box -- but in the comoving gauge it is EXACTLY the
-// time-dependent uniform vector potential A(t) = -F t. The kinetic phase
-// e^{-i (k - A)^2 dt / 2} is rebuilt each step at the MIDPOINT A (the
-// midpoint rule is exact for a linear A), so the free-particle limit
-// reproduces uniform acceleration to round-off.
+// Bloch driving: -F x breaks the periodic box, so comoving gauge A(t) = -F t.
+// Kinetic phase e^{-i (k - A)^2 dt / 2} rebuilt each step at the MIDPOINT A
+// (exact for linear A: free-particle limit = uniform acceleration to round-off).
 
 
 export namespace ses {
