@@ -946,6 +946,94 @@ void register_verification_arcs(ShellT* shell) {
         });
     }
 
+    // Corral arc (main forces --scene=corral2d): the boot relax must
+    // capture the ground INSIDE the fence with the J0-mode energy scale.
+    if (shell->has_arg("--selftest-corral")) {
+        shell->sched().after(1000, [shell] {
+            selftest_scene_wait_running(shell, "corral2d", 0, [shell](
+                                                                  bool runs) {
+                auto* cr = shell->cr();
+                if (!runs || cr == nullptr) {
+                    std::fprintf(stderr, "selftest-corral: scene not "
+                                         "running or no api  [FAIL]\n");
+                    shell->request_exit(1);
+                    return;
+                }
+                shell->set_time_scale(16);
+                auto poll = std::make_shared<int>(-1);
+                *poll = shell->sched().every(1000, [shell, poll] {
+                    auto* c = shell->cr();
+                    if (c->relaxing() || c->captured() < 1) {
+                        return;
+                    }
+                    shell->sched().cancel(*poll);
+                    const double conf = c->confinement();
+                    const double e = c->energy(0);
+                    const double r = c->radius();
+                    const double e_hard =
+                        2.405 * 2.405 / (2.0 * r * r);
+                    const bool pass = conf > 0.85 && e > 0.6 * e_hard &&
+                                      e < 2.0 * e_hard;
+                    std::fprintf(stderr,
+                                 "selftest-corral: E0 = %.4f (J0 scale "
+                                 "%.4f), P(inside) = %.2f  [%s]\n",
+                                 e, e_hard, conf, pass ? "PASS" : "FAIL");
+                    shell->request_exit(pass ? 0 : 1);
+                });
+            });
+        });
+    }
+
+    // Quantum-dot arc (main forces --scene=qdot2d): the relaxed ground at
+    // the boot (w0, B) must land on the Fock-Darwin Omega; then B = 0
+    // must land on w0 -- the field dependence verified end to end.
+    if (shell->has_arg("--selftest-qdot")) {
+        shell->sched().after(1000, [shell] {
+            selftest_scene_wait_running(shell, "qdot2d", 0, [shell](
+                                                                bool runs) {
+                auto* qd = shell->qd();
+                if (!runs || qd == nullptr) {
+                    std::fprintf(stderr, "selftest-qdot: scene not "
+                                         "running or no api  [FAIL]\n");
+                    shell->request_exit(1);
+                    return;
+                }
+                shell->set_time_scale(16);
+                auto poll = std::make_shared<int>(-1);
+                *poll = shell->sched().every(1000, [shell, poll] {
+                    auto* q = shell->qd();
+                    if (q->relaxing()) {
+                        return;
+                    }
+                    shell->sched().cancel(*poll);
+                    const double e1 = q->energy_meas();
+                    const double o1 = q->energy_pred();
+                    q->set_field(0.0);  // re-relax at B = 0
+                    auto poll2 = std::make_shared<int>(-1);
+                    *poll2 = shell->sched().every(1000, [shell, poll2, e1,
+                                                        o1] {
+                        auto* q2 = shell->qd();
+                        if (q2->relaxing()) {
+                            return;
+                        }
+                        shell->sched().cancel(*poll2);
+                        const double e2 = q2->energy_meas();
+                        const double o2 = q2->energy_pred();
+                        const bool pass =
+                            std::abs(e1 - o1) < 0.03 * o1 &&
+                            std::abs(e2 - o2) < 0.03 * o2 && o1 > o2;
+                        std::fprintf(
+                            stderr,
+                            "selftest-qdot: E(B) = %.4f vs Omega %.4f, "
+                            "E(0) = %.4f vs w0 %.4f  [%s]\n",
+                            e1, o1, e2, o2, pass ? "PASS" : "FAIL");
+                        shell->request_exit(pass ? 0 : 1);
+                    });
+                });
+            });
+        });
+    }
+
     // H2+ arc (main forces --scene=h2plus): sigma_g then sigma_u at the
     // equilibrium R, then the stretched geometry -- asserting the bond:
     // E_total(R_eq) < E_total(R_far), and sigma_u above sigma_g. State

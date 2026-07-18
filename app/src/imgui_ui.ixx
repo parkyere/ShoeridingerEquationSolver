@@ -45,6 +45,10 @@ struct UiState {
     // Landau scene: field strength and launch momentum.
     float la_b = 0.4f;
     float la_k0 = 1.5f;
+    // Corral ring radius; quantum-dot stiffness and field.
+    float cr_r = 10.0f;
+    float qd_w0 = 0.5f;
+    float qd_b = 0.6f;
     // Bloch lattice: well depth and tilt force.
     float bl_v0 = 1.5f;
     float bl_f = 0.05f;
@@ -604,6 +608,84 @@ void draw_bloch_panel(ShellT& shell, UiState& ui, ses_shell::BlochApi& bl) {
     } else {
         ImGui::Text("No tilt: band-limited dispersion only");
     }
+    draw_time_scale(shell, ui);
+    ImGui::Separator();
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(shell.status_text().c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::End();
+}
+
+// Quantum corral panel: ring radius + state chain + packet scattering.
+template <typename ShellT>
+void draw_corral_panel(ShellT& shell, UiState& ui, ses_shell::CorralApi& cr) {
+    ImGui::SetNextWindowPos(ImVec2(8, 8), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(430, 0), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_NoCollapse);
+    draw_scene_picker(shell);
+    draw_perf_readout(shell);
+    if (ImGui::Button("Ground (2)")) shell.press('2');
+    ImGui::SameLine();
+    if (ImGui::Button("Next state (3)")) shell.press('3');
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Relax the next standing-wave mode (deflated "
+                          "against the captured\nones): the higher ripple "
+                          "patterns of the STM image.");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Packet (F)")) shell.press('F');
+    ImGui::SameLine();
+    if (ImGui::Button("Pause (Space)")) shell.toggle_pause();
+    ImGui::SameLine();
+    if (ImGui::Button("Face z (Z)")) shell.snap_camera_z();
+    ImGui::SliderFloat("Ring radius (Bohr)", &ui.cr_r, 6.0f, 12.0f, "%.1f");
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        cr.set_radius(static_cast<double>(ui.cr_r));
+    }
+    ImGui::Text("States %d%s, P(inside) = %.2f", cr.captured(),
+                cr.relaxing() ? " (relaxing...)" : "", cr.confinement());
+    draw_time_scale(shell, ui);
+    ImGui::Separator();
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(shell.status_text().c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::End();
+}
+
+// Quantum-dot panel: stiffness and field knobs, Fock-Darwin readout.
+template <typename ShellT>
+void draw_qdot_panel(ShellT& shell, UiState& ui, ses_shell::QdotApi& qd) {
+    ImGui::SetNextWindowPos(ImVec2(8, 8), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(430, 0), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_NoCollapse);
+    draw_scene_picker(shell);
+    draw_perf_readout(shell);
+    if (ImGui::Button("Relax ground (2)")) shell.press('2');
+    ImGui::SameLine();
+    if (ImGui::Button("Displace (F)")) shell.press('F');
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Shift the relaxed ground sideways: a coherent "
+                          "state. At B = 0 it\nswings at w0; with B it "
+                          "traces the two-frequency Fock-Darwin\nrosette "
+                          "(omega_pm = Omega -+ B/2), breadcrumbed white.");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Pause (Space)")) shell.toggle_pause();
+    ImGui::SameLine();
+    if (ImGui::Button("Face z (Z)")) shell.snap_camera_z();
+    if (ImGui::SliderFloat("Dot stiffness w0", &ui.qd_w0, 0.2f, 1.0f,
+                           "%.2f")) {
+        qd.set_omega0(static_cast<double>(ui.qd_w0));
+    }
+    if (ImGui::SliderFloat("Field B", &ui.qd_b, 0.0f, 1.2f, "%.2f")) {
+        qd.set_field(static_cast<double>(ui.qd_b));
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Uniform B along z: the ground energy must land "
+                          "at the\nFock-Darwin Omega = sqrt(w0^2 + B^2/4).");
+    }
+    ImGui::Text("E = %.4f vs Omega = %.4f%s", qd.energy_meas(),
+                qd.energy_pred(), qd.relaxing() ? " (relaxing...)" : "");
     draw_time_scale(shell, ui);
     ImGui::Separator();
     ImGui::PushTextWrapPos(0.0f);

@@ -195,6 +195,36 @@ struct BlochApi {
     virtual double excursion() const = 0;     // max |<x> - x0| since fire
 };
 
+// The 1993 IBM quantum corral: adatoms on a ring, standing-wave states
+// relaxed inside the fence. States capture ASYNC over frames (poll
+// relaxing()); energies in Hartree.
+struct CorralApi {
+    virtual ~CorralApi() = default;
+    virtual void set_radius(double r) = 0;
+    virtual double radius() const = 0;
+    virtual void relax_next() = 0;  // capture the next (deflated) state
+    virtual int captured() const = 0;
+    virtual double energy(int k) const = 0;
+    virtual double confinement() const = 0;  // probability inside the ring
+    virtual bool relaxing() const = 0;
+    virtual void fire_packet() = 0;  // scatter a packet off the fence
+};
+
+// 2D quantum dot: parabolic confinement + optional uniform B -- the
+// Fock-Darwin problem. Ground relax is ASYNC (poll relaxing()).
+struct QdotApi {
+    virtual ~QdotApi() = default;
+    virtual void set_omega0(double w0) = 0;
+    virtual double omega0() const = 0;
+    virtual void set_field(double b) = 0;
+    virtual double field() const = 0;
+    virtual void relax_ground() = 0;
+    virtual bool relaxing() const = 0;
+    virtual double energy_meas() const = 0;
+    virtual double energy_pred() const = 0;  // Omega = sqrt(w0^2 + B^2/4)
+    virtual void fire_displaced() = 0;  // coherent orbit / rosette
+};
+
 // A 1D-scene overlay primitive: packed (x, y, z) float triples drawn in
 // world space with a constant color -- a LINE_STRIP polyline, or with
 // `fill` a TRIANGLE_STRIP sheet (the faint xy reference plane). When
@@ -240,6 +270,8 @@ public:
     virtual SlitApi* slit() { return nullptr; }
     virtual LandauApi* landau() { return nullptr; }
     virtual BlochApi* bloch() { return nullptr; }
+    virtual CorralApi* corral() { return nullptr; }
+    virtual QdotApi* qdot() { return nullptr; }
 
     // 1D-scene overlay polylines (phasor curve + potential profile); the 3D
     // scenes return 0 and the renderer draws nothing extra.

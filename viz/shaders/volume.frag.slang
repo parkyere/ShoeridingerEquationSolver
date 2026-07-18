@@ -25,9 +25,10 @@ struct Ubo {
     float4 slice;  // (slice pass only; here to share the UBO layout)
     float4 barrier;  // .x enable, .y x_lo, .z x_hi, .w fog density
     // Nucleus marker balls: .xyz center + .w radius / .rgb color per ball,
-    // count in marker_meta.x (hydrogen's proton, the molecules' CPK atoms).
-    float4 marker_cr[16];
-    float4 marker_col[16];
+    // count in marker_meta.x (hydrogen's proton, the molecules' CPK atoms,
+    // the corral's 48 adatoms).
+    float4 marker_cr[64];
+    float4 marker_col[64];
     float4 marker_meta;
 };
 [[vk::binding(0, 0)]] ConstantBuffer<Ubo, Std140DataLayout> ubo;
