@@ -341,4 +341,77 @@ TEST(PeierlsLattice2D, DoubleSlitCarriesTheSolenoidFlux) {
     EXPECT_NEAR(again, bright, 1e-6 * bright);
 }
 
+// RED: imaginary-time relaxation ON the lattice (same bond splitting with
+// cosh/sinh mixing, renormalized) plus the energy readout <H> -- the
+// ground-state preparers for the quantum-dot and quantum-corral scenes.
+// The killer feature over the FFT imaginary-time propagator: the LINK
+// PHASES ride along, so it can relax the ground state of a dot IN a
+// magnetic field -- the Fock-Darwin ground, E = Omega = sqrt(w0^2 + B^2/4)
+// (a.u.), which no B = 0 machinery can reach.
+TEST(PeierlsLattice2D, RelaxFindsTheFockDarwinGround) {
+    const Grid3D g = plane_grid(20.0, 128, 20.0, 128);
+    const double w0 = 0.5;
+    const double b = 0.6;
+    std::vector<double> v(static_cast<std::size_t>(g.size()));
+    for (int j = 0; j < g.y.n; ++j) {
+        for (int i = 0; i < g.x.n; ++i) {
+            const double x = g.x.coord(i);
+            const double y = g.y.coord(j);
+            v[static_cast<std::size_t>(g.flat(i, j, 0))] =
+                0.5 * w0 * w0 * (x * x + y * y);
+        }
+    }
+    ses::PeierlsLattice2D prop{g, v, 0.02};
+    prop.set_uniform_field(b);
+    Field3D psi = plane_packet(g, 1.0, -2.0, 3.0, 0.0);  // crooked seed
+    prop.relax(psi, 3000);
+    const double omega = std::sqrt(w0 * w0 + 0.25 * b * b);
+    EXPECT_NEAR(prop.energy(psi), omega, 0.03 * omega);
+    EXPECT_NEAR(ses::norm_sq(psi), 1.0, 1e-9);
+}
+
+TEST(PeierlsLattice2D, RelaxConfinesTheCorralGround) {
+    // The 1993 IBM quantum corral: 48 atoms on a ring of radius 10 (each a
+    // Gaussian bump), B = 0. The relaxed ground state lives INSIDE the
+    // ring (a leaky circular box) with energy near the hard-wall J0 mode
+    // j01^2 / (2 R^2) -- generously bracketed, the fence is soft and the
+    // atoms are discrete.
+    const Grid3D g = plane_grid(16.0, 160, 16.0, 160);
+    const double ring_r = 10.0;
+    const double pi = std::numbers::pi;
+    std::vector<double> v(static_cast<std::size_t>(g.size()), 0.0);
+    for (int a = 0; a < 48; ++a) {
+        const double th = 2.0 * pi * a / 48.0;
+        const double ax = ring_r * std::cos(th);
+        const double ay = ring_r * std::sin(th);
+        for (int j = 0; j < g.y.n; ++j) {
+            for (int i = 0; i < g.x.n; ++i) {
+                const double dx = g.x.coord(i) - ax;
+                const double dy = g.y.coord(j) - ay;
+                v[static_cast<std::size_t>(g.flat(i, j, 0))] +=
+                    1.5 * std::exp(-(dx * dx + dy * dy) / (2.0 * 0.6 * 0.6));
+            }
+        }
+    }
+    ses::PeierlsLattice2D prop{g, v, 0.02};
+    Field3D psi = plane_packet(g, 0.5, -1.0, 4.0, 0.0);
+    prop.relax(psi, 4000);
+    double inside = 0.0;
+    double total = 0.0;
+    for (int j = 0; j < g.y.n; ++j) {
+        for (int i = 0; i < g.x.n; ++i) {
+            const double w = std::norm(psi(i, j, 0));
+            total += w;
+            if (std::hypot(g.x.coord(i), g.y.coord(j)) < ring_r - 1.0) {
+                inside += w;
+            }
+        }
+    }
+    EXPECT_GT(inside / total, 0.85);
+    const double e_hard = 2.405 * 2.405 / (2.0 * ring_r * ring_r);
+    const double e = prop.energy(psi);
+    EXPECT_GT(e, 0.6 * e_hard);
+    EXPECT_LT(e, 2.0 * e_hard);
+}
+
 }  // namespace
