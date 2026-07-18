@@ -13,6 +13,9 @@
 # ---------------------------------------------------------------------------
 find_package(SDL3 CONFIG REQUIRED)
 find_package(volk CONFIG REQUIRED)  # imported targets are directory-scoped
+# Command-line parsing is INFRASTRUCTURE, not physics: no wheel
+# reinvention outside the numerical core (standing project rule).
+find_package(Boost REQUIRED COMPONENTS program_options)
 
 # ---------------------------------------------------------------------------
 # Dear ImGui: the vendored submodule (external/imgui), compiled INTO the app.
@@ -62,6 +65,7 @@ target_link_libraries(sesolver_app
         SDL3::SDL3
         ses_imgui
         ses_warnings
+        Boost::program_options
 )
 target_compile_features(sesolver_app PRIVATE cxx_std_20)
 # _CRT_SECURE_NO_WARNINGS keeps MSVC quiet about std::getenv (the

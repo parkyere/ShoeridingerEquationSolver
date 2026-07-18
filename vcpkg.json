@@ -17,7 +17,8 @@
                 "vulkan"
             ]
         },
-        "gtest"
+        "gtest",
+        "boost-program-options"
     ],
     "features": {
         "validation": {

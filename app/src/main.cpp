@@ -32,10 +32,13 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
+
+#include <boost/program_options.hpp>
 
 // volk before SDL/ImGui: it defines VK_NO_PROTOTYPES and must own the
 // vulkan.h inclusion before SDL/ImGui pull their own Vulkan declarations.
@@ -92,50 +95,58 @@ constexpr const char* kSceneNames[] = {
     "doubleslit2d", "landau2d", "bloch1d", "corral2d", "qdot2d"};
 constexpr int kSceneCount = 15;
 std::unique_ptr<ses_shell::ScenarioDirector> make_scene_director(int idx) {
-    if (idx == 1) {
-        return std::make_unique<ses_shell::HarmonicDirector>();
+    switch (idx) {
+        case 1: return std::make_unique<ses_shell::HarmonicDirector>();
+        case 2: return std::make_unique<ses_shell::TunnelingDirector>();
+        case 3: return std::make_unique<ses_shell::Harmonic1DDirector>();
+        case 4: return std::make_unique<ses_shell::Tunneling1DDirector>();
+        case 5: return std::make_unique<ses_shell::DoubleWell1DDirector>();
+        case 6: return std::make_unique<ses_shell::PtWell1DDirector>();
+        case 7: return std::make_unique<ses_shell::Morse1DDirector>();
+        case 8: return std::make_unique<ses_shell::H2PlusDirector>();
+        case 9: return std::make_unique<ses_shell::BenzeneDirector>();
+        case 10: return std::make_unique<ses_shell::DoubleSlit2DDirector>();
+        case 11: return std::make_unique<ses_shell::Landau2DDirector>();
+        case 12: return std::make_unique<ses_shell::Bloch1DDirector>();
+        case 13: return std::make_unique<ses_shell::Corral2DDirector>();
+        case 14: return std::make_unique<ses_shell::Qdot2DDirector>();
+        default: return std::make_unique<ses_shell::HydrogenDirector>();
     }
-    if (idx == 2) {
-        return std::make_unique<ses_shell::TunnelingDirector>();
-    }
-    if (idx == 3) {
-        return std::make_unique<ses_shell::Harmonic1DDirector>();
-    }
-    if (idx == 4) {
-        return std::make_unique<ses_shell::Tunneling1DDirector>();
-    }
-    if (idx == 5) {
-        return std::make_unique<ses_shell::DoubleWell1DDirector>();
-    }
-    if (idx == 6) {
-        return std::make_unique<ses_shell::PtWell1DDirector>();
-    }
-    if (idx == 7) {
-        return std::make_unique<ses_shell::Morse1DDirector>();
-    }
-    if (idx == 8) {
-        return std::make_unique<ses_shell::H2PlusDirector>();
-    }
-    if (idx == 9) {
-        return std::make_unique<ses_shell::BenzeneDirector>();
-    }
-    if (idx == 10) {
-        return std::make_unique<ses_shell::DoubleSlit2DDirector>();
-    }
-    if (idx == 11) {
-        return std::make_unique<ses_shell::Landau2DDirector>();
-    }
-    if (idx == 12) {
-        return std::make_unique<ses_shell::Bloch1DDirector>();
-    }
-    if (idx == 13) {
-        return std::make_unique<ses_shell::Corral2DDirector>();
-    }
-    if (idx == 14) {
-        return std::make_unique<ses_shell::Qdot2DDirector>();
-    }
-    return std::make_unique<ses_shell::HydrogenDirector>();
 }
+
+// --scene name -> combo index; -1 = unknown (caller warns, boots hydrogen).
+int scene_index_of(const std::string& name) {
+    for (int i = 0; i < kSceneCount; ++i) {
+        if (name == kSceneNames[i]) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// Selftest arcs that drive a NON-hydrogen scene: the arc flag forces its
+// scene so a mismatched --scene can never leave an arc dereferencing a
+// null capability. Every arc absent from this table drives hydrogen.
+struct ArcScene {
+    const char* arc;
+    const char* scene;
+};
+constexpr ArcScene kArcScenes[] = {
+    {"selftest-tunnel", "tunnel"},
+    {"selftest-trapdecay", "harmonic"},
+    {"selftest-ladder1d", "harmonic1d"},
+    {"selftest-tunnel1d", "tunnel1d"},
+    {"selftest-dw1d", "doublewell1d"},
+    {"selftest-pt1d", "ptwell1d"},
+    {"selftest-morse1d", "morse1d"},
+    {"selftest-doubleslit2d", "doubleslit2d"},
+    {"selftest-landau", "landau2d"},
+    {"selftest-bloch", "bloch1d"},
+    {"selftest-corral", "corral2d"},
+    {"selftest-qdot", "qdot2d"},
+    {"selftest-h2p", "h2plus"},
+    {"selftest-benzene", "benzene"},
+};
 
 // The shell: window + input + device + presentation + the main loop. The one
 // wrapper surface shared by the keyboard, the ImGui panel (app.imgui_ui),
@@ -859,63 +870,71 @@ int main(int argc, char* argv[]) {
     // crash then eats every diagnostic. Unbuffered keeps them honest.
     std::setvbuf(stderr, nullptr, _IONBF, 0);
 
+    // Command-line parsing via Boost.Program_options -- infrastructure is
+    // NOT physics, so no hand-rolled wheel here (standing project rule).
+    // Every arc flag is registered: --help lists them all and a typo is a
+    // hard error instead of a silently ignored dead flag.
+    namespace po = boost::program_options;
+    po::options_description desc("sesolver options");
+    auto add = desc.add_options();
+    add("help", "print this list and exit");
+    add("scene", po::value<std::string>()->default_value("hydrogen"),
+        "boot scene (hydrogen, harmonic, tunnel, harmonic1d, tunnel1d, "
+        "doublewell1d, ptwell1d, morse1d, h2plus, benzene, doubleslit2d, "
+        "landau2d, bloch1d, corral2d, qdot2d)");
+    add("face-z", "boot straight into the z-facing (textbook) view");
+    add("flow", "start with the probability-flow streaklines on");
+    for (const char* flag :
+         {"dump-frame", "dump-frame-late", "dump-frame-near",
+          "dump-frame-slice", "dump-frame-surface", "dump-frame-switch"}) {
+        add(flag, "render verification arc (offscreen frame dump)");
+    }
+    for (const char* flag :
+         {"selftest-benzene", "selftest-bloch", "selftest-cascade",
+          "selftest-corral", "selftest-decay", "selftest-doubleslit2d",
+          "selftest-dw1d", "selftest-efield", "selftest-energy",
+          "selftest-h2p", "selftest-ladder1d", "selftest-landau",
+          "selftest-magnetic", "selftest-manifold", "selftest-morse1d",
+          "selftest-partial", "selftest-pt1d", "selftest-qdot",
+          "selftest-rabi", "selftest-scene", "selftest-trapdecay",
+          "selftest-tunnel", "selftest-tunnel1d"}) {
+        add(flag, "physics verification arc (headless)");
+    }
+    po::variables_map vm;
+    try {
+        po::store(po::parse_command_line(argc, argv, desc), vm);
+        po::notify(vm);
+    } catch (const po::error& e) {
+        std::fprintf(stderr, "arguments: %s\n", e.what());
+        std::ostringstream help;
+        help << desc;
+        std::fprintf(stderr, "%s", help.str().c_str());
+        return 2;
+    }
+    if (vm.count("help") > 0) {
+        std::ostringstream help;
+        help << desc;
+        std::fprintf(stderr, "%s", help.str().c_str());
+        return 0;
+    }
+
+    // The shell and the arcs keep their flag-string seam (has_arg).
     std::vector<std::string> args{argv, argv + argc};
 
-    // Scenario selection (--scene=hydrogen|harmonic|tunnel); the selftest
-    // arcs all drive the hydrogen scene except tunnel, which forces its own.
-    std::string scene = "hydrogen";
-    for (const std::string& a : args) {
-        if (a.rfind("--scene=", 0) == 0) {
-            scene = a.substr(8);
+    // Scene selection: --scene, overridden by any arc that drives its own
+    // scene (kArcScenes); every OTHER selftest arc drives hydrogen (it
+    // reaches the director through hydrogen()). Plain --dump-frame keeps
+    // the requested scene.
+    std::string scene = vm["scene"].as<std::string>();
+    bool arc_forced = false;
+    for (const ArcScene& as : kArcScenes) {
+        if (vm.count(as.arc) > 0) {
+            scene = as.scene;
+            arc_forced = true;
+            break;
         }
     }
-    if (std::find(args.begin(), args.end(), "--selftest-tunnel") !=
-        args.end()) {
-        scene = "tunnel";  // the arc drives its own scene
-    } else if (std::find(args.begin(), args.end(), "--selftest-trapdecay") !=
-               args.end()) {
-        scene = "harmonic";  // the trap ladder arc drives its own scene
-    } else if (std::find(args.begin(), args.end(), "--selftest-ladder1d") !=
-               args.end()) {
-        scene = "harmonic1d";  // the 1D ladder arc drives its own scene
-    } else if (std::find(args.begin(), args.end(), "--selftest-tunnel1d") !=
-               args.end()) {
-        scene = "tunnel1d";  // the 1D tunneling arc drives its own scene
-    } else if (std::find(args.begin(), args.end(), "--selftest-dw1d") !=
-               args.end()) {
-        scene = "doublewell1d";
-    } else if (std::find(args.begin(), args.end(), "--selftest-pt1d") !=
-               args.end()) {
-        scene = "ptwell1d";
-    } else if (std::find(args.begin(), args.end(), "--selftest-morse1d") !=
-               args.end()) {
-        scene = "morse1d";
-    } else if (std::find(args.begin(), args.end(),
-                         "--selftest-doubleslit2d") != args.end()) {
-        scene = "doubleslit2d";
-    } else if (std::find(args.begin(), args.end(), "--selftest-landau") !=
-               args.end()) {
-        scene = "landau2d";
-    } else if (std::find(args.begin(), args.end(), "--selftest-bloch") !=
-               args.end()) {
-        scene = "bloch1d";
-    } else if (std::find(args.begin(), args.end(), "--selftest-corral") !=
-               args.end()) {
-        scene = "corral2d";
-    } else if (std::find(args.begin(), args.end(), "--selftest-qdot") !=
-               args.end()) {
-        scene = "qdot2d";
-    } else if (std::find(args.begin(), args.end(), "--selftest-h2p") !=
-               args.end()) {
-        scene = "h2plus";
-    } else if (std::find(args.begin(), args.end(), "--selftest-benzene") !=
-               args.end()) {
-        scene = "benzene";
-    } else {
-        // Every other selftest arc drives the hydrogen scene (it reaches the
-        // director through hydrogen()); force it so a mismatched --scene
-        // cannot leave a hydrogen arc dereferencing a null capability. Plain
-        // --dump-frame (no --selftest-) keeps the requested scene.
+    if (!arc_forced) {
         for (const std::string& a : args) {
             if (a.rfind("--selftest-", 0) == 0) {
                 scene = "hydrogen";
@@ -923,38 +942,11 @@ int main(int argc, char* argv[]) {
             }
         }
     }
-    int scene_index = 0;
-    if (scene == "tunnel") {
-        scene_index = 2;
-    } else if (scene == "harmonic") {
-        scene_index = 1;
-    } else if (scene == "harmonic1d") {
-        scene_index = 3;
-    } else if (scene == "tunnel1d") {
-        scene_index = 4;
-    } else if (scene == "doublewell1d") {
-        scene_index = 5;
-    } else if (scene == "ptwell1d") {
-        scene_index = 6;
-    } else if (scene == "morse1d") {
-        scene_index = 7;
-    } else if (scene == "h2plus") {
-        scene_index = 8;
-    } else if (scene == "benzene") {
-        scene_index = 9;
-    } else if (scene == "doubleslit2d") {
-        scene_index = 10;
-    } else if (scene == "landau2d") {
-        scene_index = 11;
-    } else if (scene == "bloch1d") {
-        scene_index = 12;
-    } else if (scene == "corral2d") {
-        scene_index = 13;
-    } else if (scene == "qdot2d") {
-        scene_index = 14;
-    } else if (scene != "hydrogen") {
+    int scene_index = scene_index_of(scene);
+    if (scene_index < 0) {
         std::fprintf(stderr, "scene: unknown '%s' -- using hydrogen\n",
                      scene.c_str());
+        scene_index = 0;
     }
 
     Shell shell{scene_index, std::move(args)};
