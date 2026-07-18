@@ -376,9 +376,10 @@ void register_verification_arcs(ShellT* shell) {
             shell->hy()->set_relaxing();  // cool to 1s
             shell->sched().after(20000, [shell] {
                 shell->set_real_time();
+                shell->set_time_scale(16);  // explicit dial (no hidden pump boost)
                 shell->hy()->toggle_laser();  // cached: instant
-                // 256^3 runs ~3 au/s of sim time: the half-flop (pi/Omega
-                // ~ 79 au) needs most of this window.
+                // GPU-bound 256^3 lands ~3 au/s regardless of the dial: the
+                // half-flop (pi/Omega ~ 79 au) needs most of this window.
                 shell->sched().after(60000, [shell] {
                     const double peak = shell->hy()->peak_excited_population();
                     std::fprintf(stderr, "selftest-rabi: peak P(2pz) = %.3f  [%s]\n",
@@ -500,6 +501,7 @@ void register_verification_arcs(ShellT* shell) {
             shell->hy()->set_relaxing();  // cool to 1s for the X-pol pump
             shell->sched().after(20000, [shell] {
                 shell->set_real_time();
+                shell->set_time_scale(16);  // explicit dial (no hidden pump boost)
                 shell->hy()->toggle_laser();  // Z (cached: no block)
                 shell->hy()->toggle_laser();  // -> X
                 const long long baseline = shell->hy()->photon_count();

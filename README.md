@@ -187,8 +187,8 @@ in their own panel and title bar):
   without routinely ionizing) / **E** projective energy measurement;
 - **D** toggle decay — multi-channel quantum jumps competing as Poisson
   processes, one honestly-labeled display acceleration common to all
-  channels / **L** resonant laser (Z-pol pumps 1s → 2p_z, X-pol 2p_x; runs
-  at x6 steps per tick while on);
+  channels / **L** resonant laser (Z-pol pumps 1s → 2p_z, X-pol 2p_x —
+  dial the time scale up to watch the Rabi flop at demo speed);
 - **E-field (+z)** and **B-field (z/x/y)** sliders solve the proper field
   Hamiltonian: Stark dipole term in the potential; paramagnetic (B/2)L
   rotation as an exact three-shear unitary plus the diamagnetic (B²/8)ρ⊥²

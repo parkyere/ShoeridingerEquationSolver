@@ -70,7 +70,6 @@ constexpr double kAbsorbWidth = 10.0;  // Bohr; boundary absorber layer
 // computed dipole element); the carrier is tuned to the GRID resonance, not
 // the textbook 0.375 -- see toggle_laser.
 constexpr double kRabiTargetOmega = 0.04;
-constexpr int kLaserStepsPerTick = 6;  // the pump demo runs hotter than 1x
 
 constexpr int kAtlasMontageFrames = 3;  // frames each synthesized orbital shows
 constexpr int kFlashTicks = 25;  // photon-flash duration AND the fade divisor
@@ -311,13 +310,9 @@ public:
             // Steps execute in run_frame (once per paint). ONE tick's supply
             // per rendered frame: a slow frame never bundles catch-up ticks
             // (dropped ticks drop cleanly; time is credited at execution).
-            // Default = 1 step : 1 render; the laser demo and time_scale_
-            // scale the batch exactly as dialed.
-            const int per_tick =
-                ((stepping_ == BaseStepping::RealTime && laser_pol_ != LaserPol::Off)
-                     ? kLaserStepsPerTick
-                     : kStepsPerTick) *
-                time_scale_;
+            // Default = 1 step : 1 render; time_scale_ is the ONLY pacing
+            // dial -- no mode may add a hidden multiplier (unified contract).
+            const int per_tick = kStepsPerTick * time_scale_;
             pending_gpu_steps_ =
                 std::min(pending_gpu_steps_ + per_tick, per_tick);
             if (++ticks_ % 10 == 0) {
