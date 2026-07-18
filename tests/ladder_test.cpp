@@ -470,6 +470,99 @@ TEST(LadderCap, ReproducesTheRecordedMeasuredCurve) {
     }
 }
 
+// RED: the deep-level wall. psi_0 = (w/pi)^{1/4} exp(-w x^2 / 2) underflows
+// double wherever w x^2 / 2 > ~745 (exp < smallest denormal), so the plain
+// recurrence seeds EXACT ZEROS past |x| ~ 38.6/sqrt(w) -- and a zero seed
+// stays zero at every level (the recurrence only multiplies and mixes).
+// High-n eigenstates whose classically allowed region reaches into that
+// dead zone lose their outer lobes: at n = 1200, omega = 1 the wall sits at
+// x ~ 38.6 while the turning points are at +-49, so ~44% of the state's
+// probability is simply MISSING. On top of that, ho_level_cap stopped
+// probing at a fixed 400 levels. The contracts below pin the fix: a scaled
+// per-point (mantissa, power-of-two exponent) chain -- power-of-two scaling
+// is exact, so everything the plain chain got right stays bitwise intact --
+// must push the ceiling to the honest grid physics: box (turning points +
+// tail inside [xmin, xmax]) vs Nyquist (k_n < pi/h), nothing else.
+constexpr double kDeepOmega = 1.0;
+// -60..60 / 4096: k_max ~ 107 so Nyquist allows n ~ 5700; the box allows
+// n_box ~ w x_max^2 / 2 = 1800. Both sit far above the seed wall (~710).
+const ses::Grid1D kDeepGrid{-60.0, 60.0, 4096};
+
+TEST(HoEigenstateDeep, SurvivesTheSeedUnderflowWall) {
+    // n = 1200: every node and the exact energy must survive past the wall.
+    const std::vector<double> v =
+        ses::harmonic_potential(kDeepGrid, kDeepOmega);
+    const ses::Field1D psi = ses::ho_eigenstate(kDeepGrid, kDeepOmega, 1200);
+    EXPECT_NEAR(ses::norm_sq(psi), 1.0, 1e-10);
+    EXPECT_EQ(node_count(psi), 1200);
+    const double e_exact = 1200.5 * kDeepOmega;
+    EXPECT_NEAR(ses::mean_energy(psi, v), e_exact, 1e-3 * e_exact);
+}
+
+TEST(HoLevelCapDeep, ReachesTheBoxCeilingNotTheSeedFloor) {
+    // The measured cap must land below the box ceiling by the tail margin
+    // only -- not at the seed wall (~710), not at a fixed probe bound (400).
+    const int cap = ses::ho_level_cap(kDeepGrid, kDeepOmega);
+    EXPECT_GE(cap, 1200);
+    EXPECT_LT(cap, 1800);
+    // And it must stay honest: the oracle AT the cap is still faithful.
+    const std::vector<double> v =
+        ses::harmonic_potential(kDeepGrid, kDeepOmega);
+    const ses::Field1D at_cap = ses::ho_eigenstate(kDeepGrid, kDeepOmega, cap);
+    const double e_exact = (cap + 0.5) * kDeepOmega;
+    EXPECT_NEAR(ses::mean_energy(at_cap, v), e_exact, 1e-3 * e_exact);
+}
+
+TEST(LadderFockDeep, RaisesADeepPairBeyondTheSeedWall) {
+    // (|1198> + |1200>)/sqrt(2) --adag--> (sqrt(1199)|1199> +
+    // sqrt(1201)|1201>) normalized; counting norm^2 = (1199 + 1201)/2.
+    // The energy contract is against the EXACT spectrum -- a basis and an
+    // input that are broken the same self-consistent way cannot fake it.
+    const ses::Field1D a = ses::ho_eigenstate(kDeepGrid, kDeepOmega, 1198);
+    const ses::Field1D b = ses::ho_eigenstate(kDeepGrid, kDeepOmega, 1200);
+    ses::Field1D psi{kDeepGrid};
+    for (int i = 0; i < psi.size(); ++i) {
+        psi[i] = a[i] + b[i];
+    }
+    ses::normalize(psi);
+    double residual = 1.0;
+    const double norm2 =
+        ses::ladder_fock(psi, kDeepOmega, true, 1210, &residual);
+    EXPECT_NEAR(norm2, 1200.0, 1e-3 * 1200.0);
+    EXPECT_LT(residual, 1e-9);
+    const std::vector<double> v =
+        ses::harmonic_potential(kDeepGrid, kDeepOmega);
+    const double e_exact =
+        (1199.0 * 1199.5 + 1201.0 * 1201.5) / 2400.0 * kDeepOmega;
+    EXPECT_NEAR(ses::mean_energy(psi, v), e_exact, 1e-3 * e_exact);
+}
+
+TEST(LadderFock, WideBandStaysExactForALowState) {
+    // A band top FAR above the state's support must change nothing:
+    // (|0> + |1>)/sqrt(2) raised inside a 1500-level band is still
+    // (|1> + sqrt(2)|2>)/sqrt(3) with counting norm^2 = (1 + 2)/2.
+    const ses::Field1D g0 = ses::ho_eigenstate(kDeepGrid, kDeepOmega, 0);
+    const ses::Field1D g1 = ses::ho_eigenstate(kDeepGrid, kDeepOmega, 1);
+    ses::Field1D psi{kDeepGrid};
+    for (int i = 0; i < psi.size(); ++i) {
+        psi[i] = g0[i] + g1[i];
+    }
+    ses::normalize(psi);
+    double residual = 1.0;
+    const double norm2 =
+        ses::ladder_fock(psi, kDeepOmega, true, 1500, &residual);
+    EXPECT_NEAR(norm2, 1.5, 1e-9);
+    EXPECT_LT(residual, 1e-10);
+    const ses::Field1D e1 = ses::ho_eigenstate(kDeepGrid, kDeepOmega, 1);
+    const ses::Field1D e2 = ses::ho_eigenstate(kDeepGrid, kDeepOmega, 2);
+    ses::Field1D want{kDeepGrid};
+    const double s3 = 1.0 / std::sqrt(3.0);
+    for (int i = 0; i < want.size(); ++i) {
+        want[i] = s3 * (e1[i] + std::sqrt(2.0) * e2[i]);
+    }
+    EXPECT_NEAR(overlap_sq(psi, want), 1.0, 1e-9);
+}
+
 TEST(Ladder, LowerOnSuperpositionKeepsTheReachablePart) {
     // psi = (|0> + |1>)/sqrt(2): a psi = (1/sqrt(2))|0>, so the apply is NOT
     // annihilated (norm^2 = 1/2 >> vanish_eps) and the result is pure ground.
