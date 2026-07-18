@@ -216,10 +216,14 @@ TEST(PeierlsLattice2D, UniformFieldFillsEveryPlaquetteEqually) {
 
 TEST(PeierlsLattice2D, CyclotronOrbitAndLandauRevival) {
     // B = 0.5, k0 = 1: radius k0/B = 2, period T = 2 pi / B ~ 12.57.
-    // Launch at (2, 0) moving +y: the orbit circles the origin. At T/2
-    // the packet sits at the antipode (-2, 0); at T it is BACK -- and not
-    // just in position: the equally-spaced Landau ladder re-coheres the
-    // whole state (revival overlap), up to small lattice-band corrections.
+    // Link phase theta_x = -B hx y_j is (by the plane-wave band
+    // E ~ (k + theta/h)^2/2) the Peierls form of A_x = +B y, so v rotates
+    // COUNTERCLOCKWISE at omega_c = B and a tangential launch at (x0, 0)
+    // with v = (0, k0) orbits the center (x0 - k0/B, 0). Launch at
+    // (2, 0): the orbit circles the ORIGIN -- antipode (-2, 0) at T/2,
+    // back at T. And not just in position: the equally spaced Landau
+    // ladder re-coheres the whole state (revival overlap), up to small
+    // lattice-band corrections.
     const Grid3D g = plane_grid(12.0, 96, 12.0, 96);
     const std::vector<double> v(static_cast<std::size_t>(g.size()), 0.0);
     const double b = 0.5;
@@ -227,8 +231,8 @@ TEST(PeierlsLattice2D, CyclotronOrbitAndLandauRevival) {
     const double dt = 0.01;
     ses::PeierlsLattice2D prop{g, v, dt};
     prop.set_uniform_field(b);
-    // Packet with mechanical momentum +k0 in y. In this Landau gauge
-    // (A_x ~ -B y, A_y = 0) canonical and mechanical k_y coincide.
+    // Packet with mechanical momentum +k0 in y: A_y = 0, and A_x = 0 on
+    // the launch row y = 0, so the plain plane-wave factor IS mechanical.
     Field3D psi{g};
     for (int j = 0; j < g.y.n; ++j) {
         for (int i = 0; i < g.x.n; ++i) {
