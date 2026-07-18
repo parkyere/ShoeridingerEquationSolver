@@ -28,6 +28,7 @@
 #include <cmath>
 #include <complex>
 #include <numbers>
+#include <utility>
 #include <vector>
 
 import ses.field;
@@ -183,6 +184,98 @@ TEST(PeierlsLattice2D, GaugeCutDirectionIsInvisible) {
                 << "at " << i << "," << j;
         }
     }
+}
+
+// RED: UNIFORM field (Landau levels / cyclotron motion). In the Landau
+// gauge the x-links of row j carry e^{-i B hx hy j}: EVERY plaquette then
+// holds the same flux B hx hy -- a uniform B along z, checkable on the
+// link table. Dynamics: a packet with mechanical momentum k0 rides a
+// cyclotron orbit of radius k0/B at omega_c = B; and because the Landau
+// spectrum is EQUALLY spaced (E_n = B(n + 1/2)), the state REVIVES at
+// T = 2 pi / B -- the orbit closes and the wavefunction re-coheres.
+TEST(PeierlsLattice2D, UniformFieldFillsEveryPlaquetteEqually) {
+    const Grid3D g = plane_grid(8.0, 32, 8.0, 32);
+    const std::vector<double> v(static_cast<std::size_t>(g.size()), 0.0);
+    ses::PeierlsLattice2D prop{g, v, 0.02};
+    const double b = 0.7;
+    prop.set_uniform_field(b);
+    const double want = b * g.x.spacing() * g.y.spacing();
+    for (int j = 0; j + 1 < g.y.n; ++j) {
+        for (int i = 0; i + 1 < g.x.n; ++i) {
+            const std::complex<double> loop =
+                prop.link_x(i, j) * prop.link_y(i + 1, j) *
+                std::conj(prop.link_x(i, j + 1)) *
+                std::conj(prop.link_y(i, j));
+            EXPECT_NEAR(std::remainder(std::arg(loop) - want,
+                                       2.0 * std::numbers::pi),
+                        0.0, 1e-12)
+                << "plaquette " << i << "," << j;
+        }
+    }
+}
+
+TEST(PeierlsLattice2D, CyclotronOrbitAndLandauRevival) {
+    // B = 0.5, k0 = 1: radius k0/B = 2, period T = 2 pi / B ~ 12.57.
+    // Launch at (2, 0) moving +y: the orbit circles the origin. At T/2
+    // the packet sits at the antipode (-2, 0); at T it is BACK -- and not
+    // just in position: the equally-spaced Landau ladder re-coheres the
+    // whole state (revival overlap), up to small lattice-band corrections.
+    const Grid3D g = plane_grid(12.0, 96, 12.0, 96);
+    const std::vector<double> v(static_cast<std::size_t>(g.size()), 0.0);
+    const double b = 0.5;
+    const double k0 = 1.0;
+    const double dt = 0.01;
+    ses::PeierlsLattice2D prop{g, v, dt};
+    prop.set_uniform_field(b);
+    // Packet with mechanical momentum +k0 in y. In this Landau gauge
+    // (A_x ~ -B y, A_y = 0) canonical and mechanical k_y coincide.
+    Field3D psi{g};
+    for (int j = 0; j < g.y.n; ++j) {
+        for (int i = 0; i < g.x.n; ++i) {
+            const double x = g.x.coord(i);
+            const double y = g.y.coord(j);
+            const double env = std::exp(
+                -((x - 2.0) * (x - 2.0) + y * y) / (4.0 * 1.4 * 1.4));
+            psi(i, j, 0) = env * std::complex<double>{std::cos(k0 * y),
+                                                      std::sin(k0 * y)};
+        }
+    }
+    ses::normalize(psi);
+    const Field3D start = psi;
+
+    auto mean_r = [&](const Field3D& f) {
+        double mx = 0.0;
+        double my = 0.0;
+        double den = 0.0;
+        for (int j = 0; j < g.y.n; ++j) {
+            for (int i = 0; i < g.x.n; ++i) {
+                const double w = std::norm(f(i, j, 0));
+                mx += g.x.coord(i) * w;
+                my += g.y.coord(j) * w;
+                den += w;
+            }
+        }
+        return std::pair<double, double>{mx / den, my / den};
+    };
+
+    const double period = 2.0 * std::numbers::pi / b;
+    const int half = static_cast<int>(0.5 * period / dt + 0.5);
+    prop.step(psi, half);
+    const auto [hx, hy] = mean_r(psi);
+    EXPECT_NEAR(hx, -2.0, 0.4);
+    EXPECT_NEAR(hy, 0.0, 0.4);
+    prop.step(psi, half);
+    const auto [fx, fy] = mean_r(psi);
+    EXPECT_NEAR(fx, 2.0, 0.4);
+    EXPECT_NEAR(fy, 0.0, 0.4);
+    std::complex<double> ov{};
+    for (int j = 0; j < g.y.n; ++j) {
+        for (int i = 0; i < g.x.n; ++i) {
+            ov += std::conj(start(i, j, 0)) * psi(i, j, 0);
+        }
+    }
+    ov *= g.x.spacing() * g.y.spacing() * g.z.spacing();
+    EXPECT_GT(std::norm(ov), 0.8);  // the Landau ladder re-coheres
 }
 
 TEST(PeierlsLattice2D, DoubleSlitCarriesTheSolenoidFlux) {
