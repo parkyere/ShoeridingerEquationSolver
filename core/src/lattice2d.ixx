@@ -105,6 +105,25 @@ public:
         }
     }
 
+    // UNIFORM field B along z (Landau levels / cyclotron motion), Landau
+    // gauge ANCHORED at y = 0 (the box center): the x-links of row j
+    // carry e^{-i B hx y_j}. By the plane-wave band E ~ (k + theta/h)^2/2
+    // this is the Peierls form of A_x = +B y, A_y = 0: every plaquette
+    // holds the same flux B hx hy, mechanical = canonical momentum on the
+    // y = 0 row, and v rotates COUNTERCLOCKWISE at omega_c = B (anchoring
+    // at ymin instead would hand the packet a spurious v_x = -B*ymin).
+    // Replaces any solenoid.
+    void set_uniform_field(double b) {
+        const double bh = b * g_->x.spacing();
+        for (int j = 0; j < ny_; ++j) {
+            const double th = -bh * g_->y.coord(j);
+            const std::complex<double> u{std::cos(th), std::sin(th)};
+            for (int i = 0; i < nx_; ++i) {
+                link_x_[static_cast<std::size_t>(j * nx_ + i)] = u;
+            }
+        }
+    }
+
     // Directed link variables (U on edge (i,j)->(i+1,j) resp. (i,j)->
     // (i,j+1)) for the plaquette-topology contract.
     std::complex<double> link_x(int i, int j) const {

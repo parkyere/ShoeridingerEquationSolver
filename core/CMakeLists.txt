@@ -35,6 +35,7 @@ target_sources(sesolver_core
         src/measurement.ixx
         src/radial.ixx
         src/observables.ixx
+        src/bloch.ixx
         src/ladder.ixx
         src/lattice2d.ixx
         src/phasor.ixx
