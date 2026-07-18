@@ -333,15 +333,20 @@ void draw_ladder1d_panel(ShellT& shell, UiState& ui, ses_shell::Ladder1dApi& ld)
                           "straight-on view\n(x right, y up; the phasor "
                           "twist goes into the screen).");
     }
-    if (ImGui::SliderFloat("Well omega (au)", &ui.ho_omega, 0.05f, 4.0f,
-                           "%.2f")) {
+    // Applied on RELEASE, not per drag frame: each new omega re-measures
+    // the representability ceiling by sweeping the whole Hermite chain
+    // (up to ~19000 levels at the stiff stop) -- fine once, not at 60 Hz.
+    ImGui::SliderFloat("Well omega (au)", &ui.ho_omega, 0.05f, 4.0f, "%.2f");
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
         ld.set_omega(static_cast<double>(ui.ho_omega));
     }
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Well stiffness w (width ~ 1/sqrt(w)).\nChanging "
-                          "it is a sudden QUENCH: psi is kept and breathes "
-                          "in\nthe new well. The MEASURED clean ladder cap "
-                          "peaks near\nw ~ 1 then falls -- now n <= %d.",
+        ImGui::SetTooltip("Well stiffness w (width ~ 1/sqrt(w)); applies "
+                          "when released.\nChanging it is a sudden QUENCH: "
+                          "psi is kept and breathes in\nthe new well. The "
+                          "ladder cap is the box ceiling (turning points\n"
+                          "must fit +-100 Bohr), so it RISES with w -- now "
+                          "n <= %d.",
                           ld.max_level());
     }
     draw_time_scale(shell, ui);

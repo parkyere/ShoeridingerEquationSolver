@@ -5,6 +5,7 @@ module;
 #include <random>
 #include <string>
 #include <utility>
+#include <vector>
 export module ses.scenario.harmonic1d_director;
 export import ses.scenario.line1d_director;
 import ses.ladder;
@@ -16,9 +17,10 @@ import ses.wavepacket;
 // [D] applies a, [S] prepares a random coherent superposition, [2] resets
 // to the current well's ground. Down from the ground state is refused by
 // the operator itself (a|0> = 0: vanishing norm, psi untouched) -- physics,
-// not a UI rule. Up is capped ADAPTIVELY at ses.ladder's ladder_cap: the
-// FFT ladder amplifies the k_max round-off floor by k_max/sqrt(2w) per
-// raise, so a softer well caps lower and a stiffer one higher.
+// not a UI rule. Up is capped at the MEASURED grid representability
+// ceiling (ses.ladder ho_level_cap): on this box the ceiling is the box
+// itself -- the level's turning points must fit inside +-100 Bohr -- so
+// the cap rises with omega (~1200 at w = 0.25, ~19000 at w = 4).
 //
 // The HUD classifies the state honestly with Var(H) -- no measurement, no
 // basis bookkeeping: Var ~ 0 names the Fock level n; otherwise the state
@@ -32,25 +34,22 @@ export namespace ses_shell {
 
 constexpr double kHo1dOmega = 0.25;   // boot default; panel-adjustable
 constexpr double kHo1dOmegaMin = 0.05;
-// Widened past the old 1.0 to span the MEASURED clean-cap peak (~16 at
-// w ~ 1, where the a-dag derivative and x gains balance) and its fall-off
-// (~13 at w = 4): cranking the well past the peak now visibly LOWERS the
-// ladder cap, the payoff of the empirical ladder_cap probe.
+// The dial spans two decades of stiffness; with the box-limited ceiling
+// the cap now RISES with omega across the whole dial (Nyquist would only
+// take over near w ~ k_max/x_max ~ 10, past the stop).
 constexpr double kHo1dOmegaMax = 4.0;
 // A 1D line is ~4 decades cheaper than the 256^3 volumes: the box is
 // widened to raise the BOX-LIMITED level ceiling (turning point x_n =
-// sqrt((2n+1)/w) must fit): +-100 holds n ~ 1200 at w = 0.25 and ~250
-// even at the softest slider stop (w = 0.05, where +-60 capped at ~89),
-// so the probe bound (400) is the binding cap over most of the dial. The
-// line runs at 65536 points (2^16, h ~ 0.003 -- still 1/256th of one
-// 256^3 volume, k_max ~ 1000). The huge k_max would murder the raw
-// spectral chain, but eigenstates rung via the stable oracle path and
-// superpositions via the Fock-basis path -- neither cares about k_max.
+// sqrt((2n+1)/w) must fit): +-100 holds n ~ 1200 at w = 0.25 and ~19000
+// at w = 4 -- with the scaled Hermite chain (ses.ladder) the MEASURED
+// ho_level_cap now reaches that box ceiling; nothing artificial remains
+// below it. The line runs at 65536 points (2^16, h ~ 0.003 -- still
+// 1/256th of one 256^3 volume, k_max ~ 1000, so Nyquist never binds on
+// this dial). The huge k_max would murder the raw spectral chain, but
+// eigenstates rung via the stable oracle path and superpositions via the
+// streaming Fock-basis path -- neither cares about k_max.
 constexpr double kHo1dBox = 100.0;    // Bohr half-extent
 constexpr int kHo1dPoints = 65536;
-// Fock band for superposition laddering (ladder_fock): plenty above any
-// state the scene builds, capped by representability at soft omega.
-constexpr int kHo1dFockTop = 63;
 constexpr double kHo1dDt = 0.04;
 constexpr double kHo1dRScale = 18.0;  // radius = 18 |psi|^2 (~5 Bohr at n=0)
 constexpr double kHo1dEScale = 0.8;   // V display: Ha -> Bohr height
@@ -241,14 +240,28 @@ private:
         }
     }
 
+    // ho_level_cap sweeps the whole scaled chain (up to the box ceiling,
+    // ~1200 levels at w = 0.25 and ~19000 at w = 4 on this grid), so each
+    // distinct omega is measured ONCE and memoized -- revisiting a slider
+    // value costs nothing.
     void remeasure_caps() {
+        for (const auto& [w, cap] : cap_memo_) {
+            if (w == omega_) {
+                cap_level_ = cap;
+                return;
+            }
+        }
         cap_level_ = ses::ho_level_cap(grid1d_, omega_);
+        cap_memo_.emplace_back(omega_, cap_level_);
     }
-    // Fock band top for superposition laddering: below the representability
-    // ceiling (an up-rung targets fock_top() + 1).
-    int fock_top() const { return std::min(kHo1dFockTop, cap_level_ - 1); }
+    // Fock band top for superposition laddering: the representability
+    // ceiling is the ONLY cap (an up-rung targets fock_top() + 1); the
+    // streaming ladder_fock scans just the levels the state occupies, so a
+    // deep band top costs nothing for low superpositions.
+    int fock_top() const { return cap_level_ - 1; }
 
     double omega_ = kHo1dOmega;
+    std::vector<std::pair<double, int>> cap_memo_;  // measured cap per omega
     int cap_level_ = 0;  // stable rungs: grid representability ceiling
     int level_ = 0;
     std::string note_;

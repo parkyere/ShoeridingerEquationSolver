@@ -1,4 +1,5 @@
 module;
+#include <algorithm>
 #include <cmath>
 #include <complex>
 #include <cstddef>
@@ -8,6 +9,7 @@ export module ses.ladder;
 export import ses.field;
 export import ses.grid;
 import ses.fft;
+import ses.parallel;
 import ses.spectral;
 
 
@@ -73,6 +75,136 @@ inline void store_normalized(Field1D& psi, const std::vector<std::complex<double
     }
 }
 
+// ---- scaled Hermite chain ------------------------------------------------
+// The plain recurrence seeds psi_0 = a0 exp(-omega x^2 / 2), which leaves
+// double range past omega x^2 / 2 > ~745 -- the seed becomes EXACT ZERO
+// there, and a zero seed stays zero at every level (the recurrence only
+// multiplies and mixes), silently deleting the outer lobes of deep states
+// (at n = 1200, omega = 1 that is ~44% of the probability). The chain is
+// therefore carried per point as mantissa * 2^exponent. Every rescale is a
+// power of two -- EXACT in binary floating point -- so wherever the plain
+// chain never left double range the mantissa path computes bitwise the
+// same values: the representation extends the range, never the arithmetic.
+
+constexpr double kChainHi = 0x1p+500;  // rescale down above this ...
+constexpr double kChainLo = 0x1p-500;  // ... or up when BOTH fall below
+constexpr double kChainDn = 0x1p-512;
+constexpr double kChainUp = 0x1p+512;
+constexpr int kChainExp = 512;
+
+// psi_0(x) as (mantissa, exponent): exact (exponent 0) wherever the plain
+// exp is a normal double; log2-domain split otherwise (relative error
+// ~|log2 psi_0| * eps ~ 1e-11, in a region physically below 1e-290).
+inline void chain_seed(double a0, double omega, double x, double& m, int& e) {
+    const double arg = 0.5 * omega * x * x;
+    if (arg < 690.0) {
+        m = a0 * std::exp(-arg);
+        e = 0;
+        return;
+    }
+    const double bits = -arg * 1.4426950408889634;  // log2(psi_0 / a0)
+    const int shift = static_cast<int>(std::floor(bits));
+    m = a0 * std::exp2(bits - shift);
+    e = shift;
+}
+
+// One recurrence rung on a scaled (prev, cur) pair sharing one exponent.
+// c1x = sqrt(2 omega / k) * x, c2 = sqrt((k-1)/k) -- the same expressions,
+// in the same order, as the plain chain (bitwise-identical when no rescale
+// triggers; a rescale only triggers outside (2^-500, 2^500), where the
+// plain chain was already denormal or could never arrive).
+inline void chain_advance(double c1x, double c2, double& p, double& c,
+                          int& e) {
+    const double next = c1x * c - c2 * p;
+    p = c;
+    c = next;
+    const double ac = std::abs(c);
+    if (ac > kChainHi || std::abs(p) > kChainHi) {
+        p *= kChainDn;
+        c *= kChainDn;
+        e += kChainExp;
+    } else if (ac < kChainLo && std::abs(p) < kChainLo && e != 0) {
+        p *= kChainUp;
+        c *= kChainUp;
+        e -= kChainExp;
+    }
+}
+
+// The whole-grid scaled chain: SoA rows (p, c, e) advanced level by level.
+// advance_to runs TRANSPOSED (each worker walks its own points through all
+// pending levels with the shared coefficient tables) -- one pool dispatch
+// per block, per-point work independent, so the result is deterministic.
+// Copying the object is the snapshot used by ho_level_cap's bisection.
+class ScaledChain {
+  public:
+    ScaledChain(const Grid1D& g, double omega)
+        : g_(&g),
+          omega_(omega),
+          p_(static_cast<std::size_t>(g.n), 0.0),
+          c_(static_cast<std::size_t>(g.n)),
+          e_(static_cast<std::size_t>(g.n), 0) {
+        const double pi = 3.14159265358979323846;
+        const double a0 = std::pow(omega / pi, 0.25);
+        parallel_for(g.n, [&](int i) {
+            const std::size_t s = static_cast<std::size_t>(i);
+            chain_seed(a0, omega_, g_->coord(i), c_[s], e_[s]);
+        });
+    }
+
+    int level() const noexcept { return level_; }
+
+    void advance_to(int target) {
+        if (target <= level_) {
+            return;
+        }
+        ensure_coeffs(target);
+        const int from = level_;
+        parallel_ranges(g_->n, [&](int, int begin, int end) {
+            for (int i = begin; i < end; ++i) {
+                const std::size_t s = static_cast<std::size_t>(i);
+                const double x = g_->coord(i);
+                double pp = p_[s];
+                double cc = c_[s];
+                int ee = e_[s];
+                for (int k = from + 1; k <= target; ++k) {
+                    chain_advance(r1_[static_cast<std::size_t>(k)] * x,
+                                  r2_[static_cast<std::size_t>(k)], pp, cc,
+                                  ee);
+                }
+                p_[s] = pp;
+                c_[s] = cc;
+                e_[s] = ee;
+            }
+        });
+        level_ = target;
+    }
+
+    // The chain's value at point i (0 when genuinely below double range).
+    double value(int i) const noexcept {
+        const std::size_t s = static_cast<std::size_t>(i);
+        return std::ldexp(c_[s], e_[s]);
+    }
+
+  private:
+    void ensure_coeffs(int target) {
+        const std::size_t need = static_cast<std::size_t>(target) + 1;
+        while (r1_.size() < need) {
+            const double k = static_cast<double>(r1_.size());
+            r1_.push_back(std::sqrt(2.0 * omega_ / k));
+            r2_.push_back(std::sqrt((k - 1.0) / k));
+        }
+    }
+
+    const Grid1D* g_;
+    double omega_;
+    int level_ = 0;
+    std::vector<double> r1_{0.0};  // sqrt(2 omega / k), index k >= 1
+    std::vector<double> r2_{0.0};  // sqrt((k-1)/k)
+    std::vector<double> p_;        // mantissa psi_{level-1}
+    std::vector<double> c_;        // mantissa psi_{level}
+    std::vector<int> e_;           // shared per-point exponent
+};
+
 }  // namespace ladder_detail
 
 // adag: psi <- adag psi / ||adag psi||; returns ||adag psi||^2 (n+1 on |n>).
@@ -95,25 +227,15 @@ inline double ladder_raise(Field1D& psi, double omega) {
 // round-off for every level the grid can represent. A final discrete
 // normalize absorbs the sampling error. This is the ground-truth oracle
 // the ladder is measured against, and lets the scene jump to any level.
+// Carried as a per-point scaled (mantissa, 2^exponent) chain so the seed
+// never leaves double range: deep levels keep their outer lobes past the
+// plain exp's underflow wall (|x| ~ 38.6/sqrt(omega)), and the ceiling
+// becomes the honest grid physics (box vs Nyquist), not the FP floor.
 inline Field1D ho_eigenstate(const Grid1D& g, double omega, int n) {
-    const double pi = 3.14159265358979323846;
-    Field1D prev{g};   // psi_{k-2}
-    Field1D cur{g};    // psi_{k-1}
-    const double a0 = std::pow(omega / pi, 0.25);
-    for (int i = 0; i < g.n; ++i) {
-        const double x = g.coord(i);
-        cur[i] = a0 * std::exp(-0.5 * omega * x * x);  // psi_0
-    }
-    for (int k = 1; k <= n; ++k) {
-        const double c1 = std::sqrt(2.0 * omega / k);
-        const double c2 = std::sqrt(static_cast<double>(k - 1) / k);
-        Field1D next{g};
-        for (int i = 0; i < g.n; ++i) {
-            next[i] = c1 * g.coord(i) * cur[i] - c2 * prev[i];
-        }
-        prev = std::move(cur);
-        cur = std::move(next);
-    }
+    ladder_detail::ScaledChain chain{g, omega};
+    chain.advance_to(n);
+    Field1D cur{g};
+    parallel_for(g.n, [&](int i) { cur[i] = chain.value(i); });
     normalize(cur);
     return cur;
 }
@@ -146,33 +268,19 @@ inline int ho_level_cap(const Grid1D& g, double omega) {
         v[static_cast<std::size_t>(i)] = 0.5 * omega * omega * x * x;
     }
     const std::vector<double> k = wavenumbers(g);
-    // The Hermite chain kept ACROSS levels (ho_eigenstate's recurrence,
-    // advanced one rung per iteration): O(total grid work) instead of the
-    // O(levels^2) of rebuilding each level from scratch. Energy checks are
-    // scale-invariant, so the missing per-level discrete renormalization
-    // changes nothing.
-    const double pi = 3.14159265358979323846;
-    const double a0 = std::pow(omega / pi, 0.25);
-    auto seed = [&](Field1D& prev, Field1D& cur) {
-        for (int i = 0; i < g.n; ++i) {
-            const double x = g.coord(i);
-            prev[i] = 0.0;
-            cur[i] = a0 * std::exp(-0.5 * omega * x * x);
-        }
-    };
-    auto advance = [&](Field1D& prev, Field1D& cur, int n) {
-        const double c1 = std::sqrt(2.0 * omega / n);
-        const double c2 = std::sqrt(static_cast<double>(n - 1) / n);
-        Field1D next{g};
-        for (int i = 0; i < g.n; ++i) {
-            next[i] = c1 * g.coord(i) * cur[i] - c2 * prev[i];
-        }
-        prev = std::move(cur);
-        cur = std::move(next);
-    };
     // <H> spectrally (T in k-space) + V in real space, scale-invariant.
-    auto faithful = [&](const Field1D& cur, int n) {
-        std::vector<std::complex<double>> phi = cur.data();
+    std::vector<std::complex<double>> phi(static_cast<std::size_t>(g.n));
+    auto faithful = [&](const ladder_detail::ScaledChain& chain, int n) {
+        parallel_for(g.n, [&](int i) {
+            phi[static_cast<std::size_t>(i)] = chain.value(i);
+        });
+        double num_v = 0.0;
+        double den_x = 0.0;
+        for (std::size_t j = 0; j < phi.size(); ++j) {
+            const double w = std::norm(phi[j]);
+            num_v += v[j] * w;
+            den_x += w;
+        }
         fft(phi);
         double num_t = 0.0;
         double den_k = 0.0;
@@ -181,54 +289,63 @@ inline int ho_level_cap(const Grid1D& g, double omega) {
             num_t += 0.5 * k[j] * k[j] * w;
             den_k += w;
         }
-        double num_v = 0.0;
-        double den_x = 0.0;
-        for (int i = 0; i < g.n; ++i) {
-            const double w = std::norm(cur[i]);
-            num_v += v[static_cast<std::size_t>(i)] * w;
-            den_x += w;
-        }
         const double e = num_t / den_k + num_v / den_x;
         const double e_exact = (n + 0.5) * omega;
         return std::abs(e - e_exact) <= 1e-3 * e_exact;
     };
+    // Probe bound: a SAFETY NET above the physics ceilings, not the cap.
+    // Near n_box (level energy = edge potential) faithfulness fades over
+    // the Airy transition width (~|dV/dx| * (2 omega^2 x)^{-1/3} in energy,
+    // a few hundred levels on fine grids), so the measured boundary can
+    // overhang n_box slightly; 1.5x + 64 is comfortably past it on both
+    // the box and the Nyquist side. The scan STOPS at the first failed
+    // check, so the generous bound costs nothing -- it only guards the
+    // loop. GRID-DERIVED, not a constant (the old fixed 400 silently
+    // clipped fine grids whose true ceiling sits in the thousands).
+    const double x_edge = std::min(std::abs(g.xmin), std::abs(g.xmax));
+    const double k_max = 3.14159265358979323846 / g.spacing();
+    const double n_box = 0.5 * omega * x_edge * x_edge;
+    const double n_nyq = 0.5 * k_max * k_max / omega;
+    const int bound = std::max(
+        1,
+        static_cast<int>(std::min(1.5 * std::min(n_box, n_nyq), 1048576.0)) +
+            64);
     // Representability is MONOTONE in n (higher n = wider turning points
-    // AND higher k content: once lost, never regained), so a stride scan
-    // + sequential refine of the last window returns the same cap as a
-    // full scan with ~1/10 the FFT energy checks -- this runs on every
-    // omega-slider notch, at up to 64k points per level.
-    constexpr int kStride = 16;
-    constexpr int kMaxLevel = 400;
-    Field1D prev{g};
-    Field1D cur{g};
-    seed(prev, cur);
+    // AND higher k content: once lost, never regained). Stride scan with
+    // the scaled chain, snapshot (= chain copy) at the last good check,
+    // then BISECT the last window from the snapshot: O(chain) grid work
+    // plus ~(bound/stride + log2 stride) FFT energy checks -- this runs
+    // on every omega-slider apply, at up to 64k points per level.
+    const int stride = std::clamp(bound / 64, 16, 512);
+    ladder_detail::ScaledChain chain{g, omega};
+    ladder_detail::ScaledChain snap = chain;  // rows at last_good
     int last_good = 0;
     int first_bad = -1;
-    for (int n = 1; n <= kMaxLevel; ++n) {
-        advance(prev, cur, n);
-        if (n % kStride == 0 || n == kMaxLevel) {
-            if (faithful(cur, n)) {
-                last_good = n;
-            } else {
-                first_bad = n;
-                break;
-            }
+    while (chain.level() < bound) {
+        chain.advance_to(std::min(chain.level() + stride, bound));
+        if (faithful(chain, chain.level())) {
+            last_good = chain.level();
+            snap = chain;
+        } else {
+            first_bad = chain.level();
+            break;
         }
     }
     if (first_bad < 0) {
-        return last_good;  // clean through the probe bound
+        return last_good;  // clean through the physics bound
     }
-    seed(prev, cur);
-    for (int n = 1; n <= last_good; ++n) {
-        advance(prev, cur, n);  // replay the verified prefix, no checks
-    }
-    for (int n = last_good + 1; n < first_bad; ++n) {
-        advance(prev, cur, n);
-        if (!faithful(cur, n)) {
-            return n - 1;
+    while (first_bad - last_good > 1) {
+        const int mid = last_good + (first_bad - last_good) / 2;
+        chain = snap;
+        chain.advance_to(mid);
+        if (faithful(chain, mid)) {
+            last_good = mid;
+            snap = std::move(chain);
+        } else {
+            first_bad = mid;
         }
     }
-    return first_bad - 1;
+    return last_good;
 }
 
 // Ladder step computed in the truncated Fock basis |0..n_top> -- the
@@ -247,61 +364,60 @@ inline double ladder_fock(Field1D& psi, double omega, bool up, int n_top,
                           double vanish_eps = 1e-6) {
     const Grid1D& g = psi.grid();
     const double h = g.spacing();
-    const int nb = (up ? n_top + 1 : n_top) + 1;  // up shifts into n_top+1
-    // Basis built by ONE incremental Hermite chain (each stored level gets
-    // its own discrete normalize, exactly ho_eigenstate's output): O(band)
-    // instead of O(band^2) -- this runs per keypress on 64k-point grids.
-    std::vector<Field1D> basis;
-    basis.reserve(static_cast<std::size_t>(nb));
-    {
-        const double pi = 3.14159265358979323846;
-        Field1D prev{g};
-        Field1D cur{g};
-        const double a0 = std::pow(omega / pi, 0.25);
-        for (int i = 0; i < g.n; ++i) {
-            const double x = g.coord(i);
-            cur[i] = a0 * std::exp(-0.5 * omega * x * x);
+    const double psi_n2 = norm_sq(psi);
+    // Pass 1: project c_n = <n|psi> level by level off ONE scaled chain --
+    // no basis storage (the old stored basis was O(band * grid) memory,
+    // which forbade deep bands). EARLY STOP once the scanned band has
+    // captured all but 1e-10 of the state: every unscanned |c_n|^2 is then
+    // bounded by that leftover, so the residual claim stays honest and the
+    // common case (a low superposition under a deep band top) costs only
+    // the levels the state actually occupies. Per-level sums use the
+    // chunk-ordered parallel reduction (bitwise-deterministic).
+    struct DotAcc {
+        std::complex<double> dot{};
+        double n2 = 0.0;
+        DotAcc& operator+=(const DotAcc& o) {
+            dot += o.dot;
+            n2 += o.n2;
+            return *this;
         }
-        for (int n = 0; n < nb; ++n) {
-            if (n > 0) {
-                const double c1 = std::sqrt(2.0 * omega / n);
-                const double c2 = std::sqrt(static_cast<double>(n - 1) / n);
-                Field1D next{g};
-                for (int i = 0; i < g.n; ++i) {
-                    next[i] = c1 * g.coord(i) * cur[i] - c2 * prev[i];
-                }
-                prev = std::move(cur);
-                cur = std::move(next);
-            }
-            Field1D level = cur;
-            normalize(level);
-            basis.push_back(std::move(level));
-        }
-    }
-    std::vector<std::complex<double>> c(static_cast<std::size_t>(n_top + 1));
+    };
+    ladder_detail::ScaledChain chain{g, omega};
+    std::vector<std::complex<double>> c;
+    std::vector<double> inv_norm;  // 1 / ||chain level||_h, cached for pass 2
     double inside = 0.0;
     for (int n = 0; n <= n_top; ++n) {
-        std::complex<double> acc{};
-        for (int i = 0; i < g.n; ++i) {
-            acc += std::conj(basis[static_cast<std::size_t>(n)][i]) * psi[i];
+        chain.advance_to(n);
+        const DotAcc acc =
+            parallel_sum(g.n, DotAcc{}, [&](int i) {
+                const double val = chain.value(i);
+                return DotAcc{val * psi[i], val * val};
+            });
+        const double inv = 1.0 / std::sqrt(acc.n2 * h);
+        inv_norm.push_back(inv);
+        c.push_back(acc.dot * h * inv);
+        inside += std::norm(c.back());
+        if (inside >= (1.0 - 1e-10) * psi_n2) {
+            break;  // the band holds the whole state; higher c_n ~ 0
         }
-        c[static_cast<std::size_t>(n)] = acc * h;
-        inside += std::norm(c[static_cast<std::size_t>(n)]);
     }
-    const double residual = std::max(0.0, 1.0 - inside / norm_sq(psi));
+    const int m = static_cast<int>(c.size()) - 1;  // last projected level
+    const double residual = std::max(0.0, 1.0 - inside / psi_n2);
     if (out_residual != nullptr) {
         *out_residual = residual;
     }
-    std::vector<std::complex<double>> d(static_cast<std::size_t>(nb));
+    // Exact coefficient action on the scanned band.
+    const int nd = m + (up ? 2 : 1);
+    std::vector<std::complex<double>> d(static_cast<std::size_t>(nd));
     double norm2 = 0.0;
     if (up) {
-        for (int n = 0; n <= n_top; ++n) {
+        for (int n = 0; n <= m; ++n) {
             d[static_cast<std::size_t>(n + 1)] =
                 std::sqrt(n + 1.0) * c[static_cast<std::size_t>(n)];
             norm2 += (n + 1.0) * std::norm(c[static_cast<std::size_t>(n)]);
         }
     } else {
-        for (int n = 0; n + 1 <= n_top; ++n) {
+        for (int n = 0; n + 1 <= m; ++n) {
             d[static_cast<std::size_t>(n)] =
                 std::sqrt(n + 1.0) * c[static_cast<std::size_t>(n + 1)];
             norm2 += (n + 1.0) * std::norm(c[static_cast<std::size_t>(n + 1)]);
@@ -310,15 +426,35 @@ inline double ladder_fock(Field1D& psi, double omega, bool up, int n_top,
     if (residual > 0.5 || norm2 < vanish_eps) {
         return norm2;  // outside the band, or annihilated: psi untouched
     }
-    const double inv = 1.0 / std::sqrt(norm2);
-    for (int i = 0; i < g.n; ++i) {
-        std::complex<double> acc{};
-        for (int n = 0; n < nb; ++n) {
-            acc += d[static_cast<std::size_t>(n)] *
-                   basis[static_cast<std::size_t>(n)][i];
+    // Pass 2: resynthesize psi = sum d_n |n> off a fresh chain, reusing the
+    // cached level norms (the up-shift's top level n = m + 1 was not normed
+    // in pass 1; it is measured here the same way).
+    std::vector<std::complex<double>> out(static_cast<std::size_t>(g.n));
+    ladder_detail::ScaledChain synth{g, omega};
+    for (int n = 0; n < nd; ++n) {
+        synth.advance_to(n);
+        if (d[static_cast<std::size_t>(n)] == std::complex<double>{}) {
+            continue;
         }
-        psi[i] = inv * acc;
+        double inv = 0.0;
+        if (n < static_cast<int>(inv_norm.size())) {
+            inv = inv_norm[static_cast<std::size_t>(n)];
+        } else {
+            const double lvl_n2 = parallel_sum(g.n, 0.0, [&](int i) {
+                const double val = synth.value(i);
+                return val * val;
+            });
+            inv = 1.0 / std::sqrt(lvl_n2 * h);
+        }
+        const std::complex<double> w = d[static_cast<std::size_t>(n)] * inv;
+        parallel_for(g.n, [&](int i) {
+            out[static_cast<std::size_t>(i)] += w * synth.value(i);
+        });
     }
+    const double inv_total = 1.0 / std::sqrt(norm2);
+    parallel_for(g.n, [&](int i) {
+        psi[i] = inv_total * out[static_cast<std::size_t>(i)];
+    });
     return norm2;
 }
 
