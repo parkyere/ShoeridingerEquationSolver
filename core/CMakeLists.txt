@@ -37,6 +37,7 @@ target_sources(sesolver_core
         src/observables.ixx
         src/ladder.ixx
         src/phasor.ixx
+        src/spectrum1d.ixx
         src/rotation.ixx
         src/propagator.ixx
         src/imaginary_time.ixx

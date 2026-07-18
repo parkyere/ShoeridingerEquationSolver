@@ -68,6 +68,45 @@ inline std::vector<double> soft_coulomb_potential(const Grid3D& g, double Z, dou
     return v;
 }
 
+// V(x) = vb ((x/a)^2 - 1)^2: symmetric quartic double well -- minima V = 0
+// at +-a, barrier vb at the origin (the tunneling-oscillation scene).
+inline std::vector<double> double_well_potential(const Grid1D& g, double vb, double a) {
+    std::vector<double> v(static_cast<std::size_t>(g.n));
+    for (int i = 0; i < g.n; ++i) {
+        const double s = g.coord(i) / a;
+        const double q = s * s - 1.0;
+        v[static_cast<std::size_t>(i)] = vb * q * q;
+    }
+    return v;
+}
+
+// V(x) = -v0 sech^2((x - x0)/a): the Poschl-Teller well. At the magic
+// depths v0 = l(l+1)/(2 a^2), integer l, it is REFLECTIONLESS for every
+// incident energy (the KdV soliton potential).
+inline std::vector<double> poschl_teller_potential(const Grid1D& g, double v0,
+                                                   double a, double x0 = 0.0) {
+    std::vector<double> v(static_cast<std::size_t>(g.n));
+    for (int i = 0; i < g.n; ++i) {
+        const double c = std::cosh((g.coord(i) - x0) / a);
+        v[static_cast<std::size_t>(i)] = -v0 / (c * c);
+    }
+    return v;
+}
+
+// V(x) = d (1 - e^{-alpha (x - x0)})^2: the Morse well -- minimum 0 at x0,
+// dissociation limit d on the right, steep exponential wall on the left.
+// Exactly solvable: E_n = w0 (n + 1/2) - (alpha^2/2)(n + 1/2)^2 with
+// w0 = alpha sqrt(2 d) (the anharmonic vibrational ladder).
+inline std::vector<double> morse_potential(const Grid1D& g, double d,
+                                           double alpha, double x0) {
+    std::vector<double> v(static_cast<std::size_t>(g.n));
+    for (int i = 0; i < g.n; ++i) {
+        const double q = 1.0 - std::exp(-alpha * (g.coord(i) - x0));
+        v[static_cast<std::size_t>(i)] = d * q * q;
+    }
+    return v;
+}
+
 // Integral of 1/r over the unit cube centered at the origin (verified to 7
 // digits by quadrature); cell average of -Z/r over the nucleus cell is
 // -Z * this / h.
