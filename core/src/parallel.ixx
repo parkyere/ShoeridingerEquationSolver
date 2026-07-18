@@ -177,7 +177,14 @@ private:
     std::vector<std::jthread> threads_;
 };
 
-inline Pool& pool() {
+// NON-inline on purpose: an `inline` function in a module interface is
+// instantiated per importing TU, and MSVC can DUPLICATE its function-local
+// static across those instantiations -- two Pool objects, one of them
+// never constructed, and a worker dereferences a null mutex at runtime
+// (bit us via the 2D lattice scenes; kin of the OpenMP-in-module-interface
+// miscompile this pool replaced). A module-linkage function is compiled
+// exactly once, so there is exactly ONE pool.
+Pool& pool() {
     static Pool p;  // jthread: stops and joins at static destruction
     return p;
 }

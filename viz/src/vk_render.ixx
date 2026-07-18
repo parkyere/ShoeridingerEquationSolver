@@ -129,7 +129,7 @@ public:
         float g = 1.0f;
         float b = 1.0f;
     };
-    static constexpr int kMaxMarkers = 16;
+    static constexpr int kMaxMarkers = 64;  // the 48-adatom corral fits
 
     // Per-frame inputs computed by the shell. Non-null mesh/volume_staging
     // pointers request a (re)upload before the pass records.

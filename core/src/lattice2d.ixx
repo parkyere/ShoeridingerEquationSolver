@@ -142,21 +142,7 @@ public:
         return link_y_[static_cast<std::size_t>(j * nx_ + i)];
     }
 
-    void step(Field3D& psi, int nsteps = 1) const {
-        assert(psi.data().size() == half_v_.size());
-        std::vector<std::complex<double>>& a = psi.data();
-        for (int s = 0; s < nsteps; ++s) {
-            phase(a, half_v_);
-            sweep_x(a, 0, cx_, {0.0, sx_});
-            sweep_x(a, 1, cx_, {0.0, sx_});
-            sweep_y(a, 0, cy_, {0.0, sy_});
-            sweep_y(a, 1, cy2_, {0.0, sy2_});
-            sweep_y(a, 0, cy_, {0.0, sy_});
-            sweep_x(a, 1, cx_, {0.0, sx_});
-            sweep_x(a, 0, cx_, {0.0, sx_});
-            phase(a, half_v_);
-        }
-    }
+    void step(Field3D& psi, int nsteps = 1) const;
 
     // Imaginary-time relaxation toward the ground state: the SAME bond
     // splitting with cosh/sinh mixing (e^{-tau H_bond} since the bond
@@ -164,106 +150,26 @@ public:
     // every step. The LINK PHASES ride along, so this can relax the
     // ground of a dot IN a magnetic field (the Fock-Darwin ground) --
     // out of reach for any B = 0 imaginary-time machinery.
-    void relax(Field3D& psi, int nsteps = 1) const {
-        assert(psi.data().size() == half_v_.size());
-        std::vector<std::complex<double>>& a = psi.data();
-        for (int s = 0; s < nsteps; ++s) {
-            phase(a, relax_half_v_);
-            sweep_x(a, 0, rcx_, {rsx_, 0.0});
-            sweep_x(a, 1, rcx_, {rsx_, 0.0});
-            sweep_y(a, 0, rcy_, {rsy_, 0.0});
-            sweep_y(a, 1, rcy2_, {rsy2_, 0.0});
-            sweep_y(a, 0, rcy_, {rsy_, 0.0});
-            sweep_x(a, 1, rcx_, {rsx_, 0.0});
-            sweep_x(a, 0, rcx_, {rsx_, 0.0});
-            phase(a, relax_half_v_);
-            normalize(psi);
-        }
-    }
+    void relax(Field3D& psi, int nsteps = 1) const;
 
     // <H> = hops + onsite (V + 2tx + 2ty), normalized -- the live energy
     // readout (and the relax convergence check).
-    double energy(const Field3D& psi) const {
-        double e = 0.0;
-        double den = 0.0;
-        for (int j = 0; j < ny_; ++j) {
-            for (int i = 0; i < nx_; ++i) {
-                const std::complex<double> z = psi(i, j, 0);
-                const double w = std::norm(z);
-                den += w;
-                e += (v_[static_cast<std::size_t>(g_->flat(i, j, 0))] +
-                      2.0 * tx_ + 2.0 * ty_) *
-                     w;
-                if (i + 1 < nx_) {
-                    e += -tx_ * 2.0 *
-                         (std::conj(z) * link_x(i, j) * psi(i + 1, j, 0))
-                             .real();
-                }
-                if (j + 1 < ny_) {
-                    e += -ty_ * 2.0 *
-                         (std::conj(z) * link_y(i, j) * psi(i, j + 1, 0))
-                             .real();
-                }
-            }
-        }
-        return e / den;
-    }
+    double energy(const Field3D& psi) const;
 
 private:
     void phase(std::vector<std::complex<double>>& a,
-               const std::vector<std::complex<double>>& table) const {
-        parallel_for(static_cast<int>(a.size()), [&](int i) {
-            a[static_cast<std::size_t>(i)] *=
-                table[static_cast<std::size_t>(i)];
-        });
-    }
+               const std::vector<std::complex<double>>& table) const;
 
     // One x-bond group (bonds (i, i+1) with i of the given parity), all
     // rows: rows are independent, bonds within a row disjoint by parity.
     // mix = i*sin for real time, sinh (real) for imaginary time.
     void sweep_x(std::vector<std::complex<double>>& a, int parity, double c,
-                 std::complex<double> mix) const {
-        parallel_for(ny_, [&](int j) {
-            const std::size_t row = static_cast<std::size_t>(j * nx_);
-            for (int i = parity; i + 1 < nx_; i += 2) {
-                const std::complex<double> u =
-                    link_x_[row + static_cast<std::size_t>(i)];
-                const std::complex<double> pa =
-                    a[row + static_cast<std::size_t>(i)];
-                const std::complex<double> pb =
-                    a[row + static_cast<std::size_t>(i + 1)];
-                a[row + static_cast<std::size_t>(i)] = c * pa + mix * u * pb;
-                a[row + static_cast<std::size_t>(i + 1)] =
-                    mix * std::conj(u) * pa + c * pb;
-            }
-        });
-    }
+                 std::complex<double> mix) const;
 
     // One y-bond group (bonds (j, j+1) with j of the given parity):
     // bond-rows are disjoint by parity, x runs contiguous inside.
     void sweep_y(std::vector<std::complex<double>>& a, int parity, double c,
-                 std::complex<double> mix) const {
-        const int rows = (ny_ - 1 - parity + 1) / 2;  // j = parity, +2, ...
-        parallel_for(rows, [&](int r) {
-            const int j = parity + 2 * r;
-            if (j + 1 >= ny_) {
-                return;
-            }
-            const std::size_t lo = static_cast<std::size_t>(j * nx_);
-            const std::size_t hi = static_cast<std::size_t>((j + 1) * nx_);
-            for (int i = 0; i < nx_; ++i) {
-                const std::complex<double> u =
-                    link_y_[lo + static_cast<std::size_t>(i)];
-                const std::complex<double> pa =
-                    a[lo + static_cast<std::size_t>(i)];
-                const std::complex<double> pb =
-                    a[hi + static_cast<std::size_t>(i)];
-                a[lo + static_cast<std::size_t>(i)] = c * pa + mix * u * pb;
-                a[hi + static_cast<std::size_t>(i)] =
-                    mix * std::conj(u) * pa + c * pb;
-            }
-        });
-    }
+                 std::complex<double> mix) const;
 
     const Grid3D* g_;
     int nx_;
@@ -283,5 +189,123 @@ private:
     std::vector<std::complex<double>> link_x_;
     std::vector<std::complex<double>> link_y_;
 };
+
+
+// Out-of-class definitions ON PURPOSE: members defined outside the class
+// in a module interface are NOT implicitly inline, so they are compiled
+// exactly once, in THIS module's TU. Defined in-class they were compiled
+// per importer, and one importing scene TU's instantiation of the
+// parallel_for bodies crashed a pool worker at runtime (MSVC modules
+// codegen roulette; kin of the OpenMP-in-module-interface miscompile
+// that begat ses.parallel). One canonical copy, no roulette.
+
+void PeierlsLattice2D::phase(
+    std::vector<std::complex<double>>& a,
+    const std::vector<std::complex<double>>& table) const {
+    parallel_for(static_cast<int>(a.size()), [&](int i) {
+        a[static_cast<std::size_t>(i)] *= table[static_cast<std::size_t>(i)];
+    });
+}
+
+void PeierlsLattice2D::sweep_x(std::vector<std::complex<double>>& a,
+                               int parity, double c,
+                               std::complex<double> mix) const {
+    parallel_for(ny_, [&](int j) {
+        const std::size_t row = static_cast<std::size_t>(j * nx_);
+        for (int i = parity; i + 1 < nx_; i += 2) {
+            const std::complex<double> u =
+                link_x_[row + static_cast<std::size_t>(i)];
+            const std::complex<double> pa =
+                a[row + static_cast<std::size_t>(i)];
+            const std::complex<double> pb =
+                a[row + static_cast<std::size_t>(i + 1)];
+            a[row + static_cast<std::size_t>(i)] = c * pa + mix * u * pb;
+            a[row + static_cast<std::size_t>(i + 1)] =
+                mix * std::conj(u) * pa + c * pb;
+        }
+    });
+}
+
+void PeierlsLattice2D::sweep_y(std::vector<std::complex<double>>& a,
+                               int parity, double c,
+                               std::complex<double> mix) const {
+    const int rows = (ny_ - 1 - parity + 1) / 2;  // j = parity, +2, ...
+    parallel_for(rows, [&](int r) {
+        const int j = parity + 2 * r;
+        if (j + 1 >= ny_) {
+            return;
+        }
+        const std::size_t lo = static_cast<std::size_t>(j * nx_);
+        const std::size_t hi = static_cast<std::size_t>((j + 1) * nx_);
+        for (int i = 0; i < nx_; ++i) {
+            const std::complex<double> u =
+                link_y_[lo + static_cast<std::size_t>(i)];
+            const std::complex<double> pa =
+                a[lo + static_cast<std::size_t>(i)];
+            const std::complex<double> pb =
+                a[hi + static_cast<std::size_t>(i)];
+            a[lo + static_cast<std::size_t>(i)] = c * pa + mix * u * pb;
+            a[hi + static_cast<std::size_t>(i)] =
+                mix * std::conj(u) * pa + c * pb;
+        }
+    });
+}
+
+void PeierlsLattice2D::step(Field3D& psi, int nsteps) const {
+    assert(psi.data().size() == half_v_.size());
+    std::vector<std::complex<double>>& a = psi.data();
+    for (int s = 0; s < nsteps; ++s) {
+        phase(a, half_v_);
+        sweep_x(a, 0, cx_, {0.0, sx_});
+        sweep_x(a, 1, cx_, {0.0, sx_});
+        sweep_y(a, 0, cy_, {0.0, sy_});
+        sweep_y(a, 1, cy2_, {0.0, sy2_});
+        sweep_y(a, 0, cy_, {0.0, sy_});
+        sweep_x(a, 1, cx_, {0.0, sx_});
+        sweep_x(a, 0, cx_, {0.0, sx_});
+        phase(a, half_v_);
+    }
+}
+
+void PeierlsLattice2D::relax(Field3D& psi, int nsteps) const {
+    assert(psi.data().size() == half_v_.size());
+    std::vector<std::complex<double>>& a = psi.data();
+    for (int s = 0; s < nsteps; ++s) {
+        phase(a, relax_half_v_);
+        sweep_x(a, 0, rcx_, {rsx_, 0.0});
+        sweep_x(a, 1, rcx_, {rsx_, 0.0});
+        sweep_y(a, 0, rcy_, {rsy_, 0.0});
+        sweep_y(a, 1, rcy2_, {rsy2_, 0.0});
+        sweep_y(a, 0, rcy_, {rsy_, 0.0});
+        sweep_x(a, 1, rcx_, {rsx_, 0.0});
+        sweep_x(a, 0, rcx_, {rsx_, 0.0});
+        phase(a, relax_half_v_);
+        normalize(psi);
+    }
+}
+
+double PeierlsLattice2D::energy(const Field3D& psi) const {
+    double e = 0.0;
+    double den = 0.0;
+    for (int j = 0; j < ny_; ++j) {
+        for (int i = 0; i < nx_; ++i) {
+            const std::complex<double> z = psi(i, j, 0);
+            const double w = std::norm(z);
+            den += w;
+            e += (v_[static_cast<std::size_t>(g_->flat(i, j, 0))] +
+                  2.0 * tx_ + 2.0 * ty_) *
+                 w;
+            if (i + 1 < nx_) {
+                e += -tx_ * 2.0 *
+                     (std::conj(z) * link_x(i, j) * psi(i + 1, j, 0)).real();
+            }
+            if (j + 1 < ny_) {
+                e += -ty_ * 2.0 *
+                     (std::conj(z) * link_y(i, j) * psi(i, j + 1, 0)).real();
+            }
+        }
+    }
+    return e / den;
+}
 
 }  // namespace ses
