@@ -24,6 +24,8 @@ target_sources(ses_scenario
         src/ptwell1d_director.ixx
         src/morse1d_director.ixx
         src/doubleslit2d_director.ixx
+        src/landau2d_director.ixx
+        src/bloch1d_director.ixx
         src/molecule_director.ixx
         src/selftest_arcs.ixx)
 target_compile_features(ses_scenario PUBLIC cxx_std_20)

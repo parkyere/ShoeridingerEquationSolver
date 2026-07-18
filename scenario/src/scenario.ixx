@@ -161,6 +161,40 @@ struct SlitApi {
     virtual double screen_at(double y) const = 0;
 };
 
+// Landau / cyclotron scene: uniform B along z on the 2D lattice.
+struct LandauApi {
+    virtual ~LandauApi() = default;
+    virtual void set_field(double b) = 0;
+    virtual double field() const = 0;
+    virtual void set_k0(double k0) = 0;
+    virtual double k0() const = 0;
+    virtual void refire() = 0;
+    virtual double omega_c() const = 0;       // = B
+    virtual double radius_pred() const = 0;   // k0 / B
+    virtual double orbit_x() const = 0;       // live <x>
+    virtual double orbit_y() const = 0;       // live <y>
+    virtual double mean_n() const = 0;        // <E>/B - 1/2 (Landau index)
+    // Recorded AT the crossings (step-chunk granularity; arcs poll far
+    // too coarsely to catch an orbital phase): distance from the T/2
+    // antipode and from the T = 2 pi / B start point. -1 until reached.
+    virtual double antipode_dist() const = 0;
+    virtual double closure_dist() const = 0;
+};
+
+// 1D periodic-lattice (Bloch) scene: V0 sin^2(kL x) + tilt force F.
+struct BlochApi {
+    virtual ~BlochApi() = default;
+    virtual void set_depth(double v0) = 0;
+    virtual double depth() const = 0;
+    virtual void set_force(double f) = 0;
+    virtual double force() const = 0;
+    virtual void refire() = 0;
+    virtual double bloch_period() const = 0;  // G/F (0 = no tilt)
+    virtual double quasimomentum() const = 0; // q(t) folded to the BZ
+    virtual double mean_x() const = 0;        // live <x>
+    virtual double excursion() const = 0;     // max |<x> - x0| since fire
+};
+
 // A 1D-scene overlay primitive: packed (x, y, z) float triples drawn in
 // world space with a constant color -- a LINE_STRIP polyline, or with
 // `fill` a TRIANGLE_STRIP sheet (the faint xy reference plane). When
@@ -204,6 +238,8 @@ public:
     virtual MorseApi* morse() { return nullptr; }
     virtual MoleculeApi* molecule() { return nullptr; }
     virtual SlitApi* slit() { return nullptr; }
+    virtual LandauApi* landau() { return nullptr; }
+    virtual BlochApi* bloch() { return nullptr; }
 
     // 1D-scene overlay polylines (phasor curve + potential profile); the 3D
     // scenes return 0 and the renderer draws nothing extra.

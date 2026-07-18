@@ -42,6 +42,12 @@ struct UiState {
     float ds_sep = 8.0f;
     float ds_width = 2.0f;
     float ds_flux_pi = 0.0f;
+    // Landau scene: field strength and launch momentum.
+    float la_b = 0.4f;
+    float la_k0 = 1.5f;
+    // Bloch lattice: well depth and tilt force.
+    float bl_v0 = 1.5f;
+    float bl_f = 0.05f;
 };
 
 // The x/y/z axis-cycle button shared by the cross-section controls.
@@ -511,6 +517,93 @@ void draw_doubleslit_panel(ShellT& shell, UiState& ui,
                           "everywhere the electron goes.");
     }
     ImGui::Text("Transmitted: %.1f%%", 100.0 * sl.transmitted_fraction());
+    draw_time_scale(shell, ui);
+    ImGui::Separator();
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(shell.status_text().c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::End();
+}
+
+// Landau / cyclotron panel: field and launch-momentum knobs.
+template <typename ShellT>
+void draw_landau_panel(ShellT& shell, UiState& ui, ses_shell::LandauApi& la) {
+    ImGui::SetNextWindowPos(ImVec2(8, 8), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(430, 0), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_NoCollapse);
+    draw_scene_picker(shell);
+    draw_perf_readout(shell);
+    if (ImGui::Button("Refire (2)")) shell.press('2');
+    ImGui::SameLine();
+    if (ImGui::Button("Pause (Space)")) shell.toggle_pause();
+    ImGui::SameLine();
+    if (ImGui::Button("Face z (Z)")) shell.snap_camera_z();
+    if (ImGui::SliderFloat("Field B (au)", &ui.la_b, 0.15f, 1.2f, "%.2f")) {
+        la.set_field(static_cast<double>(ui.la_b));
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Uniform B along z (exact plaquette flux).\n"
+                          "omega_c = B; Landau levels E_n = B(n + 1/2).");
+    }
+    if (ImGui::SliderFloat("Launch k0 (au)", &ui.la_k0, 0.5f, 2.5f,
+                           "%.2f")) {
+        la.set_k0(static_cast<double>(ui.la_k0));
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Cyclotron radius r = k0 / B: the amber circle "
+                          "is the prediction,\nthe white trail is the "
+                          "measured <r>(t).");
+    }
+    ImGui::Text("omega_c = %.2f, r = %.2f, <n> = %.1f", la.omega_c(),
+                la.radius_pred(), la.mean_n());
+    draw_time_scale(shell, ui);
+    ImGui::Separator();
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(shell.status_text().c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::End();
+}
+
+// Bloch lattice panel: well depth and tilt-force knobs.
+template <typename ShellT>
+void draw_bloch_panel(ShellT& shell, UiState& ui, ses_shell::BlochApi& bl) {
+    ImGui::SetNextWindowPos(ImVec2(8, 8), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(430, 0), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_NoCollapse);
+    draw_scene_picker(shell);
+    draw_perf_readout(shell);
+    if (ImGui::Button("Refire (2)")) shell.press('2');
+    ImGui::SameLine();
+    if (ImGui::Button("Pause (Space)")) shell.toggle_pause();
+    ImGui::SameLine();
+    if (ImGui::Button("Face z (Z)")) shell.snap_camera_z();
+    if (ImGui::SliderFloat("Lattice depth V0", &ui.bl_v0, 0.0f, 4.0f,
+                           "%.2f")) {
+        bl.set_depth(static_cast<double>(ui.bl_v0));
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("V0 sin^2(kL x) -- smooth (spectral accuracy; a "
+                          "Kronig-Penney\nstep would Gibbs-ring in the FFT "
+                          "basis). Deeper -> flatter bands,\nwider gaps "
+                          "(first gap ~ V0/2 when weak).");
+    }
+    if (ImGui::SliderFloat("Tilt force F", &ui.bl_f, 0.0f, 0.15f,
+                           "%.3f")) {
+        bl.set_force(static_cast<double>(ui.bl_f));
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Uniform force (comoving gauge, exact): q sweeps "
+                          "the zone at rate F.\nInstead of accelerating "
+                          "away the packet OSCILLATES -- Bloch\nperiod "
+                          "T_B = 2 kL / F. Watch the cyan marker wrap the "
+                          "inset.");
+    }
+    if (bl.force() > 0.0) {
+        ImGui::Text("T_Bloch = %.0f au, q = %+.2f, max |dx| = %.1f",
+                    bl.bloch_period(), bl.quasimomentum(), bl.excursion());
+    } else {
+        ImGui::Text("No tilt: band-limited dispersion only");
+    }
     draw_time_scale(shell, ui);
     ImGui::Separator();
     ImGui::PushTextWrapPos(0.0f);

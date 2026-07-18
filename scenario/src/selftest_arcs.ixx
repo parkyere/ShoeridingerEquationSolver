@@ -867,6 +867,85 @@ void register_verification_arcs(ShellT* shell) {
         });
     }
 
+    // Landau arc (main forces --scene=landau2d): ride one cyclotron
+    // period -- antipode at T/2, home at T -- SIM-TIME polled.
+    if (shell->has_arg("--selftest-landau")) {
+        shell->sched().after(1000, [shell] {
+            selftest_scene_wait_running(shell, "landau2d", 0, [shell](
+                                                                  bool runs) {
+                auto* la = shell->la();
+                if (!runs || la == nullptr) {
+                    std::fprintf(stderr, "selftest-landau: scene not "
+                                         "running or no api  [FAIL]\n");
+                    shell->request_exit(1);
+                    return;
+                }
+                const double pi = 3.14159265358979323846;
+                const double r = la->radius_pred();
+                const double period = 2.0 * pi / la->omega_c();
+                shell->set_time_scale(16);
+                // The DIRECTOR records the antipode/closure distances at
+                // the actual crossings (step-chunk granularity); the arc
+                // only has to wait PAST the period and read them --
+                // sim-time polls are far too coarse for orbital phase.
+                selftest_wait_sim_time(shell, 1.1 * period, 0, [shell,
+                                                                r](bool ok1) {
+                    const double anti = shell->la()->antipode_dist();
+                    const double home = shell->la()->closure_dist();
+                    const bool pass = ok1 && anti >= 0.0 && home >= 0.0 &&
+                                      anti < 0.25 * r && home < 0.25 * r;
+                    std::fprintf(stderr,
+                                 "selftest-landau: r = %.2f, antipode "
+                                 "miss %.2f, closure miss %.2f  [%s]\n",
+                                 r, anti, home, pass ? "PASS" : "FAIL");
+                    shell->request_exit(pass ? 0 : 1);
+                });
+            });
+        });
+    }
+
+    // Bloch arc (main forces --scene=bloch1d): one Bloch period under the
+    // tilt -- the packet must stay BOUNDED (no runaway) and come home,
+    // while a free particle would have fallen F T_B^2 / 2 away.
+    if (shell->has_arg("--selftest-bloch")) {
+        shell->sched().after(1000, [shell] {
+            selftest_scene_wait_running(shell, "bloch1d", 0, [shell](
+                                                                 bool runs) {
+                auto* bl = shell->bl();
+                if (!runs || bl == nullptr) {
+                    std::fprintf(stderr, "selftest-bloch: scene not "
+                                         "running or no api  [FAIL]\n");
+                    shell->request_exit(1);
+                    return;
+                }
+                const double x0 = bl->mean_x();
+                const double t_b = bl->bloch_period();
+                const double free_fall =
+                    0.5 * bl->force() * t_b * t_b;
+                shell->set_time_scale(16);
+                selftest_wait_sim_time(shell, t_b, 0, [shell, x0, t_b,
+                                                       free_fall](bool ok1) {
+                    const double dx =
+                        std::abs(shell->bl()->mean_x() - x0);
+                    const double exc = shell->bl()->excursion();
+                    const bool moved_ok = exc > 0.3;      // it DID slosh
+                    const bool bound_ok =
+                        exc < 0.15 * free_fall;           // never ran away
+                    const bool home_ok = dx < 2.0;        // and came home
+                    const bool pass =
+                        ok1 && moved_ok && bound_ok && home_ok;
+                    std::fprintf(stderr,
+                                 "selftest-bloch: T_B = %.0f, excursion "
+                                 "%.2f (free fall %.0f), |dx(T_B)| = %.2f  "
+                                 "[%s]\n",
+                                 t_b, exc, free_fall, dx,
+                                 pass ? "PASS" : "FAIL");
+                    shell->request_exit(pass ? 0 : 1);
+                });
+            });
+        });
+    }
+
     // H2+ arc (main forces --scene=h2plus): sigma_g then sigma_u at the
     // equilibrium R, then the stretched geometry -- asserting the bond:
     // E_total(R_eq) < E_total(R_far), and sigma_u above sigma_g. State

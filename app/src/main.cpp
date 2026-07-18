@@ -52,7 +52,9 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <SDL3/SDL_main.h>
+import ses.scenario.bloch1d_director;
 import ses.scenario.doubleslit2d_director;
+import ses.scenario.landau2d_director;
 import ses.scenario.tunneling_director;
 
 import app.scheduler;
@@ -85,8 +87,8 @@ constexpr std::uint64_t kTickMs = 16;
 constexpr const char* kSceneNames[] = {
     "hydrogen", "harmonic", "tunnel",  "harmonic1d",   "tunnel1d",
     "doublewell1d", "ptwell1d", "morse1d", "h2plus",   "benzene",
-    "doubleslit2d"};
-constexpr int kSceneCount = 11;
+    "doubleslit2d", "landau2d", "bloch1d"};
+constexpr int kSceneCount = 13;
 std::unique_ptr<ses_shell::ScenarioDirector> make_scene_director(int idx) {
     if (idx == 1) {
         return std::make_unique<ses_shell::HarmonicDirector>();
@@ -117,6 +119,12 @@ std::unique_ptr<ses_shell::ScenarioDirector> make_scene_director(int idx) {
     }
     if (idx == 10) {
         return std::make_unique<ses_shell::DoubleSlit2DDirector>();
+    }
+    if (idx == 11) {
+        return std::make_unique<ses_shell::Landau2DDirector>();
+    }
+    if (idx == 12) {
+        return std::make_unique<ses_shell::Bloch1DDirector>();
     }
     return std::make_unique<ses_shell::HydrogenDirector>();
 }
@@ -359,6 +367,10 @@ public:
                 }
             } else if (auto* slit = director_->slit()) {
                 app::draw_doubleslit_panel(*this, ui_, *slit);
+            } else if (auto* lnd = director_->landau()) {
+                app::draw_landau_panel(*this, ui_, *lnd);
+            } else if (auto* blc = director_->bloch()) {
+                app::draw_bloch_panel(*this, ui_, *blc);
             } else if (director_->tunnel() != nullptr) {
                 app::draw_generic_panel(*this, ui_, {});
             } else {
@@ -463,6 +475,8 @@ public:
     ses_shell::MorseApi* mo() { return director_->morse(); }
     ses_shell::MoleculeApi* ml() { return director_->molecule(); }
     ses_shell::SlitApi* sl() { return director_->slit(); }
+    ses_shell::LandauApi* la() { return director_->landau(); }
+    ses_shell::BlochApi* bl() { return director_->bloch(); }
     bool solving() const { return director_->solving(); }
     bool manifold_ready() const { return director_->scene_ready(); }
     void debug_set_camera_distance(double d) {
@@ -865,6 +879,12 @@ int main(int argc, char* argv[]) {
     } else if (std::find(args.begin(), args.end(),
                          "--selftest-doubleslit2d") != args.end()) {
         scene = "doubleslit2d";
+    } else if (std::find(args.begin(), args.end(), "--selftest-landau") !=
+               args.end()) {
+        scene = "landau2d";
+    } else if (std::find(args.begin(), args.end(), "--selftest-bloch") !=
+               args.end()) {
+        scene = "bloch1d";
     } else if (std::find(args.begin(), args.end(), "--selftest-h2p") !=
                args.end()) {
         scene = "h2plus";
@@ -904,6 +924,10 @@ int main(int argc, char* argv[]) {
         scene_index = 9;
     } else if (scene == "doubleslit2d") {
         scene_index = 10;
+    } else if (scene == "landau2d") {
+        scene_index = 11;
+    } else if (scene == "bloch1d") {
+        scene_index = 12;
     } else if (scene != "hydrogen") {
         std::fprintf(stderr, "scene: unknown '%s' -- using hydrogen\n",
                      scene.c_str());

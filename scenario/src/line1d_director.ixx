@@ -226,7 +226,8 @@ protected:
         dens_cols_ = ses::phase_band_colors(psi_, kBandAlpha);
     }
 
-    void step_batch(int n) {
+    // Overridable: the Bloch scene substitutes its tilted propagator.
+    virtual void step_batch(int n) {
         for (int s = 0; s < n; ++s) {
             prop_->step(psi_);
             if (!mask_.empty()) {
