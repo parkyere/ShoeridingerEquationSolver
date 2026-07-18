@@ -161,6 +161,9 @@ void draw_perf_readout(ShellT& shell) {
 // GPU's headroom the fps drops honestly instead of skipping physics.
 template <typename ShellT>
 void draw_time_scale(ShellT& shell, UiState& ui) {
+    // Read back director truth first: the slider must never lie after a
+    // programmatic change (e.g. Real time resets the scale to x1).
+    ui.time_scale = shell.time_scale();
     if (ImGui::SliderInt("Time scale", &ui.time_scale, 1, 16, "x%d")) {
         shell.set_time_scale(ui.time_scale);
     }

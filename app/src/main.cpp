@@ -464,6 +464,9 @@ public:
         director_->set_time_scale(scale);
         refresh_status();
     }
+    // Director truth for the panel slider: any programmatic change
+    // (set_real_time's x1 reset, clamping) must show, not the last drag.
+    int time_scale() const { return director_->time_scale(); }
     // Panel readout: achieved au/s and the 1x baseline (62.5 ticks/s x dt)
     // it is measured against.
     double sim_rate() const { return perf_sim_rate_; }
