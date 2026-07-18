@@ -56,12 +56,16 @@ public:
             step_batch(n);
             sim_time_ += n * dt_;
             display_changed_ = true;
+            psi_dirty_ = true;
             after_batch();
         }
-        // Rebuild the phasor curve and its plane shadow every frame: key
-        // handlers mutate psi between frames too, and a few n floats is
-        // trivial work.
-        rebuild_psi_display();
+        // Rebuild the phasor curve and its plane shadow only when psi
+        // actually moved (steps, key mutations, resets): the 64k-point
+        // color pass is real per-frame money, and a paused scene recomputes
+        // byte-identical arrays otherwise.
+        if (std::exchange(psi_dirty_, false)) {
+            rebuild_psi_display();
+        }
         if (title_due_) {
             title_due_ = false;
             title_dirty_ = true;
@@ -84,6 +88,7 @@ public:
         sim_time_ = 0.0;
         pending_steps_ = 0;
         display_changed_ = true;
+        psi_dirty_ = true;
         title_dirty_ = true;
         after_reset();
     }
@@ -112,7 +117,12 @@ public:
     }
     bool take_volume_dirty() override { return false; }
     bool take_mesh_dirty() override { return false; }
-    void mark_display_dirty() override { display_changed_ = true; }
+    // Scene code calls this after mutating psi in place (ladder rungs):
+    // the psi-derived curves must follow.
+    void mark_display_dirty() override {
+        display_changed_ = true;
+        psi_dirty_ = true;
+    }
     bool take_title_dirty() override { return std::exchange(title_dirty_, false); }
     const std::vector<float>& psi_staging() const override { return no_staging_; }
     const ses::Mesh& mesh() const override { return no_mesh_; }
@@ -257,6 +267,7 @@ protected:
     bool title_due_ = false;
     bool title_dirty_ = true;
     bool display_changed_ = true;
+    bool psi_dirty_ = true;  // psi moved since the last curve rebuild
     bool compute_attempted_ = false;
 
     // Loud enough to read hue, quiet enough that the white curve and the

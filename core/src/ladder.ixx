@@ -268,7 +268,18 @@ inline int ho_level_cap(const Grid1D& g, double omega) {
         v[static_cast<std::size_t>(i)] = 0.5 * omega * omega * x * x;
     }
     const std::vector<double> k = wavenumbers(g);
-    // <H> spectrally (T in k-space) + V in real space, scale-invariant.
+    // Faithful = (a) CONTAINED and (b) energy-exact.
+    // (a) catches box truncation, which the energy check CANNOT: a clipped
+    //     Hermite slice still satisfies k(x)^2/2 + V = E locally at every
+    //     sample, so its grid energy stays within ~1e-5 of (n+1/2)w even
+    //     with the turning points outside the box (measured at w = 4 on
+    //     the 65536-pt scene grid, where energy alone ran the cap into
+    //     the arbitrary probe bound). A representable eigenstate has its
+    //     tail decayed to nothing at the edges: boundary density below
+    //     1e-6 of the bulk peak.
+    // (b) catches the Nyquist side (aliased spectral <T>) and any leftover
+    //     construction error; scale-invariant, so the unnormalized chain
+    //     is fine.
     std::vector<std::complex<double>> phi(static_cast<std::size_t>(g.n));
     auto faithful = [&](const ladder_detail::ScaledChain& chain, int n) {
         parallel_for(g.n, [&](int i) {
@@ -276,10 +287,17 @@ inline int ho_level_cap(const Grid1D& g, double omega) {
         });
         double num_v = 0.0;
         double den_x = 0.0;
+        double bulk = 0.0;
         for (std::size_t j = 0; j < phi.size(); ++j) {
             const double w = std::norm(phi[j]);
             num_v += v[j] * w;
             den_x += w;
+            bulk = std::max(bulk, w);
+        }
+        const double edge = std::max(std::norm(phi.front()),
+                                     std::norm(phi.back()));
+        if (edge > 1e-6 * bulk) {
+            return false;  // leaks out of the box: not this grid's state
         }
         fft(phi);
         double num_t = 0.0;
