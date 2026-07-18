@@ -19,12 +19,14 @@ import ses.wavepacket;
 //    R knob scans E_total(R) = E_elec + 1/R -- the chemical bond is its
 //    minimum. (H2+ separates in prolate spheroidal coordinates: it is the
 //    two-center member of the "solvable" family.)
-//  - Benzene toy (six equal SOFT cores on a ring): the uniform hexagon's
-//    ground state delocalizes evenly and its first excited pair is
-//    degenerate; the Kekule 1-2-1-2 alternation keeps the pair degenerate
-//    (D3h still has the 2-dim irrep!) but piles the bond charge onto the
-//    short bonds. One-electron toy: symmetry and delocalization, NOT the
-//    full six-pi-electron aromatic stabilization.
+//  - Stripped benzene: ALL electrons removed, then the FIRST electron of
+//    C6H6^41+ over the BARE nuclei (Z_C = 6, Z_H = 1, regularized cells,
+//    centers lattice-snapped). No soft cores, no free parameters -- the
+//    project rule is bare regularized Coulomb everywhere. The low spectrum
+//    is a deep quasi-degenerate carbon-core band (inter-carbon hopping at
+//    1s(Z=6) size is ~e^{-16}: the states are core orbitals, not a
+//    delocalized pi system -- that is the honest physics of the stripped
+//    molecule's first electron).
 //
 // State preparation is a CHAIN: ITP ground, then deflated excited states
 // against the captured lower ones (fp32 state buffers, engine-resident),
@@ -58,13 +60,14 @@ public:
     }
     double nuclear_repulsion() const override {
         const std::vector<ses::Vec3d> c = centers();
+        const std::vector<double> q = charges();
         double acc = 0.0;
         for (std::size_t i = 0; i < c.size(); ++i) {
             for (std::size_t j = i + 1; j < c.size(); ++j) {
                 const double dx = c[i].x - c[j].x;
                 const double dy = c[i].y - c[j].y;
                 const double dz = c[i].z - c[j].z;
-                acc += 1.0 / std::sqrt(dx * dx + dy * dy + dz * dz);
+                acc += q[i] * q[j] / std::sqrt(dx * dx + dy * dy + dz * dz);
             }
         }
         return acc;
@@ -105,6 +108,10 @@ protected:
 
     // ---- scene hooks ----
     virtual std::vector<ses::Vec3d> centers() const = 0;
+    // Per-center effective charges (parallel to centers()); default all 1.
+    virtual std::vector<double> charges() const {
+        return std::vector<double>(centers().size(), 1.0);
+    }
     virtual ses::Field3D excited_seed(int k) const = 0;
     virtual double geometry_parameter(int variant) const = 0;
     virtual double clamp_parameter(double p) const = 0;
@@ -379,7 +386,10 @@ constexpr double kBzBox = 12.0;   // Bohr half-extent, 256^3 (h ~ 0.094)
 constexpr int kBzPoints = 256;
 constexpr double kBzDt = 0.04;
 constexpr double kBzRingR = 2.63;   // C-C 1.39 A in bohr
-constexpr double kBzSoftA = 0.8;    // soft-core pseudopotential width
+constexpr double kBzCH = 2.06;      // C-H 1.09 A in bohr: H at r + this
+// BARE nuclear charges of the stripped molecule -- nothing to calibrate.
+constexpr double kBzZC = 6.0;
+constexpr double kBzZH = 1.0;
 constexpr double kBzKekDeg = 5.0;   // Kekule angle alternation (deg)
 constexpr double kBzKekMax = 10.0;
 
@@ -396,21 +406,37 @@ public:
 
     int overlay_curve_count() const override { return 1; }
     OverlayCurve overlay_curve(int /*i*/) const override {
-        // The closed ring skeleton: the bond alternation IS visible in it.
-        return {ring_marker_.data(), 7, 1.0f, 0.45f, 0.20f, 1.0f};
+        // The closed C hexagon with C-H spokes: bond alternation AND the
+        // hydrogens are visible in the one skeleton curve.
+        return {ring_marker_.data(),
+                static_cast<int>(ring_marker_.size() / 3),
+                1.0f, 0.45f, 0.20f, 1.0f};
     }
 
 protected:
     const char* scene_name() const override {
-        return "Benzene ring (one-electron toy)";
+        return "Stripped benzene (first electron over bare nuclei)";
     }
 
     ses::WavepacketSimulation remake_simulation() const override {
         return make(param_);
     }
 
+    // Carbons first, then their hydrogens (each riding its carbon's angle);
+    // every center lattice-snapped for the bare-cell regularization.
     std::vector<ses::Vec3d> centers() const override {
-        return ring(param_);
+        std::vector<ses::Vec3d> c = snapped_ring(sim_.grid(), param_, kBzRingR);
+        const std::vector<ses::Vec3d> h =
+            snapped_ring(sim_.grid(), param_, kBzRingR + kBzCH);
+        c.insert(c.end(), h.begin(), h.end());
+        return c;
+    }
+    std::vector<double> charges() const override {
+        std::vector<double> q(12, kBzZC);
+        for (int i = 6; i < 12; ++i) {
+            q[static_cast<std::size_t>(i)] = kBzZH;
+        }
+        return q;
     }
     // In-plane displaced seeds pick up the ring-momentum pair.
     ses::Field3D excited_seed(int k) const override {
@@ -441,23 +467,26 @@ protected:
             s += strf("  E1 = %.4f", e_[1]);
         }
         if (prepared_[2]) {
-            s += strf("  E2 = %.4f (pair split %.1e: D3h keeps the "
-                      "degeneracy)",
-                      e_[2], std::abs(e_[2] - e_[1]));
+            s += strf("  E2 = %.4f (quasi-degenerate carbon-core band)",
+                      e_[2]);
         }
-        s += "  keys: 2/3/4 states; one-electron toy, not 6-pi aromaticity";
+        s += "  BARE nuclei: 6 C (Z=6) + 6 H (Z=1), regularized cells, "
+             "lattice-snapped; C6H6^41+ first electron.  keys: 2/3/4 states";
         return s;
     }
 
 private:
-    static std::vector<ses::Vec3d> ring(double delta_deg) {
+    static std::vector<ses::Vec3d> snapped_ring(const ses::Grid3D& g,
+                                                double delta_deg,
+                                                double radius) {
         const double kPi = 3.14159265358979323846;
         std::vector<ses::Vec3d> c;
         for (int i = 0; i < 6; ++i) {
             const double th =
                 kPi / 3.0 * i +
                 (i % 2 == 0 ? 1.0 : -1.0) * delta_deg * kPi / 180.0;
-            c.push_back({kBzRingR * std::cos(th), kBzRingR * std::sin(th), 0.0});
+            c.push_back(ses::snap_to_grid(
+                g, {radius * std::cos(th), radius * std::sin(th), 0.0}));
         }
         return c;
     }
@@ -465,9 +494,16 @@ private:
     static ses::WavepacketSimulation make(double delta_deg) {
         const ses::Grid1D axis{-kBzBox, kBzBox, kBzPoints};
         const ses::Grid3D grid{axis, axis, axis};
+        std::vector<double> v = ses::regularized_coulomb_potential(
+            grid, kBzZC, snapped_ring(grid, delta_deg, kBzRingR));
+        const std::vector<double> vh = ses::regularized_coulomb_potential(
+            grid, kBzZH, snapped_ring(grid, delta_deg, kBzRingR + kBzCH));
+        for (std::size_t i = 0; i < v.size(); ++i) {
+            v[i] += vh[i];
+        }
         return ses::WavepacketSimulation{ses::WavepacketSimulation::Config{
             grid,
-            ses::soft_coulomb_potential(grid, 1.0, kBzSoftA, ring(delta_deg)),
+            std::move(v),
             ses::Vec3d{},
             ses::Vec3d{1.8, 1.8, 1.2},
             ses::Vec3d{},
@@ -475,15 +511,26 @@ private:
         }};
     }
 
+    // One retraced strip: the C hexagon with a C->H spoke drawn (and
+    // retraced) at every vertex -- the full skeleton in one overlay curve.
     void rebuild_markers() {
-        const std::vector<ses::Vec3d> c = centers();
+        const ses::Grid1D axis{-kBzBox, kBzBox, kBzPoints};
+        const ses::Grid3D grid{axis, axis, axis};
+        const std::vector<ses::Vec3d> c = snapped_ring(grid, param_, kBzRingR);
+        const std::vector<ses::Vec3d> h =
+            snapped_ring(grid, param_, kBzRingR + kBzCH);
         ring_marker_.clear();
-        for (int i = 0; i <= 6; ++i) {
-            const ses::Vec3d& p = c[static_cast<std::size_t>(i % 6)];
+        auto put = [&](const ses::Vec3d& p) {
             ring_marker_.push_back(static_cast<float>(p.x));
             ring_marker_.push_back(static_cast<float>(p.y));
             ring_marker_.push_back(static_cast<float>(p.z));
+        };
+        for (int i = 0; i < 6; ++i) {
+            put(c[static_cast<std::size_t>(i)]);
+            put(h[static_cast<std::size_t>(i)]);
+            put(c[static_cast<std::size_t>(i)]);
         }
+        put(c[0]);  // close the hexagon
     }
 
     std::vector<float> ring_marker_;

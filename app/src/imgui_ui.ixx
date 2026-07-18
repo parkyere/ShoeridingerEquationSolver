@@ -110,7 +110,7 @@ void draw_scene_picker(ShellT& shell) {
                      "1D reflectionless well\0"
                      "1D Morse well\0"
                      "H2+ molecular ion\0"
-                     "Benzene ring (1e toy)\0")) {
+                     "Stripped benzene (1e)\0")) {
         shell.request_scene(cur);
     }
     if (ImGui::IsItemHovered()) {
@@ -450,9 +450,10 @@ void draw_benzene_panel(ShellT& shell, UiState& ui, ses_shell::MoleculeApi& ml) 
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("0 = the uniform ring X-ray diffraction settled "
                           "on;\n> 0 alternates the bond lengths 1-2-1-2 "
-                          "(Kekule).\nThe excited pair stays degenerate "
-                          "(D3h!) but the ground\nstate's bond charge piles "
-                          "onto the short bonds.");
+                          "(Kekule).\nBare nuclei (all electrons stripped): "
+                          "the first electron's\nstates are deep carbon-core "
+                          "orbitals, so the geometry\nchange moves the "
+                          "skeleton more than the spectrum.");
     }
     draw_time_scale(shell, ui);
     ImGui::Separator();
