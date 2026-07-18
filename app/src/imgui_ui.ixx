@@ -158,6 +158,8 @@ void draw_hydrogen_panel(ShellT& shell, UiState& ui, ses_shell::HydrogenApi& hy)
     if (ImGui::Button("Reset (R)")) shell.reset_simulation();
     ImGui::SameLine();
     if (ImGui::Button("Pause (Space)")) shell.toggle_pause();
+    ImGui::SameLine();
+    if (ImGui::Button("Face z (Z)")) shell.snap_camera_z();
 
     // Partial projective measurements: one quantum number, one degenerate
     // subspace -- superpositions inside it survive the collapse.
@@ -280,6 +282,8 @@ void draw_generic_panel(ShellT& shell, UiState& ui,
     if (ImGui::Button("Cloud/Surface (Tab)")) shell.toggle_view_mode();
     ImGui::SameLine();
     if (ImGui::Button("Pause (Space)")) shell.toggle_pause();
+    ImGui::SameLine();
+    if (ImGui::Button("Face z (Z)")) shell.snap_camera_z();
     draw_time_scale(shell, ui);
     ImGui::Separator();
     ImGui::PushTextWrapPos(0.0f);
@@ -313,6 +317,13 @@ void draw_ladder1d_panel(ShellT& shell, UiState& ui, ses_shell::Ladder1dApi& ld)
     if (ImGui::Button("Reset (R)")) shell.reset_simulation();
     ImGui::SameLine();
     if (ImGui::Button("Pause (Space)")) shell.toggle_pause();
+    ImGui::SameLine();
+    if (ImGui::Button("Face z (Z)")) shell.snap_camera_z();
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Snap the camera onto the +z axis: the textbook "
+                          "straight-on view\n(x right, y up; the phasor "
+                          "twist goes into the screen).");
+    }
     if (ImGui::SliderFloat("Well omega (au)", &ui.ho_omega, 0.05f, 4.0f,
                            "%.2f")) {
         ld.set_omega(static_cast<double>(ui.ho_omega));

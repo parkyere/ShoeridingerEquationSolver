@@ -100,9 +100,10 @@ struct RenderKernels {
 
 class SceneRenderer {
 public:
-    // A 1D-scene overlay polyline: packed (x, y, z) float triples drawn as
-    // one LINE_STRIP in world space with a constant color (the phasor curve
-    // is white, the potential profile red -- no phase hue in the 1D scenes).
+    // A 1D-scene overlay primitive: packed (x, y, z) float triples drawn in
+    // world space with a constant color -- a LINE_STRIP polyline (the white
+    // phasor curve, the red potential profile) or, with `fill`, a
+    // TRIANGLE_STRIP sheet (the faint xy reference plane).
     struct OverlayCurve {
         const float* xyz = nullptr;  // 3 * count floats, valid through render()
         int count = 0;               // vertices
@@ -110,6 +111,7 @@ public:
         float g = 1.0f;
         float b = 1.0f;
         float a = 1.0f;              // coverage; rgb premultiplied at draw
+        bool fill = false;           // triangle strip instead of line strip
     };
     static constexpr int kMaxOverlayCurves = 4;
 
@@ -452,17 +454,18 @@ public:
         // top of either view: one LINE_STRIP per curve out of the shared
         // packed SSBO, constant premultiplied color via push constant.
         if (in.overlay_count > 0 && overlay_pipe_ != VK_NULL_HANDLE) {
-            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                              overlay_pipe_);
             vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                     overlay_pl_, 0, 1, &overlay_set_, 0,
                                     nullptr);
             const int nc = std::min(in.overlay_count, kMaxOverlayCurves);
             for (int c = 0; c < nc; ++c) {
                 const OverlayCurve& cv = in.overlay[c];
-                if (cv.xyz == nullptr || cv.count < 2) {
+                if (cv.xyz == nullptr || cv.count < (cv.fill ? 3 : 2)) {
                     continue;
                 }
+                vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                  cv.fill ? overlay_fill_pipe_
+                                          : overlay_pipe_);
                 const float col[4] = {cv.r * cv.a, cv.g * cv.a, cv.b * cv.a,
                                       cv.a};
                 vkCmdPushConstants(cb, overlay_pl_,
@@ -554,6 +557,7 @@ public:
         ctx_->destroy_buffer(&flow_ubo_);
         ctx_->destroy_buffer(&flow_buf_);
         destroy_pipe(overlay_pipe_);
+        destroy_pipe(overlay_fill_pipe_);
         destroy_layout(overlay_pl_);
         overlay_dsl_holder_.destroy(*ctx_);
         ctx_->destroy_buffer(&overlay_buf_);
@@ -1490,6 +1494,16 @@ private:
         if (overlay_pipe_ == VK_NULL_HANDLE) {
             return false;
         }
+        // Filled variant (same shaders/layout, strip topology): the faint
+        // xy reference sheet of the 1D scenes.
+        overlay_fill_pipe_ = build_pipeline(
+            blobs.overlay_vert, blobs.overlay_vert_size, blobs.overlay_frag,
+            blobs.overlay_frag_size, overlay_pl_, nullptr, nullptr, 0,
+            /*depth=*/false, VK_CULL_MODE_NONE, kBlendPremultiplied,
+            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP);
+        if (overlay_fill_pipe_ == VK_NULL_HANDLE) {
+            return false;
+        }
         // Seed a minimal SSBO so the set is never invalid before the first
         // real upload grows it.
         const float zeros[12] = {};
@@ -2146,6 +2160,7 @@ private:
     DslHolder overlay_dsl_holder_;
     VkPipelineLayout overlay_pl_ = VK_NULL_HANDLE;
     VkPipeline overlay_pipe_ = VK_NULL_HANDLE;
+    VkPipeline overlay_fill_pipe_ = VK_NULL_HANDLE;
     Buffer overlay_buf_{};
     VkDeviceSize overlay_buf_bytes_ = 0;
     VkDescriptorSet overlay_set_ = VK_NULL_HANDLE;

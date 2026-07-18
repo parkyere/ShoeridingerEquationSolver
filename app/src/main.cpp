@@ -9,7 +9,8 @@
 // 1 = real time, 2 = relax (imaginary time), 3 = relax to 2p, 4 = relax to
 // 2s, 5 = excite an n=3 state (cascade demo), R = reset, M = measure
 // position, E = measure energy, D = decay off/on, L = laser (off -> Z -> X
-// -> off), F = flow particles, [ ] = thinner/denser cloud.
+// -> off), F = flow particles, Z = face the z axis, [ ] = thinner/denser
+// cloud.
 
 // Std first, in full: the imported ses.* modules' GMFs reach these std
 // headers -- a later FIRST textual include would C2572, so this TU textually
@@ -124,6 +125,9 @@ public:
             }
         }
         flow_on_ = has_arg("--flow");  // start with streaklines on (Key F)
+        if (has_arg("--face-z")) {
+            snap_camera_z();  // boot straight into the z-facing view (dumps)
+        }
     }
 
     // ---- boot -------------------------------------------------------------
@@ -361,6 +365,13 @@ public:
         director_->toggle_view_mode();
         refresh_status();
     }
+    // Face the z axis (Key Z, every scene): eye onto +z -- azimuth 0,
+    // elevation 0 by the orbit convention -- the textbook straight-on view
+    // (x right, y up); the 1D scenes' xy sheet then spans the screen plane.
+    void snap_camera_z() {
+        azimuth_ = 0.0;
+        elevation_ = 0.0;
+    }
     // Cross-section controls are only meaningful over the volume cloud.
     bool cloud_view() const { return director_ && director_->cloud(); }
     // Selftest hook: turn on the cross-section slice sheet (z-normal, through
@@ -582,6 +593,9 @@ private:
             case SDLK_TAB:
                 toggle_view_mode();
                 return;
+            case SDLK_Z:
+                snap_camera_z();
+                return;
             case SDLK_LEFTBRACKET:
                 absorbance_ = std::max(0.1, absorbance_ / 1.3);
                 return;
@@ -671,7 +685,8 @@ private:
                                  ses_vk::SceneRenderer::kMaxOverlayCurves);
         for (int c = 0; c < nov; ++c) {
             const ses_shell::OverlayCurve oc = director_->overlay_curve(c);
-            in.overlay[c] = {oc.xyz, oc.count, oc.r, oc.g, oc.b, oc.a};
+            in.overlay[c] = {oc.xyz, oc.count, oc.r, oc.g, oc.b, oc.a,
+                             oc.fill};
         }
         in.overlay_count = nov;
         // Scene props: origin marker + visualized barrier slab.

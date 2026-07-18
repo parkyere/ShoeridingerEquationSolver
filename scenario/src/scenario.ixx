@@ -96,9 +96,10 @@ struct Ladder1dApi {
     virtual void random_superposition() = 0;
 };
 
-// A 1D-scene overlay polyline: packed (x, y, z) float triples drawn as one
-// LINE_STRIP in world space with a constant color. The xyz pointer stays
-// valid until the director's next run_frame().
+// A 1D-scene overlay primitive: packed (x, y, z) float triples drawn in
+// world space with a constant color -- a LINE_STRIP polyline, or with
+// `fill` a TRIANGLE_STRIP sheet (the faint xy reference plane). The xyz
+// pointer stays valid until the director's next run_frame().
 struct OverlayCurve {
     const float* xyz = nullptr;
     int count = 0;
@@ -106,6 +107,7 @@ struct OverlayCurve {
     float g = 1.0f;
     float b = 1.0f;
     float a = 1.0f;
+    bool fill = false;
 };
 
 class ScenarioDirector {

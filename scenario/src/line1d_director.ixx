@@ -120,13 +120,16 @@ public:
 
     bool center_marker() const override { return false; }
 
-    int overlay_curve_count() const override { return 2; }
+    int overlay_curve_count() const override { return 3; }
     OverlayCurve overlay_curve(int i) const override {
-        if (i == 0) {  // the wavefunction: white phasor curve
-            return {psi_curve_.data(), grid1d_.n, 1.0f, 1.0f, 1.0f, 1.0f};
+        if (i == 0) {  // faint xy (z = 0) reference sheet, drawn first
+            return {plane_quad_.data(), 4, 0.45f, 0.55f, 0.75f, 0.07f, true};
         }
-        // The potential profile: warm red, slightly translucent.
-        return {pot_curve_.data(), grid1d_.n, 1.0f, 0.30f, 0.25f, 0.9f};
+        if (i == 1) {  // the potential profile: warm red, slightly translucent
+            return {pot_curve_.data(), grid1d_.n, 1.0f, 0.30f, 0.25f, 0.9f};
+        }
+        // The wavefunction: white phasor curve, on top.
+        return {psi_curve_.data(), grid1d_.n, 1.0f, 1.0f, 1.0f, 1.0f};
     }
 
 protected:
@@ -144,6 +147,15 @@ protected:
           initial_(g) {
         prop_ = std::make_unique<ses::SplitOperator1D>(grid1d_, potential_, dt_);
         pot_curve_ = ses::potential_curve(grid1d_, potential_, e_scale_, y_clamp_);
+        // Faint z = 0 (xy) reference sheet: makes the phasor twist legible
+        // (in-plane vs out-of-plane), and face-on -- the Z snap view -- it
+        // frames the textbook 2D plot. Spans the box in x, a quarter box
+        // in y, as one triangle-strip quad.
+        const float hh = static_cast<float>(0.25 * grid1d_.xmax);
+        const float x0 = static_cast<float>(grid1d_.xmin);
+        const float x1 = static_cast<float>(grid1d_.xmax);
+        plane_quad_ = {x0, -hh, 0.0f, x1, -hh, 0.0f,
+                       x0, hh,  0.0f, x1, hh,  0.0f};
     }
 
     // Scenario-specific hooks.
@@ -227,6 +239,7 @@ protected:
 
     std::vector<float> psi_curve_;
     std::vector<float> pot_curve_;
+    std::vector<float> plane_quad_;
 
 private:
     std::vector<float> no_staging_;
