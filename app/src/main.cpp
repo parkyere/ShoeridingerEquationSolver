@@ -55,9 +55,12 @@
 import ses.scenario.tunneling_director;
 
 import app.scheduler;
+import ses.scenario.doublewell1d_director;
 import ses.scenario.harmonic_director;
 import ses.scenario.harmonic1d_director;
 import ses.scenario.hydrogen_director;
+import ses.scenario.morse1d_director;
+import ses.scenario.ptwell1d_director;
 import ses.scenario.tunneling1d_director;
 import ses.scenario.selftest_arcs;
 import ses.vk.render_blobs;
@@ -77,9 +80,10 @@ constexpr std::uint64_t kTickMs = 16;
 
 // The demo scenes, panel-selectable at runtime (and picked at boot by
 // --scene=). Index order is the panel combo's order.
-constexpr const char* kSceneNames[] = {"hydrogen", "harmonic", "tunnel",
-                                       "harmonic1d", "tunnel1d"};
-constexpr int kSceneCount = 5;
+constexpr const char* kSceneNames[] = {"hydrogen",   "harmonic", "tunnel",
+                                       "harmonic1d", "tunnel1d", "doublewell1d",
+                                       "ptwell1d",   "morse1d"};
+constexpr int kSceneCount = 8;
 std::unique_ptr<ses_shell::ScenarioDirector> make_scene_director(int idx) {
     if (idx == 1) {
         return std::make_unique<ses_shell::HarmonicDirector>();
@@ -92,6 +96,15 @@ std::unique_ptr<ses_shell::ScenarioDirector> make_scene_director(int idx) {
     }
     if (idx == 4) {
         return std::make_unique<ses_shell::Tunneling1DDirector>();
+    }
+    if (idx == 5) {
+        return std::make_unique<ses_shell::DoubleWell1DDirector>();
+    }
+    if (idx == 6) {
+        return std::make_unique<ses_shell::PtWell1DDirector>();
+    }
+    if (idx == 7) {
+        return std::make_unique<ses_shell::Morse1DDirector>();
     }
     return std::make_unique<ses_shell::HydrogenDirector>();
 }
@@ -315,6 +328,17 @@ public:
                 app::draw_hydrogen_panel(*this, ui_, *hy);
             } else if (auto* ld = director_->ladder1d()) {
                 app::draw_ladder1d_panel(*this, ui_, *ld);
+            } else if (auto* dwp = director_->doublewell()) {
+                app::draw_doublewell_panel(*this, ui_, *dwp);
+            } else if (director_->morse() != nullptr) {
+                app::draw_generic_panel(*this, ui_,
+                                        {{"Jump up (U)", 'U'},
+                                         {"Jump down (D)", 'D'},
+                                         {"Pair beat (S)", 'S'},
+                                         {"Ground (2)", '2'}});
+            } else if (director_->reflect() != nullptr) {
+                app::draw_generic_panel(*this, ui_,
+                                        {{"Swap well (W)", 'W'}});
             } else if (director_->tunnel() != nullptr) {
                 app::draw_generic_panel(*this, ui_, {});
             } else {
@@ -414,6 +438,9 @@ public:
     ses_shell::HydrogenApi* hy() { return director_->hydrogen(); }
     ses_shell::TunnelApi* tn() { return director_->tunnel(); }
     ses_shell::Ladder1dApi* ln() { return director_->ladder1d(); }
+    ses_shell::DoubleWellApi* dw() { return director_->doublewell(); }
+    ses_shell::ReflectApi* rf() { return director_->reflect(); }
+    ses_shell::MorseApi* mo() { return director_->morse(); }
     bool solving() const { return director_->solving(); }
     bool manifold_ready() const { return director_->scene_ready(); }
     void debug_set_camera_distance(double d) {
@@ -798,6 +825,15 @@ int main(int argc, char* argv[]) {
     } else if (std::find(args.begin(), args.end(), "--selftest-tunnel1d") !=
                args.end()) {
         scene = "tunnel1d";  // the 1D tunneling arc drives its own scene
+    } else if (std::find(args.begin(), args.end(), "--selftest-dw1d") !=
+               args.end()) {
+        scene = "doublewell1d";
+    } else if (std::find(args.begin(), args.end(), "--selftest-pt1d") !=
+               args.end()) {
+        scene = "ptwell1d";
+    } else if (std::find(args.begin(), args.end(), "--selftest-morse1d") !=
+               args.end()) {
+        scene = "morse1d";
     } else {
         // Every other selftest arc drives the hydrogen scene (it reaches the
         // director through hydrogen()); force it so a mismatched --scene
@@ -819,6 +855,12 @@ int main(int argc, char* argv[]) {
         scene_index = 3;
     } else if (scene == "tunnel1d") {
         scene_index = 4;
+    } else if (scene == "doublewell1d") {
+        scene_index = 5;
+    } else if (scene == "ptwell1d") {
+        scene_index = 6;
+    } else if (scene == "morse1d") {
+        scene_index = 7;
     } else if (scene != "hydrogen") {
         std::fprintf(stderr, "scene: unknown '%s' -- using hydrogen\n",
                      scene.c_str());

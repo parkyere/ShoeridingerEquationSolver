@@ -57,6 +57,25 @@ void selftest_scene_wait_running(ShellT* shell, const char* name, int polls,
     });
 }
 
+// Poll (1 s) until the CURRENT scene's sim time reaches t_target au; ~2 min
+// without arrival is the stall verdict. Used where the physics needs a
+// known span of SIMULATED time and the step cost is machine-dependent.
+template <typename ShellT, typename Done>
+void selftest_wait_sim_time(ShellT* shell, double t_target, int polls,
+                            Done done) {
+    if (shell->director().sim_time() >= t_target) {
+        done(true);
+        return;
+    }
+    if (polls >= 120) {
+        done(false);
+        return;
+    }
+    shell->sched().after(1000, [shell, t_target, polls, done] {
+        selftest_wait_sim_time(shell, t_target, polls + 1, done);
+    });
+}
+
 template <typename ShellT>
 void register_verification_arcs(ShellT* shell) {
     // Render verification: read the finished scene image back to
@@ -642,6 +661,135 @@ void register_verification_arcs(ShellT* shell) {
                                  pass ? "PASS" : "FAIL");
                     shell->request_exit(pass ? 0 : 1);
                 });
+            });
+        });
+    }
+
+    // Double-well arc (main forces --scene=doublewell1d): psi_L must start
+    // left and, within ~1.5 transfer periods at time_scale 16, appear on
+    // the right with P_R > 0.8 -- the ammonia-inversion oscillation, live.
+    if (shell->has_arg("--selftest-dw1d")) {
+        shell->sched().after(1000, [shell] {
+            selftest_scene_wait_running(shell, "doublewell1d", 0, [shell](
+                                                                     bool runs) {
+                auto* dw = shell->dw();
+                if (!runs || dw == nullptr) {
+                    std::fprintf(stderr, "selftest-dw1d: scene not running "
+                                         "or no api  [FAIL]\n");
+                    shell->request_exit(1);
+                    return;
+                }
+                const double de = dw->splitting();
+                const bool band_ok = de > 3e-3 && de < 5e-2;
+                const bool left_ok = dw->p_left() > 0.9;
+                shell->set_time_scale(16);
+                auto best = std::make_shared<double>(0.0);
+                auto probe = std::make_shared<int>(-1);
+                *probe = shell->sched().every(500, [shell, best, probe] {
+                    *best = std::max(*best, shell->dw()->p_right());
+                    if (*best > 0.8) {
+                        shell->sched().cancel(*probe);
+                        std::fprintf(stderr, "selftest-dw1d: transferred, "
+                                             "max P_R = %.3f  [PASS]\n",
+                                     *best);
+                        shell->request_exit(0);
+                    }
+                });
+                shell->sched().after(30000, [shell, best, probe, de, band_ok,
+                                             left_ok] {
+                    shell->sched().cancel(*probe);
+                    const bool pass = band_ok && left_ok && *best > 0.8;
+                    std::fprintf(stderr,
+                                 "selftest-dw1d: dE = %.2e (band %d), start "
+                                 "left %d, max P_R = %.3f  [%s]\n",
+                                 de, band_ok, left_ok, *best,
+                                 pass ? "PASS" : "FAIL");
+                    shell->request_exit(pass ? 0 : 1);
+                });
+            });
+        });
+    }
+
+    // Reflectionless arc (main forces --scene=ptwell1d): the sech^2 well
+    // must show max R below 5e-3 after the transit; the equal square well
+    // (Key W) must reflect visibly. SIM-TIME polled, not wall-clocked: a
+    // 64k-point step costs real milliseconds, so the transit (~110 au)
+    // takes however long it takes (repo lesson: fixed deadlines lie).
+    if (shell->has_arg("--selftest-pt1d")) {
+        shell->sched().after(1000, [shell] {
+            selftest_scene_wait_running(shell, "ptwell1d", 0, [shell](
+                                                                  bool runs) {
+                if (!runs || shell->rf() == nullptr) {
+                    std::fprintf(stderr, "selftest-pt1d: scene not running "
+                                         "or no api  [FAIL]\n");
+                    shell->request_exit(1);
+                    return;
+                }
+                shell->set_time_scale(16);
+                selftest_wait_sim_time(shell, 160.0, 0, [shell](bool ok1) {
+                    const double r_pt = shell->rf()->reflected_max();
+                    const double t_mark = shell->director().sim_time();
+                    shell->rf()->toggle_well();  // -> square, relaunch
+                    selftest_wait_sim_time(shell, t_mark + 160.0, 0,
+                                           [shell, ok1, r_pt](bool ok2) {
+                        const double r_sq = shell->rf()->reflected_max();
+                        const bool pass =
+                            ok1 && ok2 && r_pt < 5e-3 && r_sq > 3e-2;
+                        std::fprintf(stderr,
+                                     "selftest-pt1d: R(sech^2) = %.4f, "
+                                     "R(square) = %.4f (timely %d %d)  [%s]\n",
+                                     r_pt, r_sq, ok1, ok2,
+                                     pass ? "PASS" : "FAIL");
+                        shell->request_exit(pass ? 0 : 1);
+                    });
+                });
+            });
+        });
+    }
+
+    // Morse arc (main forces --scene=morse1d): exactly 6 bound levels, the
+    // ladder climbs to the top and refuses past it, and the top gap is
+    // visibly smaller than the bottom gap (the anharmonic signature).
+    if (shell->has_arg("--selftest-morse1d")) {
+        shell->sched().after(1000, [shell] {
+            selftest_scene_wait_running(shell, "morse1d", 0, [shell](
+                                                                 bool runs) {
+                auto* mo = shell->mo();
+                if (!runs || mo == nullptr) {
+                    std::fprintf(stderr, "selftest-morse1d: scene not "
+                                         "running or no api  [FAIL]\n");
+                    shell->request_exit(1);
+                    return;
+                }
+                const bool count_ok = mo->bound_count() == 6;
+                const double e0 = mo->level_energy();
+                mo->jump(true);
+                const double e1 = mo->level_energy();
+                bool climb_ok = true;
+                while (mo->level() + 1 < mo->bound_count()) {
+                    climb_ok = climb_ok && mo->jump(true);
+                }
+                const double e_top = mo->level_energy();
+                mo->jump(false);
+                const double e_below = mo->level_energy();
+                const bool refuse_ok = [&] {
+                    while (mo->level() + 1 < mo->bound_count()) {
+                        mo->jump(true);
+                    }
+                    return !mo->jump(true);  // past the top: dissociation
+                }();
+                const double gap_bot = e1 - e0;
+                const double gap_top = e_top - e_below;
+                const bool anharm_ok = gap_top < 0.6 * gap_bot;
+                const bool pass =
+                    count_ok && climb_ok && refuse_ok && anharm_ok;
+                std::fprintf(stderr,
+                             "selftest-morse1d: bound %d, climb %d, "
+                             "top-refuse %d, gaps %.4f -> %.4f (anharm %d)  "
+                             "[%s]\n",
+                             mo->bound_count(), climb_ok, refuse_ok, gap_bot,
+                             gap_top, anharm_ok, pass ? "PASS" : "FAIL");
+                shell->request_exit(pass ? 0 : 1);
             });
         });
     }

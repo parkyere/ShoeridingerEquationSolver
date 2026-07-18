@@ -33,6 +33,8 @@ struct UiState {
     // 1D harmonic scene: live well stiffness (matches kHo1dOmega at boot;
     // UiState resets on scene switch, so the slider and director agree).
     float ho_omega = 0.25f;
+    // 1D double well: live barrier height (matches kDw1dBarrier at boot).
+    float dw_barrier = 0.12f;
 };
 
 // The x/y/z axis-cycle button shared by the cross-section controls.
@@ -99,7 +101,10 @@ void draw_scene_picker(ShellT& shell) {
     if (ImGui::Combo("Scene", &cur,
                      "Hydrogen atom\0Harmonic trap\0Tunneling barrier\0"
                      "1D harmonic oscillator\0"
-                     "1D tunneling barrier\0")) {
+                     "1D tunneling barrier\0"
+                     "1D double well\0"
+                     "1D reflectionless well\0"
+                     "1D Morse well\0")) {
         shell.request_scene(cur);
     }
     if (ImGui::IsItemHovered()) {
@@ -334,6 +339,40 @@ void draw_ladder1d_panel(ShellT& shell, UiState& ui, ses_shell::Ladder1dApi& ld)
                           "in\nthe new well. The MEASURED clean ladder cap "
                           "peaks near\nw ~ 1 then falls -- now n <= %d.",
                           ld.max_level());
+    }
+    draw_time_scale(shell, ui);
+    ImGui::Separator();
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(shell.status_text().c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::End();
+}
+
+// The double-well panel: the barrier slider (splitting dE is EXPONENTIAL in
+// the barrier, so the tunneling oscillation crawls or races) + readouts.
+template <typename ShellT>
+void draw_doublewell_panel(ShellT& shell, UiState& ui,
+                           ses_shell::DoubleWellApi& dw) {
+    ImGui::SetNextWindowPos(ImVec2(8, 8), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(430, 0), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_NoCollapse);
+    draw_scene_picker(shell);
+    draw_perf_readout(shell);
+    if (ImGui::Button("Reset (R)")) shell.reset_simulation();
+    ImGui::SameLine();
+    if (ImGui::Button("Pause (Space)")) shell.toggle_pause();
+    ImGui::SameLine();
+    if (ImGui::Button("Face z (Z)")) shell.snap_camera_z();
+    if (ImGui::SliderFloat("Barrier Vb (Ha)", &ui.dw_barrier, 0.04f, 0.30f,
+                           "%.2f")) {
+        dw.set_barrier(static_cast<double>(ui.dw_barrier));
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("dE is exponential in the barrier: raising it "
+                          "makes the\nleft<->right oscillation crawl. Moving "
+                          "the slider re-prepares\nthe left-well state "
+                          "(currently dE = %.2e Ha).",
+                          dw.splitting());
     }
     draw_time_scale(shell, ui);
     ImGui::Separator();
