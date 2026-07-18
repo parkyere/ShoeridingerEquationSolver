@@ -2218,7 +2218,7 @@ private:
     // Probability-flow particles.
     // Sparse streaklines: kFlowStreaks strips, each a kFlowTrail-vertex trail
     // of recent positions (weather-map Lagrangian flux look, low frame cost).
-    static constexpr std::uint32_t kFlowStreaks = 1024;
+    static constexpr std::uint32_t kFlowStreaks = 512;
     static constexpr std::uint32_t kFlowTrail = 40;
     struct alignas(16) FlowParams {
         float box_min[4];
