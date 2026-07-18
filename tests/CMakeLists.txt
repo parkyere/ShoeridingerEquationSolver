@@ -49,6 +49,7 @@ add_executable(sesolver_tests
     marching_cubes_test.cpp
     mcwf_test.cpp
     measurement_test.cpp
+    molecule_test.cpp
     multichannel_decay_test.cpp
     observables_test.cpp
     parallel_test.cpp

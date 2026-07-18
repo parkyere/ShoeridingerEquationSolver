@@ -185,6 +185,50 @@ TEST(RegularizedCoulombPotential, ExactAwayFromNucleusAndFiniteAtIt) {
     }
 }
 
+TEST(RegularizedCoulombPotential, MultiCenterSuperposesWithPerCenterRegularization) {
+    // Two protons on grid points: each nucleus cell gets its own analytic
+    // average PLUS the exact -Z/r of the other center -- the H2+ potential.
+    const ses::Grid1D ax{-8.0, 8.0, 16};  // h = 1, coords -8..7
+    const ses::Grid3D g{ax, ax, ax};
+    const std::vector<ses::Vec3d> centers = {{-1.0, 0.0, 0.0}, {1.0, 0.0, 0.0}};
+    const std::vector<double> v =
+        ses::regularized_coulomb_potential(g, 1.0, centers);
+    ASSERT_EQ(v.size(), static_cast<std::size_t>(g.size()));
+    // Left nucleus cell (coord -1,0,0 = index 7,8,8): own average + (-1/2).
+    EXPECT_DOUBLE_EQ(v[static_cast<std::size_t>(g.flat(7, 8, 8))],
+                     -ses::kCoulombCellAverage - 0.5);
+    // Midpoint (0,0,0): -1/1 - 1/1 = -2 exactly.
+    EXPECT_DOUBLE_EQ(v[static_cast<std::size_t>(g.flat(8, 8, 8))], -2.0);
+    // Symmetry about the midpoint along x.
+    EXPECT_DOUBLE_EQ(v[static_cast<std::size_t>(g.flat(6, 8, 8))],
+                     v[static_cast<std::size_t>(g.flat(10, 8, 8))]);
+    for (double x : v) {
+        EXPECT_LT(x, 0.0);
+        EXPECT_TRUE(std::isfinite(x));
+    }
+}
+
+TEST(SoftCoulombPotential, MultiCenterHexagonExactAtTheRingCenter) {
+    // Six equal soft cores on a hexagon of radius r: at the ring center
+    // every center contributes -Z/sqrt(r^2 + a^2) -- exact by symmetry.
+    const ses::Grid1D ax{-8.0, 8.0, 16};
+    const ses::Grid3D g{ax, ax, ax};
+    const double r = 2.63;
+    const double a = 0.8;
+    std::vector<ses::Vec3d> ring;
+    for (int i = 0; i < 6; ++i) {
+        const double th = 3.14159265358979323846 / 3.0 * i;
+        ring.push_back({r * std::cos(th), r * std::sin(th), 0.0});
+    }
+    const std::vector<double> v = ses::soft_coulomb_potential(g, 1.0, a, ring);
+    EXPECT_NEAR(v[static_cast<std::size_t>(g.flat(8, 8, 8))],
+                -6.0 / std::sqrt(r * r + a * a), 1e-12);
+    for (double x : v) {
+        EXPECT_LT(x, 0.0);
+        EXPECT_TRUE(std::isfinite(x));
+    }
+}
+
 TEST(RegularizedCoulombPotential, NucleusCellScalesWithChargeAndInverseSpacing) {
     // The cell average -Z*C/h scales linearly with Z and with 1/h.
     const ses::Grid1D ax{-4.0, 4.0, 16};  // h = 0.5, nucleus point at index 8
