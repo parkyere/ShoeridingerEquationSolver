@@ -96,7 +96,16 @@ TEST(H2Plus, BondingAndAntibondingAndTheChemicalBond) {
     EXPECT_LT(et2, e_atom) << "the molecule binds vs H + p at rest";
 }
 
-TEST(BenzeneToy, KekuleDistortionSplitsTheDegeneratePair) {
+TEST(BenzeneToy, PairStaysDegenerateButBondChargeAlternatesUnderKekule) {
+    // The honest one-electron fingerprints of uniform vs Kekule 1-2-1-2
+    // (measured, not assumed -- a first draft asserting the pair SPLITS
+    // failed at 1.4e-6: the Kekule ring keeps D3h, whose 2-dim irrep
+    // protects the degeneracy; in SSH-ring terms the levels are
+    // +-(t1+t2), +-sqrt(t1^2+t2^2-t1t2) x2 -- pairs remain pairs):
+    //  (a) the first excited PAIR is degenerate for BOTH geometries;
+    //  (b) what DOES change is the ground state's bond charge: equal
+    //      midpoint densities on the uniform ring, piled onto the SHORT
+    //      bonds under Kekule alternation.
     const Grid1D ax{-8.0, 8.0, 32};
     const Grid3D g{ax, ax, ax};
     const double ring_r = 2.63;  // benzene C-C = 1.39 A in bohr
@@ -115,40 +124,67 @@ TEST(BenzeneToy, KekuleDistortionSplitsTheDegeneratePair) {
         return c;
     };
 
-    auto excited_pair_split = [&](const std::vector<Vec3d>& centers,
-                                  double* out_gap01) {
+    // Probability within 0.7 bohr of a point (robust midpoint sampling).
+    auto blob = [&](const Field3D& f, Vec3d p) {
+        double acc = 0.0;
+        for (int k = 0; k < g.z.n; ++k) {
+            for (int j = 0; j < g.y.n; ++j) {
+                for (int i = 0; i < g.x.n; ++i) {
+                    const double dx = g.x.coord(i) - p.x;
+                    const double dy = g.y.coord(j) - p.y;
+                    const double dz = g.z.coord(k) - p.z;
+                    if (dx * dx + dy * dy + dz * dz < 0.49) {
+                        acc += std::norm(f(i, j, k));
+                    }
+                }
+            }
+        }
+        return acc;
+    };
+
+    struct Result {
+        double gap01 = 0.0;
+        double pair_split = 0.0;
+        double bond_ratio = 0.0;  // side(0-1) midpoint over side(1-2)
+    };
+    auto solve = [&](const std::vector<Vec3d>& c) {
         const std::vector<double> v =
-            ses::soft_coulomb_potential(g, 1.0, soft_a, centers);
+            ses::soft_coulomb_potential(g, 1.0, soft_a, c);
         const ses::ImaginaryTimePropagator3D relaxer{g, v, 0.05};
         Field3D e0 = ses::gaussian_wavepacket(g, Vec3d{}, Vec3d{2.0, 2.0, 1.2},
                                               Vec3d{});
         relaxer.relax(e0, 400);
-        // Two independent mixed-symmetry seeds, deflated in sequence.
         Field3D e1 = ses::gaussian_wavepacket(
             g, Vec3d{ring_r, 0.4, 0.0}, Vec3d{1.5, 1.5, 1.2}, Vec3d{});
         relaxer.relax_deflated(e1, {&e0}, 400);
         Field3D e2 = ses::gaussian_wavepacket(
             g, Vec3d{-0.5, ring_r, 0.0}, Vec3d{1.5, 1.5, 1.2}, Vec3d{});
         relaxer.relax_deflated(e2, {&e0, &e1}, 400);
+        Result r;
         const double ee0 = ses::mean_energy(e0, v);
         const double ee1 = ses::mean_energy(e1, v);
         const double ee2 = ses::mean_energy(e2, v);
-        if (out_gap01 != nullptr) {
-            *out_gap01 = std::min(ee1, ee2) - ee0;
-        }
-        return std::abs(ee2 - ee1);
+        r.gap01 = std::min(ee1, ee2) - ee0;
+        r.pair_split = std::abs(ee2 - ee1);
+        const Vec3d m01{0.5 * (c[0].x + c[1].x), 0.5 * (c[0].y + c[1].y), 0.0};
+        const Vec3d m12{0.5 * (c[1].x + c[2].x), 0.5 * (c[1].y + c[2].y), 0.0};
+        r.bond_ratio = blob(e0, m01) / blob(e0, m12);
+        return r;
     };
 
-    double gap_uniform = 0.0;
-    const double split_uniform = excited_pair_split(ring(0.0), &gap_uniform);
-    const double split_kekule = excited_pair_split(ring(5.0), nullptr);
+    const Result u = solve(ring(0.0));
+    // delta = +5 deg on even vertices: side 0-1 subtends 50 deg (SHORT),
+    // side 1-2 subtends 70 deg (LONG).
+    const Result k = solve(ring(5.0));
 
-    EXPECT_GT(gap_uniform, 0.01) << "the pair sits above the ground state";
-    // Uniform ring: the pair is degenerate up to lattice C4-vs-C6 error.
-    EXPECT_LT(split_uniform, 0.01);
-    // Kekule alternation opens a visible splitting: the one-electron
-    // fingerprint that equal bonds (X-ray) vs 1-2-1-2 are DIFFERENT physics.
-    EXPECT_GT(split_kekule, 3.0 * split_uniform + 0.005);
+    EXPECT_GT(u.gap01, 0.01) << "the pair sits above the ground state";
+    EXPECT_LT(u.pair_split, 0.01) << "uniform: C6 degeneracy";
+    EXPECT_LT(k.pair_split, 0.01) << "Kekule: D3h STILL protects the pair";
+    EXPECT_GT(u.bond_ratio, 0.9);
+    EXPECT_LT(u.bond_ratio, 1.1);  // uniform: equal bond charge
+    EXPECT_GT(k.bond_ratio, u.bond_ratio + 0.08)
+        << "Kekule: the short bond hoards the bonding charge";
+    EXPECT_GT(k.bond_ratio, 1.1);
 }
 
 }  // namespace
