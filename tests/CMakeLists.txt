@@ -46,6 +46,7 @@ add_executable(sesolver_tests
     imaginary_time_test.cpp
     interference_test.cpp
     ladder_test.cpp
+    lattice2d_test.cpp
     magnetic_test.cpp
     marching_cubes_test.cpp
     mcwf_test.cpp
