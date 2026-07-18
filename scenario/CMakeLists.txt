@@ -24,6 +24,7 @@ target_sources(ses_scenario
         src/ptwell1d_director.ixx
         src/morse1d_director.ixx
         src/doubleslit1d_director.ixx
+        src/doubleslit2d_director.ixx
         src/abring1d_director.ixx
         src/molecule_director.ixx
         src/selftest_arcs.ixx)

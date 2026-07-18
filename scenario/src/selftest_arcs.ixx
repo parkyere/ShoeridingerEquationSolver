@@ -85,13 +85,33 @@ void register_verification_arcs(ShellT* shell) {
         run_when_manifold_ready(shell, [shell] {
             shell->sched().after(2000, [shell] {
                 const bool ok = shell->dump_frame_bmp("frame_dump.bmp");
-                std::fprintf(stderr, "dump-frame: %ux%u  [%s]\n",
+                std::fprintf(stderr, "dump-frame: %ux%u (t = %.2f au)  [%s]\n",
                              shell->frame_width(), shell->frame_height(),
+                             shell->director().sim_time(),
                              ok ? "PASS" : "FAIL");
                 shell->request_exit(ok ? 0 : 1);
             });
         });
     }
+    // Same, but AFTER real evolution: fast-forward to sim time 60 au at
+    // time scale 16 first (the interference scenes need the transit done
+    // before there is anything on the screen to look at).
+    if (shell->has_arg("--dump-frame-late")) {
+        run_when_manifold_ready(shell, [shell] {
+            shell->set_time_scale(16);
+            selftest_wait_sim_time(shell, 60.0, 0, [shell](bool ok_wait) {
+                const bool ok =
+                    ok_wait && shell->dump_frame_bmp("frame_dump_late.bmp");
+                std::fprintf(stderr,
+                             "dump-frame-late: %ux%u (t = %.2f au)  [%s]\n",
+                             shell->frame_width(), shell->frame_height(),
+                             shell->director().sim_time(),
+                             ok ? "PASS" : "FAIL");
+                shell->request_exit(ok ? 0 : 1);
+            });
+        });
+    }
+
     // Same, from INSIDE the box: the volume pass rasterizes the proxy's back
     // faces (front-face culled), which only an interior eye exercises.
     if (shell->has_arg("--dump-frame-near")) {
@@ -831,6 +851,59 @@ void register_verification_arcs(ShellT* shell) {
                              frac, b0, dark0, b1, cpi, bpi,
                              pass ? "PASS" : "FAIL");
                 shell->request_exit(pass ? 0 : 1);
+            });
+        });
+    }
+
+    // 2D double-slit + AB arc (main forces --scene=doubleslit2d): fly the
+    // packet through the pierced wall and let the screen integrate the
+    // arrivals, at Phi = 0 (bright axis) and Phi = pi (Chambers shift:
+    // dark axis, first-dark position turns bright). SIM-TIME polled.
+    if (shell->has_arg("--selftest-doubleslit2d")) {
+        shell->sched().after(1000, [shell] {
+            selftest_scene_wait_running(shell, "doubleslit2d", 0, [shell](
+                                                                      bool
+                                                                          runs) {
+                auto* sl = shell->sl();
+                if (!runs || sl == nullptr) {
+                    std::fprintf(stderr, "selftest-doubleslit2d: scene not "
+                                         "running or no api  [FAIL]\n");
+                    shell->request_exit(1);
+                    return;
+                }
+                const double pi = 3.14159265358979323846;
+                // First dark fringe: path difference lambda/2 at the
+                // screen, y = lambda L / (2 d).
+                const double lam = 2.0 * pi / 2.0;   // k0 = 2
+                const double ell = 45.0 - 0.75;      // wall mid -> screen
+                const double yd = lam * ell / (2.0 * sl->separation());
+                const double t_run = 60.0;
+                shell->set_time_scale(16);
+                selftest_wait_sim_time(shell, t_run, 0, [shell, yd, pi,
+                                                         t_run](bool ok1) {
+                    const double b0 = shell->sl()->screen_at(0.0);
+                    const double d0 = shell->sl()->screen_at(yd);
+                    shell->sl()->set_flux(pi);  // refire, screen resets
+                    selftest_wait_sim_time(
+                        shell, t_run, 0,
+                        [shell, yd, ok1, b0, d0](bool ok2) {
+                            const double bpi = shell->sl()->screen_at(0.0);
+                            const double dpi = shell->sl()->screen_at(yd);
+                            const bool young_ok = d0 < 0.35 * b0;
+                            const bool ab_ok =
+                                bpi < 0.35 * b0 && dpi > 0.5 * d0 &&
+                                dpi > 0.35 * b0;
+                            const bool pass =
+                                ok1 && ok2 && b0 > 0.0 && young_ok && ab_ok;
+                            std::fprintf(
+                                stderr,
+                                "selftest-doubleslit2d: screen(axis/dark) "
+                                "Phi=0: %.3e/%.3e, Phi=pi: %.3e/%.3e  "
+                                "[%s]\n",
+                                b0, d0, bpi, dpi, pass ? "PASS" : "FAIL");
+                            shell->request_exit(pass ? 0 : 1);
+                        });
+                });
             });
         });
     }

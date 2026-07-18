@@ -54,6 +54,7 @@
 #include <SDL3/SDL_main.h>
 import ses.scenario.abring1d_director;
 import ses.scenario.doubleslit1d_director;
+import ses.scenario.doubleslit2d_director;
 import ses.scenario.tunneling_director;
 
 import app.scheduler;
@@ -86,8 +87,8 @@ constexpr std::uint64_t kTickMs = 16;
 constexpr const char* kSceneNames[] = {
     "hydrogen", "harmonic", "tunnel",  "harmonic1d",   "tunnel1d",
     "doublewell1d", "ptwell1d", "morse1d", "h2plus",   "benzene",
-    "doubleslit1d", "abring1d"};
-constexpr int kSceneCount = 12;
+    "doubleslit1d", "abring1d", "doubleslit2d"};
+constexpr int kSceneCount = 13;
 std::unique_ptr<ses_shell::ScenarioDirector> make_scene_director(int idx) {
     if (idx == 1) {
         return std::make_unique<ses_shell::HarmonicDirector>();
@@ -121,6 +122,9 @@ std::unique_ptr<ses_shell::ScenarioDirector> make_scene_director(int idx) {
     }
     if (idx == 11) {
         return std::make_unique<ses_shell::RingAB1DDirector>();
+    }
+    if (idx == 12) {
+        return std::make_unique<ses_shell::DoubleSlit2DDirector>();
     }
     return std::make_unique<ses_shell::HydrogenDirector>();
 }
@@ -870,6 +874,9 @@ int main(int argc, char* argv[]) {
                args.end()) {
         scene = "morse1d";
     } else if (std::find(args.begin(), args.end(),
+                         "--selftest-doubleslit2d") != args.end()) {
+        scene = "doubleslit2d";
+    } else if (std::find(args.begin(), args.end(),
                          "--selftest-doubleslit") != args.end()) {
         scene = "doubleslit1d";
     } else if (std::find(args.begin(), args.end(), "--selftest-abring") !=
@@ -916,6 +923,8 @@ int main(int argc, char* argv[]) {
         scene_index = 10;
     } else if (scene == "abring1d") {
         scene_index = 11;
+    } else if (scene == "doubleslit2d") {
+        scene_index = 12;
     } else if (scene != "hydrogen") {
         std::fprintf(stderr, "scene: unknown '%s' -- using hydrogen\n",
                      scene.c_str());

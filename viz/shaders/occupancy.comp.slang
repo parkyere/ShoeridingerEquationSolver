@@ -36,15 +36,22 @@ void main(uint3 gwg : SV_GroupID, uint3 glid : SV_GroupThreadID,
     uint fw, fh, fd;
     psi_tex.GetDimensions(fw, fh, fd);
     int3 fsize = int3(fw, fh, fd);
-    int3 block = fsize / osize;  // e.g. 256/32 = 8
-    int3 base = c * block;
+    // Per-axis fine range [begin, end) of this occ cell -- proportional,
+    // NOT fsize/osize: a volume THINNER than the occ grid on an axis (the
+    // 2D scenes' 4-cell display slab) would give block 0 there, an empty
+    // loop, occ == 0 everywhere, and the raymarcher would skip the whole
+    // cloud. When several occ cells land on the same fine plane they all
+    // (redundantly, correctly) read it.
+    int3 begin = (c * fsize) / osize;
+    int3 end = max(begin + int3(1, 1, 1), ((c + int3(1, 1, 1)) * fsize) /
+                                              osize);
     // One lattice point per thread; stride when the block outgrows the 8^3
     // workgroup (a 512^3 volume gives 16^3 blocks).
     float m = 0.0;
-    for (int k = int(glid.z); k < block.z; k += 8) {
-        for (int j = int(glid.y); j < block.y; j += 8) {
-            for (int i = int(glid.x); i < block.x; i += 8) {
-                float2 s = psi_tex.Load(int4(base + int3(i, j, k), 0)).xy;
+    for (int k = begin.z + int(glid.z); k < end.z; k += 8) {
+        for (int j = begin.y + int(glid.y); j < end.y; j += 8) {
+            for (int i = begin.x + int(glid.x); i < end.x; i += 8) {
+                float2 s = psi_tex.Load(int4(int3(i, j, k), 0)).xy;
                 m = max(m, dot(s, s));
             }
         }
