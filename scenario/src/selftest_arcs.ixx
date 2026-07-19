@@ -1150,12 +1150,33 @@ void register_verification_arcs(ShellT* shell) {
                     const double e2 = m->energy(2);
                     const double lo = std::min(e0, std::min(e1, e2));
                     const double hi = std::max(e0, std::max(e1, e2));
-                    const bool pass = hi < -8.0 && (hi - lo) < 1.0;
+                    const bool band_ok = hi < -8.0 && (hi - lo) < 1.0;
                     std::fprintf(stderr,
                                  "selftest-benzene: core band [%.3f, %.3f] "
                                  "Ha (width %.3f)  [%s]\n",
-                                 lo, hi, hi - lo, pass ? "PASS" : "FAIL");
-                    shell->request_exit(pass ? 0 : 1);
+                                 lo, hi, hi - lo, band_ok ? "PASS" : "FAIL");
+                    if (!band_ok) {
+                        shell->request_exit(1);
+                        return;
+                    }
+                    // Real-time containment: a prepared CORE state must
+                    // STAY on the ring under real-time stepping (the step
+                    // accuracy contract -- a dt too coarse for the Z=6
+                    // regularized well heats the state over the whole box).
+                    shell->set_real_time();
+                    shell->set_time_scale(16);
+                    const double t0 = shell->director().sim_time();
+                    selftest_wait_sim_time(shell, t0 + 5.0, 0, [shell](
+                                                                   bool ok_t) {
+                        auto* m2 = shell->ml();
+                        const double c = m2->containment(6.0);
+                        const bool pass = ok_t && c > 0.9;
+                        std::fprintf(stderr,
+                                     "selftest-benzene: P(r<6) = %.3f after "
+                                     "5 au real time  [%s]\n",
+                                     c, pass ? "PASS" : "FAIL");
+                        shell->request_exit(pass ? 0 : 1);
+                    });
                 });
                 shell->sched().after(300000, [shell, poll] {
                     shell->sched().cancel(*poll);

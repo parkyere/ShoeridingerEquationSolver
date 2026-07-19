@@ -139,6 +139,9 @@ struct MoleculeApi {
     virtual int geometry() const = 0;
     virtual void set_parameter(double p) = 0;  // scene knob (R / delta)
     virtual double parameter() const = 0;
+    // P(|r| < radius): the real-time containment probe -- a prepared bound
+    // state must STAY on the nuclei (arc contract for the step accuracy).
+    virtual double containment(double radius) = 0;
 };
 
 // The Morse anharmonic-ladder scene (eigenstate jumps, shrinking gaps).

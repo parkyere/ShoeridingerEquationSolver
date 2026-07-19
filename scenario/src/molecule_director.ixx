@@ -56,6 +56,30 @@ public:
         want_ = k;
         advance_chain();
     }
+    // P(|r| < radius) on the CPU truth (bridges the GPU state first).
+    double containment(double radius) override {
+        ensure_cpu_current();
+        const ses::Grid3D& g = sim_.grid();
+        const double r2 = radius * radius;
+        double inside = 0.0;
+        double total = 0.0;
+        for (int k = 0; k < g.z.n; ++k) {
+            const double z = g.z.coord(k);
+            for (int j = 0; j < g.y.n; ++j) {
+                const double y = g.y.coord(j);
+                for (int i = 0; i < g.x.n; ++i) {
+                    const double x = g.x.coord(i);
+                    const double w = std::norm(sim_.psi()(i, j, k));
+                    total += w;
+                    if (x * x + y * y + z * z < r2) {
+                        inside += w;
+                    }
+                }
+            }
+        }
+        return total > 0.0 ? inside / total : 0.0;
+    }
+
     double nuclear_repulsion() const override {
         const std::vector<ses::Vec3d> c = centers();
         const std::vector<double> q = charges();
