@@ -1,5 +1,9 @@
 # Schrödinger Equation Solver
 
+[![License: BSD 3-Clause](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](LICENSE)
+![C++20 named modules](https://img.shields.io/badge/C%2B%2B20-named_modules-8A2BE2.svg)
+![Vulkan 1.3](https://img.shields.io/badge/Vulkan-1.3-AC162C.svg)
+
 A from-scratch, **reinvent-the-wheel** solver and 3D visualizer for the
 **single-electron** time-dependent Schrödinger equation (TDSE), built for
 learning. The probability cloud `|ψ(r,t)|²` evolves in real time on the GPU
