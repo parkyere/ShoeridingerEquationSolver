@@ -38,6 +38,7 @@ target_sources(sesolver_core
         src/bloch.ixx
         src/ladder.ixx
         src/lattice2d.ixx
+        src/heightfield.ixx
         src/phasor.ixx
         src/spectrum1d.ixx
         src/rotation.ixx
