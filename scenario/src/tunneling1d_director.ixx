@@ -6,10 +6,12 @@ export import ses.scenario.line1d_director;
 import ses.wavepacket;
 
 
-// 1D reduction of the 3D tunneling scene (same V0, slab, launch, k0;
-// E = k0^2/2 = 0.125 Ha < V0 = 0.25, forbidden); red V(x) + white phasor
-// curve. The boundary absorber swallows outgoing flux; T is reported
-// against the initial unit norm (probability_in_range is absolute).
+// 1D reduction of the 3D tunneling scene (same V0, launch, k0;
+// E = k0^2/2 = 0.125 Ha < V0 = 0.25, forbidden). Slab is HALF the 3D
+// scene's (2.5 vs 5 Bohr): kappa*w = 1.25, so the transmitted packet is
+// plainly visible instead of a ~1% wisp. Red V(x) + white phasor curve.
+// The boundary absorber swallows outgoing flux; T is reported against
+// the initial unit norm (probability_in_range is absolute).
 
 
 export namespace ses_shell {
@@ -21,8 +23,8 @@ constexpr double kTun1dBox = 80.0;   // Bohr half-extent
 // smoothly. No ladder here, so the huge k_max costs nothing.
 constexpr int kTun1dPoints = 65536;
 constexpr double kTun1dV0 = 0.25;    // Ha
-constexpr double kTun1dXLo = 0.0;    // slab [0, 5): kappa = 0.5, ~2-Bohr glow
-constexpr double kTun1dXHi = 5.0;
+constexpr double kTun1dXLo = 0.0;    // slab [0, 2.5): kappa = 0.5
+constexpr double kTun1dXHi = 2.5;
 constexpr double kTun1dK0 = 0.5;     // mean E = 0.125 Ha < V0 (forbidden)
 constexpr double kTun1dLaunchX = -30.0;
 constexpr double kTun1dSigma = 5.0;
