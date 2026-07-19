@@ -217,8 +217,10 @@ public:
         if (!SDL_Init(SDL_INIT_VIDEO)) {
             fatal_shell_error("SDL init", SDL_GetError());
         }
+        // 2048 wide by default: the ImGui panel no longer sits on top of
+        // the centered cloud (user call); height and zoom untouched.
         window_ = SDL_CreateWindow(
-            "Electron wavepacket near a hydrogen nucleus", 1024, 768,
+            "Electron wavepacket near a hydrogen nucleus", 2048, 768,
             SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE |
                 SDL_WINDOW_HIGH_PIXEL_DENSITY);
         if (window_ == nullptr) {
