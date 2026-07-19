@@ -405,12 +405,18 @@ protected:
         if (engine_.relax_tables_ready()) {
             return true;
         }
+        const double dtau = relax_dtau();
         const ses::ImaginaryTimePropagator3D relaxer{sim_.grid(), sim_.potential(),
-                                                     kBaseRelaxDtau};
+                                                     dtau};
         return engine_.set_relax_tables(relaxer.half_potential_weight(),
-                                        relaxer.kinetic_weight(), kBaseRelaxDtau,
+                                        relaxer.kinetic_weight(), dtau,
                                         sim_.grid().cell_volume());
     }
+
+    // ITP step used for the relax tables. Deep wells override: V*dtau must
+    // stay moderate or the ITP fixed point is a Trotter artifact, not the
+    // grid-H eigenstate (the molecule scenes' fine-polish phase).
+    virtual double relax_dtau() const { return kBaseRelaxDtau; }
 
     void ensure_cpu_current() {
         pending_gpu_steps_ = 0;  // uncredited steps must not fire later

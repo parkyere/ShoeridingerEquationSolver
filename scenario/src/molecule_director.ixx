@@ -135,6 +135,9 @@ public:
 
 protected:
     static constexpr int kStates = 3;
+    // Fine-polish burst after the coarse plateau (see run_relax_batch).
+    static constexpr double kMolFineDtau = 0.002;
+    static constexpr int kMolFinePolishSteps = 600;  // tau ~ 1.2
 
     // ---- scene hooks ----
     virtual std::vector<ses::Vec3d> centers() const = 0;
@@ -198,6 +201,11 @@ protected:
     }
 
     void start_relax_for(int k) {
+        if (fine_polish_ || fine_left_ > 0) {
+            fine_polish_ = false;  // a fresh relax always starts coarse
+            fine_left_ = 0;
+            engine_.release_relax_tables();
+        }
         if (!ensure_relax_tables()) {
             return;
         }
@@ -216,7 +224,12 @@ protected:
         stepping_ = BaseStepping::Relaxing;
     }
 
-    // Deflated ITP batch + plateau auto-complete + state capture.
+    // Deflated ITP batch + plateau auto-complete + fine polish + capture.
+    // The coarse tables (kBaseRelaxDtau) settle fast but their fixed point
+    // is Trotter-biased in a deep well (benzene: V*dtau ~ 7.6 left ~60%
+    // continuum junk that real time honestly dispersed over the box); a
+    // FIXED fine-dtau burst then purges the junk before capture -- the
+    // hydrogen post-collapse flush pattern at molecule scale.
     void run_relax_batch() override {
         const ses_vk::Engine::RelaxStats stats =
             deflate_.empty()
@@ -227,6 +240,13 @@ protected:
             peak_ = stats.peak;
         }
         norm_display_ = 1.0;
+        if (fine_left_ > 0) {
+            fine_left_ -= pending_gpu_steps_;  // fixed budget, no plateau
+            if (fine_left_ <= 0) {
+                complete_relax();
+            }
+            return;
+        }
         if (gpu_title_due_) {
             if (std::abs(stats.energy - relax_prev_energy_) < 5e-5) {
                 ++relax_plateau_;
@@ -236,12 +256,32 @@ protected:
             relax_prev_energy_ = stats.energy;
             if (relax_plateau_ >= 12) {
                 relax_plateau_ = 0;
-                complete_relax();
+                enter_fine_polish();
             }
         }
     }
 
+    void enter_fine_polish() {
+        engine_.release_relax_tables();
+        fine_polish_ = true;  // relax_dtau() flips to the fine step
+        if (!ensure_relax_tables()) {
+            fine_polish_ = false;
+            complete_relax();  // no tables: capture the coarse state as-is
+            return;
+        }
+        fine_left_ = kMolFinePolishSteps;
+    }
+
+    // Fine phase: V*dtau ~ 0.3 even at the benzene cell depth; the burst
+    // spans tau ~ 1.2, so junk at dE >~ 10 Ha dies as e^{-12}.
+    double relax_dtau() const override {
+        return fine_polish_ ? kMolFineDtau : kBaseRelaxDtau;
+    }
+
     void complete_relax() {
+        fine_polish_ = false;
+        fine_left_ = 0;
+        engine_.release_relax_tables();  // next chain state rebuilds coarse
         stepping_ = BaseStepping::RealTime;
         // Capture the converged state as an engine-resident deflation
         // buffer + record its energy for the HUD/arcs.
@@ -311,6 +351,8 @@ protected:
     bool prepared_[kStates] = {false, false, false};
     int want_ = 0;
     int target_ = 0;
+    bool fine_polish_ = false;  // relax anneal stage (coarse -> fine)
+    int fine_left_ = 0;         // remaining fine-burst steps (0 = coarse)
     std::vector<int> deflate_;
 };
 
@@ -425,7 +467,13 @@ private:
 
 constexpr double kBzBox = 12.0;   // Bohr half-extent, 256^3 (h ~ 0.094)
 constexpr int kBzPoints = 256;
-constexpr double kBzDt = 0.04;
+// dt scaled to the Z=6 regularized well: the nucleus cell sits at
+// V = -Z*2.38/h ~ -152 Ha, and the half-potential phase V*dt/2 must stay
+// well under a radian per step or the Trotter product heats the state over
+// the whole box (P(r<6) collapsed to 0.09 within 5 au at dt = 0.04).
+// 0.004 -> 0.30 rad at the deepest cell; the core-band eigenphase
+// |E|*dt ~ 0.23 rad rides along.
+constexpr double kBzDt = 0.004;
 constexpr double kBzRingR = 2.63;   // C-C 1.39 A in bohr
 constexpr double kBzCH = 2.06;      // C-H 1.09 A in bohr: H at r + this
 // BARE nuclear charges of the stripped molecule -- nothing to calibrate.
