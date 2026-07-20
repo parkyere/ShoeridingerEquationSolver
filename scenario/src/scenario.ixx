@@ -253,6 +253,17 @@ struct QdotApi {
     virtual void fire_displaced() = 0;  // coherent orbit / rosette
 };
 
+// Quantum carpet: free ring, temporal Talbot weave.
+struct CarpetApi {
+    virtual ~CarpetApi() = default;
+    virtual void refire() = 0;
+    virtual double revival_time() const = 0;     // T_rev = L^2 / pi
+    virtual double revival_overlap() const = 0;  // |<psi0|psi>|^2 live
+    // Row-cadence maxima (frame polling would miss the ~2 au peak):
+    virtual double mid_scramble_max() const = 0;  // max in (0.15, 0.6) T
+    virtual double best_revival() const = 0;      // max past 0.6 T
+};
+
 // Anderson localization: 1D speckle wire, conductance framing.
 struct AndersonApi {
     virtual ~AndersonApi() = default;
@@ -324,6 +335,7 @@ public:
     virtual QdotApi* qdot() { return nullptr; }
     virtual BilliardApi* billiard() { return nullptr; }
     virtual AndersonApi* anderson() { return nullptr; }
+    virtual CarpetApi* carpet() { return nullptr; }
 
     // 1D-scene overlay polylines (phasor curve + potential profile); the 3D
     // scenes return 0 and the renderer draws nothing extra.

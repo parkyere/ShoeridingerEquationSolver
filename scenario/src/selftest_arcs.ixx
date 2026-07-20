@@ -662,6 +662,45 @@ void register_verification_arcs(ShellT* shell) {
     // operator itself (a|0> = 0) with the level untouched. Condition-polled
     // (the CPU scene ticks immediately, but the poll keeps the boot-order
     // contract explicit).
+    // Carpet arc (main forces --scene=carpet1d): scrambled mid-carpet,
+    // full revival at T_rev = L^2/pi -- maxima tracked at row cadence by
+    // the director (frame polling would miss the ~2 au peak).
+    if (shell->has_arg("--selftest-carpet")) {
+        shell->sched().after(1000, [shell] {
+            selftest_scene_wait_running(shell, "carpet1d", 0, [shell](
+                                                                  bool runs) {
+                auto* cp = shell->cp();
+                if (!runs || cp == nullptr) {
+                    std::fprintf(stderr, "selftest-carpet: scene not "
+                                         "running or no api  [FAIL]\n");
+                    shell->request_exit(1);
+                    return;
+                }
+                const double t_rev = cp->revival_time();
+                shell->set_time_scale(16);
+                selftest_wait_sim_time(
+                    shell, 1.05 * t_rev, 0, [shell](bool ok1) {
+                        auto* c2 = shell->cp();
+                        const double mid = c2->mid_scramble_max();
+                        const double best = c2->best_revival();
+                        // A few-mode ring packet has LARGE fractional
+                        // revivals (measured 0.63 mid-carpet): the honest
+                        // gate is that the full revival stands clear
+                        // above every mid recurrence, near unity.
+                        const bool pass = ok1 && best > 0.95 &&
+                                          mid < 0.85 && best > mid + 0.2;
+                        std::fprintf(stderr,
+                                     "selftest-carpet: mid-carpet max "
+                                     "%.2f, revival %.2f (T_rev %.0f au)  "
+                                     "[%s]\n",
+                                     mid, best, c2->revival_time(),
+                                     pass ? "PASS" : "FAIL");
+                        shell->request_exit(pass ? 0 : 1);
+                    });
+            });
+        });
+    }
+
     // Cat + photon-loss arc (harmonic1d): the cat's <n> bleeds at kappa
     // and photons actually click (jumps fire); the parity-flip contract
     // itself is pinned grid-exactly in tests/mcwf1d_test.cpp.
