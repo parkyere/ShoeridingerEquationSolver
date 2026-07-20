@@ -719,6 +719,43 @@ void register_verification_arcs(ShellT* shell) {
         });
     }
 
+    // Spin-lattice arc (main forces --scene=spins): damped J > 0 orders
+    // a random boot into a ferromagnet; damped J < 0 into Neel. The
+    // integrator contracts live in tests/spinlattice_test.cpp.
+    if (shell->has_arg("--selftest-spins")) {
+        shell->sched().after(1000, [shell] {
+            auto* sn = shell->sn();
+            if (sn == nullptr) {
+                std::fprintf(stderr, "selftest-spins: no api  [FAIL]\n");
+                shell->request_exit(1);
+                return;
+            }
+            shell->set_time_scale(16);
+            sn->set_alpha(0.1);
+            sn->set_j(0.5);
+            sn->seed_random();
+            selftest_wait_sim_time(shell, 120.0, 0, [shell](bool ok1) {
+                const double m_ferro = shell->sn()->magnetization();
+                shell->sn()->set_j(-0.5);
+                shell->sn()->seed_random();
+                selftest_wait_sim_time(
+                    shell, 240.0, 0, [shell, ok1, m_ferro](bool ok2) {
+                        const double neel = shell->sn()->staggered();
+                        const double m_res =
+                            shell->sn()->magnetization();
+                        const bool pass = ok1 && ok2 && m_ferro > 0.85 &&
+                                          neel > 0.85 && m_res < 0.35;
+                        std::fprintf(stderr,
+                                     "selftest-spins: ferro |M| %.2f, "
+                                     "Neel %.2f (|M| %.2f)  [%s]\n",
+                                     m_ferro, neel, m_res,
+                                     pass ? "PASS" : "FAIL");
+                        shell->request_exit(pass ? 0 : 1);
+                    });
+            });
+        });
+    }
+
     // Bouncer arc (main forces --scene=bouncer1d): the boot relax lands
     // in the soft-floor Airy window; a drop from height carries E ~ g h.
     // The exact Airy SPACING is pinned by tests/bouncer1d_test.cpp.

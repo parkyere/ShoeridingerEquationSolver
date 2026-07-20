@@ -908,6 +908,59 @@ void draw_spin_panel(ShellT& shell, UiState& ui, ses_shell::SpinApi& sp) {
     ImGui::End();
 }
 
+// Spin-lattice panel: exchange/damping/field knobs + order readouts.
+template <typename ShellT>
+void draw_spins_panel(ShellT& shell, UiState& ui, ses_shell::SpinsApi& sn) {
+    ImGui::SetNextWindowPos(ImVec2(8, 8), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(430, 0), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_NoCollapse);
+    draw_scene_picker(shell);
+    draw_perf_readout(shell);
+    if (ImGui::Button("Random (2)")) shell.press('2');
+    ImGui::SameLine();
+    if (ImGui::Button("Ferro seed (3)")) shell.press('3');
+    ImGui::SameLine();
+    if (ImGui::Button("Neel seed (4)")) shell.press('4');
+    ImGui::SameLine();
+    if (ImGui::Button("Measure (M)")) shell.measure_now();
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Born-project EVERY site onto +-B_hat.");
+    }
+    float j = static_cast<float>(sn.j());
+    if (ImGui::SliderFloat("Exchange J", &j, -1.0f, 1.0f, "%.2f")) {
+        sn.set_j(static_cast<double>(j));
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("J > 0: neighbors align (ferromagnet).\n"
+                          "J < 0: they anti-align (Neel checkerboard).\n"
+                          "Mean-field product ansatz -- no entanglement.");
+    }
+    float al = static_cast<float>(sn.alpha());
+    if (ImGui::SliderFloat("Damping alpha", &al, 0.0f, 0.3f, "%.2f")) {
+        sn.set_alpha(static_cast<double>(al));
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Gilbert damping: 0 = spin waves ripple "
+                          "forever;\n> 0 = the lattice anneals into its "
+                          "ordered ground.");
+    }
+    const char* axes[3] = {"Bx", "By", "Bz"};
+    for (int a = 0; a < 3; ++a) {
+        float v = static_cast<float>(sn.b(a));
+        if (ImGui::SliderFloat(axes[a], &v, -1.0f, 1.0f, "%.2f")) {
+            sn.set_b(a, static_cast<double>(v));
+        }
+    }
+    ImGui::Text("|M| = %.2f   Neel = %.2f", sn.magnetization(),
+                sn.staggered());
+    draw_time_scale(shell, ui);
+    ImGui::Separator();
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(shell.status_text().c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::End();
+}
+
 // Anderson panel: disorder strength + landscape reroll + conductance.
 template <typename ShellT>
 void draw_anderson_panel(ShellT& shell, UiState& ui,

@@ -291,6 +291,22 @@ struct SpinApi {
     virtual int last_outcome() const = 0;
 };
 
+// 25 interacting spins: mean-field Heisenberg lattice of Bloch spheres.
+struct SpinsApi {
+    virtual ~SpinsApi() = default;
+    virtual void set_j(double j) = 0;  // exchange: >0 ferro, <0 Neel
+    virtual double j() const = 0;
+    virtual void set_alpha(double a) = 0;  // Gilbert damping
+    virtual double alpha() const = 0;
+    virtual void set_b(int axis, double v) = 0;
+    virtual double b(int axis) const = 0;
+    virtual void seed_random() = 0;
+    virtual void seed_ferro() = 0;
+    virtual void seed_neel() = 0;
+    virtual double magnetization() = 0;
+    virtual double staggered() = 0;
+};
+
 // Quantum bouncer: gravity + mirror, the Airy ladder.
 struct BouncerApi {
     virtual ~BouncerApi() = default;
@@ -396,6 +412,7 @@ public:
     virtual QpcApi* qpc() { return nullptr; }
     virtual BouncerApi* bouncer() { return nullptr; }
     virtual SpinApi* spin() { return nullptr; }
+    virtual SpinsApi* spins() { return nullptr; }
 
     // 1D-scene overlay polylines (phasor curve + potential profile); the 3D
     // scenes return 0 and the renderer draws nothing extra.

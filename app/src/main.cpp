@@ -61,6 +61,7 @@ import ses.scenario.bouncer1d_director;
 import ses.scenario.carpet1d_director;
 import ses.scenario.qpc2d_director;
 import ses.scenario.spin_director;
+import ses.scenario.spins_director;
 import ses.scenario.bloch1d_director;
 import ses.scenario.corral2d_director;
 import ses.scenario.doubleslit2d_director;
@@ -101,8 +102,8 @@ constexpr const char* kSceneNames[] = {
     "doublewell1d", "ptwell1d", "morse1d", "h2plus",   "benzene",
     "doubleslit2d", "landau2d", "bloch1d", "corral2d", "qdot2d",
     "billiard2d", "anderson1d", "carpet1d", "qpc2d", "bouncer1d",
-    "spin"};
-constexpr int kSceneCount = 21;
+    "spin", "spins"};
+constexpr int kSceneCount = 22;
 std::unique_ptr<ses_shell::ScenarioDirector> make_scene_director(int idx) {
     switch (idx) {
         case 1: return std::make_unique<ses_shell::HarmonicDirector>();
@@ -125,6 +126,7 @@ std::unique_ptr<ses_shell::ScenarioDirector> make_scene_director(int idx) {
         case 18: return std::make_unique<ses_shell::Qpc2DDirector>();
         case 19: return std::make_unique<ses_shell::Bouncer1DDirector>();
         case 20: return std::make_unique<ses_shell::SpinDirector>();
+        case 21: return std::make_unique<ses_shell::SpinsDirector>();
         default: return std::make_unique<ses_shell::HydrogenDirector>();
     }
 }
@@ -166,6 +168,7 @@ constexpr ArcScene kArcScenes[] = {
     {"selftest-qpc2d", "qpc2d"},
     {"selftest-bouncer", "bouncer1d"},
     {"selftest-spin", "spin"},
+    {"selftest-spins", "spins"},
     {"selftest-h2p", "h2plus"},
     {"selftest-benzene", "benzene"},
 };
@@ -433,6 +436,8 @@ public:
                                          {"Drop (F)", 'F'}});
             } else if (auto* spn = director_->spin()) {
                 app::draw_spin_panel(*this, ui_, *spn);
+            } else if (auto* sns = director_->spins()) {
+                app::draw_spins_panel(*this, ui_, *sns);
             } else if (director_->tunnel() != nullptr) {
                 app::draw_generic_panel(*this, ui_, {});
             } else {
@@ -551,6 +556,7 @@ public:
     ses_shell::QpcApi* qp() { return director_->qpc(); }
     ses_shell::BouncerApi* bo() { return director_->bouncer(); }
     ses_shell::SpinApi* sp() { return director_->spin(); }
+    ses_shell::SpinsApi* sn() { return director_->spins(); }
     bool solving() const { return director_->solving(); }
     bool manifold_ready() const { return director_->scene_ready(); }
     void debug_set_camera_distance(double d) {
@@ -985,7 +991,7 @@ int main(int argc, char* argv[]) {
         "boot scene (hydrogen, harmonic, tunnel, harmonic1d, tunnel1d, "
         "doublewell1d, ptwell1d, morse1d, h2plus, benzene, doubleslit2d, "
         "landau2d, bloch1d, corral2d, qdot2d, billiard2d, anderson1d, "
-        "carpet1d, qpc2d, bouncer1d, spin)");
+        "carpet1d, qpc2d, bouncer1d, spin, spins)");
     add("face-z", "boot straight into the z-facing (textbook) view");
     add("flow", "start with the probability-flow streaklines on");
     for (const char* flag :
@@ -1006,7 +1012,7 @@ int main(int argc, char* argv[]) {
           "selftest-partial", "selftest-pt1d", "selftest-qdot",
           "selftest-qpc2d",
           "selftest-rabi", "selftest-scene", "selftest-spin",
-          "selftest-trapdecay",
+          "selftest-spins", "selftest-trapdecay",
           "selftest-tunnel", "selftest-tunnel1d"}) {
         add(flag, "physics verification arc (headless)");
     }
