@@ -26,6 +26,7 @@ import ses.imaginary_time;
 import ses.observables;
 import ses.wavepacket;
 import ses.parallel;
+import ses.scenario.corral2d_director;
 
 namespace {
 
@@ -172,6 +173,27 @@ TEST(Corral2D, BlackDotFenceAbsorbsPartially) {
     const double survived = ses::norm_sq(psi);
     EXPECT_LT(survived, 0.90);  // it absorbed
     EXPECT_GT(survived, 0.05);  // but it is not a black hole
+}
+
+// The STM look: fermi_wave() prepares the standing wave AT the Fermi
+// energy (k_F R = j0_10 => ~10 radial nodes -- the famous 1993 topograph,
+// which images the E_F local density, NOT the relaxed ground). Contract:
+// it is confined and QUASI-STATIONARY under the real-time fence dynamics
+// (a near-eigenstate only phases; the rings stand still).
+TEST(Corral2DDirector, FermiWaveIsQuasiStationary) {
+    ses_shell::Corral2DDirector d;
+    ses_shell::CorralApi* api = d.corral();
+    ASSERT_NE(api, nullptr);
+    api->fermi_wave();
+    const double conf0 = api->confinement();
+    EXPECT_GT(conf0, 0.75);  // J0 tail reaches past R by construction
+    for (int t = 0; t < 30; ++t) {
+        d.tick();
+        d.run_frame();
+    }
+    // ~86% retained over ~5 au (measured): the black-dot fence absorbs by
+    // DESIGN, so the rings stand while slowly feeding the substrate.
+    EXPECT_GT(api->confinement(), 0.8 * conf0);
 }
 
 }  // namespace
