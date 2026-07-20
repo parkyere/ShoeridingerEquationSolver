@@ -784,6 +784,40 @@ void draw_corral_panel(ShellT& shell, UiState& ui, ses_shell::CorralApi& cr) {
     ImGui::End();
 }
 
+// Anderson panel: disorder strength + landscape reroll + conductance.
+template <typename ShellT>
+void draw_anderson_panel(ShellT& shell, UiState& ui,
+                         ses_shell::AndersonApi& an) {
+    ImGui::SetNextWindowPos(ImVec2(8, 8), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(430, 0), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_NoCollapse);
+    draw_scene_picker(shell);
+    draw_perf_readout(shell);
+    if (ImGui::Button("Refire (2)")) an.refire();
+    ImGui::SameLine();
+    if (ImGui::Button("New landscape (5)")) an.reroll();
+    ImGui::SameLine();
+    if (ImGui::Button("Pause (Space)")) shell.toggle_pause();
+    float w = static_cast<float>(an.disorder());
+    if (ImGui::SliderFloat("Disorder W", &w, 0.0f, 2.0f, "%.2f")) {
+        an.set_disorder(static_cast<double>(w));
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Speckle strength. W = 0: the wire conducts\n"
+                          "(ballistic flight). W ~ E: coherent multiple\n"
+                          "scattering freezes the packet -- in 1D every\n"
+                          "state is exponentially localized (Anderson).");
+    }
+    ImGui::Text("transmitted %.1f%%   on stage %.1f%%",
+                100.0 * an.transmitted(), 100.0 * an.survived());
+    draw_time_scale(shell, ui);
+    ImGui::Separator();
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(shell.status_text().c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::End();
+}
+
 // Quantum-billiard panel: shape toggle + the scar (time-average) lens.
 template <typename ShellT>
 void draw_billiard_panel(ShellT& shell, UiState& ui,

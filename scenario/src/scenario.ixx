@@ -247,6 +247,17 @@ struct QdotApi {
     virtual void fire_displaced() = 0;  // coherent orbit / rosette
 };
 
+// Anderson localization: 1D speckle wire, conductance framing.
+struct AndersonApi {
+    virtual ~AndersonApi() = default;
+    virtual void set_disorder(double w) = 0;  // speckle strength (refires)
+    virtual double disorder() const = 0;
+    virtual void reroll() = 0;  // fresh landscape (new seed, refires)
+    virtual void refire() = 0;
+    virtual double transmitted() const = 0;  // right-cap flux tally
+    virtual double survived() const = 0;     // on-stage norm
+};
+
 // Quantum billiard: circle (integrable) vs Bunimovich stadium (chaotic).
 struct BilliardApi {
     virtual ~BilliardApi() = default;
@@ -306,6 +317,7 @@ public:
     virtual CorralApi* corral() { return nullptr; }
     virtual QdotApi* qdot() { return nullptr; }
     virtual BilliardApi* billiard() { return nullptr; }
+    virtual AndersonApi* anderson() { return nullptr; }
 
     // 1D-scene overlay polylines (phasor curve + potential profile); the 3D
     // scenes return 0 and the renderer draws nothing extra.

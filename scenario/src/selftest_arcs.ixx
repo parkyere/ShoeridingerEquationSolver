@@ -1046,6 +1046,45 @@ void register_verification_arcs(ShellT* shell) {
 
     // Corral arc (main forces --scene=corral2d): the boot relax must
     // capture the ground INSIDE the fence with the J0-mode energy scale.
+    // Anderson arc (main forces --scene=anderson1d): the conductance
+    // contract at scene scale -- the disordered wire insulates, the clean
+    // wire conducts. Mirrors anderson1d_test.
+    if (shell->has_arg("--selftest-anderson")) {
+        shell->sched().after(1000, [shell] {
+            selftest_scene_wait_running(shell, "anderson1d", 0, [shell](
+                                                                    bool
+                                                                        runs) {
+                auto* an = shell->an();
+                if (!runs || an == nullptr) {
+                    std::fprintf(stderr, "selftest-anderson: scene not "
+                                         "running or no api  [FAIL]\n");
+                    shell->request_exit(1);
+                    return;
+                }
+                const double t_run = 110.0;
+                shell->set_time_scale(16);
+                selftest_wait_sim_time(shell, t_run, 0, [shell,
+                                                         t_run](bool ok1) {
+                    const double t_dis = shell->an()->transmitted();
+                    shell->an()->set_disorder(0.0);  // clean wire, refires
+                    selftest_wait_sim_time(
+                        shell, t_run, 0, [shell, ok1, t_dis](bool ok2) {
+                            const double t_clean =
+                                shell->an()->transmitted();
+                            const bool pass = ok1 && ok2 && t_clean > 0.7 &&
+                                              t_dis < 0.3 * t_clean;
+                            std::fprintf(
+                                stderr,
+                                "selftest-anderson: transmitted disordered "
+                                "%.3f, clean %.3f  [%s]\n",
+                                t_dis, t_clean, pass ? "PASS" : "FAIL");
+                            shell->request_exit(pass ? 0 : 1);
+                        });
+                });
+            });
+        });
+    }
+
     // Billiard arc (main forces --scene=billiard2d): the caustic contract
     // at scene scale -- circle keeps the center dark (|L| conserved),
     // the stadium fills it (chaos). Mirrors billiard2d_test.
