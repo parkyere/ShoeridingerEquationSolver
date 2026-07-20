@@ -5,12 +5,14 @@ module;
 #include <complex>
 #include <cstddef>
 #include <cstdint>
+#include <random>
 #include <string>
 #include <vector>
 export module ses.scenario.molecule_director;
 export import ses.scenario.base_director;
 import ses.wavepacket;
 import ses.scenario.molecular_seed;
+import ses.spheroidal;
 
 
 // One-electron molecules with FIXED nuclei (Born-Oppenheimer): the engine
@@ -174,7 +176,9 @@ protected:
     virtual std::vector<double> charges() const {
         return std::vector<double>(centers().size(), 1.0);
     }
-    virtual ses::Field3D excited_seed(int k) const = 0;
+    // Deflation-chain seed for state k (benzene). H2+ overrides prepare()
+    // to synthesize from its analytic atlas instead, so it needs none.
+    virtual ses::Field3D excited_seed(int /*k*/) const { return ground_seed(); }
     virtual double geometry_parameter(int variant) const = 0;
     virtual double clamp_parameter(double p) const = 0;
     virtual void geometry_changed() {}  // rebuild markers etc.
@@ -418,48 +422,102 @@ protected:
         const double d = 0.5 * snap_r(param_);
         return {{-d, 0.0, 0.0}, {d, 0.0, 0.0}};
     }
-    // The known MOs, resolved by symmetry sector (ses.scenario.molecular_
-    // seed): the seed's irrep factor keeps the deflated ITP in the right
-    // sector, so it converges to that sector's lowest orbital.
-    int exposed_states() const override { return 5; }
+
+    // ---- the analytic (prolate-spheroidal) orbital atlas ----------------
+    // H2+ is EXACTLY separable, so the known orbitals are synthesized
+    // directly from ses.spheroidal (no relaxation) -- the same
+    // reduce-to-1D-and-synthesize atlas the hydrogen atom uses. The atlas
+    // climbs to the representability ceiling (bound orbitals whose radial
+    // extent fits the box). prepare(k) = instant synthesis of atlas MO k.
+
+    int exposed_states() const override {
+        ensure_atlas();
+        return static_cast<int>(atlas_.size());
+    }
     const char* orbital_name(int k) const override {
-        static const char* const kNames[5] = {
-            "1sigma_g (bonding)", "1sigma_u* (antibonding)", "1pi_u",
-            "1pi_u'", "2sigma_g"};
-        return (k >= 0 && k < 5) ? kNames[k] : "";
+        ensure_atlas();
+        return (k >= 0 && k < static_cast<int>(atlas_.size()))
+                   ? atlas_[static_cast<std::size_t>(k)].label.c_str()
+                   : "";
     }
-    ses::Field3D excited_seed(int k) const override {
-        ses_shell::MolOrbital sym = ses_shell::MolOrbital::SigmaU;
-        switch (k) {
-            case 1: sym = ses_shell::MolOrbital::SigmaU; break;
-            case 2: sym = ses_shell::MolOrbital::PiUy; break;
-            case 3: sym = ses_shell::MolOrbital::PiUz; break;
-            case 4: sym = ses_shell::MolOrbital::SigmaG2; break;
-            default: sym = ses_shell::MolOrbital::SigmaU; break;
+    bool prepared(int k) const override {
+        ensure_atlas();
+        return k >= 0 && k < static_cast<int>(atlas_.size());
+    }
+    double energy(int k) const override {
+        ensure_atlas();
+        return (k >= 0 && k < static_cast<int>(atlas_.size()))
+                   ? atlas_[static_cast<std::size_t>(k)].orb.energy
+                   : 0.0;
+    }
+    void prepare(int k) override {
+        ensure_atlas();
+        if (k < 0 || k >= static_cast<int>(atlas_.size())) {
+            return;
         }
-        return ses_shell::molecular_orbital_seed(sim_.grid(), sym);
+        showing_random_ = false;
+        cur_ = k;
+        const Mo& mo = atlas_[static_cast<std::size_t>(k)];
+        set_state_field(ses::synthesize_h2plus(sim_.grid(), mo.orb, mo.partner));
     }
+    // Random = random NORMALIZED superposition of the atlas orbitals (a
+    // legitimate bound state of arbitrary shape -- it stays on the molecule
+    // and beats between MOs, unlike a raw random blob field).
+    void seed_random() override {
+        ensure_atlas();
+        if (atlas_.empty()) {
+            return;
+        }
+        ses::Field3D acc{sim_.grid()};
+        std::mt19937_64 rng{rand_seed_++};
+        std::normal_distribution<double> gauss(0.0, 1.0);
+        for (const Mo& mo : atlas_) {
+            const ses::Field3D o =
+                ses::synthesize_h2plus(sim_.grid(), mo.orb, mo.partner);
+            const std::complex<double> c{gauss(rng), gauss(rng)};
+            for (int i = 0; i < acc.size(); ++i) {
+                acc.data()[static_cast<std::size_t>(i)] +=
+                    c * o.data()[static_cast<std::size_t>(i)];
+            }
+        }
+        ses::normalize(acc);
+        showing_random_ = true;
+        set_state_field(acc);
+    }
+
+    void on_gpu_ready() override {
+        ensure_atlas();
+        prepare(0);
+    }
+
     double geometry_parameter(int variant) const override {
         return variant == 1 ? 6.0 : kH2pRDefault;  // 0 = equilibrium, 1 = stretched
     }
     double clamp_parameter(double p) const override {
         return snap_r(std::clamp(p, kH2pRMin, kH2pRMax));
     }
-    void geometry_changed() override { rebuild_markers(); }
+    void geometry_changed() override {
+        atlas_.clear();  // a new R needs a fresh atlas
+        atlas_R_ = -1.0;
+        rebuild_markers();
+    }
 
     std::string title_suffix() override {
         const double rep = nuclear_repulsion();
         std::string s = strf("  R = %.3f Bohr (fixed nuclei)", snap_r(param_));
-        if (prepared_[0]) {
-            s += strf("  E_total(sigma_g) = %.4f Ha", e_[0] + rep);
+        if (!atlas_.empty()) {
+            s += strf("  E_total(1sigma_g) = %.4f Ha",
+                      atlas_[0].orb.energy + rep);
         }
         if (showing_random_) {
-            s += "  showing: random wavefunction (superposition)";
-        } else if (prepared_[target_]) {
-            s += strf("  showing %s: E = %.4f Ha", orbital_name(target_),
-                      e_[target_]);
+            s += "  showing: random atlas superposition";
+        } else if (cur_ >= 0 && cur_ < static_cast<int>(atlas_.size())) {
+            s += strf("  showing %s: E_elec = %.4f Ha",
+                      atlas_[static_cast<std::size_t>(cur_)].label.c_str(),
+                      atlas_[static_cast<std::size_t>(cur_)].orb.energy);
         }
-        s += "  keys: 2-6 orbitals / S random / R slider scans the bond";
+        s += strf("  (%d orbitals)  keys: 2.. orbitals / S random / R slider",
+                  static_cast<int>(atlas_.size()));
         return s;
     }
 
@@ -495,6 +553,80 @@ private:
         balls_ = {ball(c[0], 0.4, 0.95f, 0.95f, 0.95f),
                   ball(c[1], 0.4, 0.95f, 0.95f, 0.95f)};
     }
+
+    // One exposed orbital = an analytic MO + which real partner (m>0 has a
+    // cos-phi and a sin-phi lobing) + its term-symbol label.
+    struct Mo {
+        ses::H2plusOrbital orb;
+        int partner;
+        std::string label;
+    };
+
+    // Drop a synthesized/blended field in as the live state and evolve it.
+    void set_state_field(const ses::Field3D& psi) {
+        sim_.set_psi(psi);
+        cpu_is_truth_ = true;  // run_frame uploads it to the engine
+        stepping_ = BaseStepping::RealTime;
+        title_dirty_ = true;
+        stage_active_view();
+    }
+
+    // Radial extent test: an orbital is representable if its Lambda(xi) has
+    // decayed well inside the box (physical r ~ (R/2) xi).
+    bool representable(const ses::H2plusOrbital& o, double R) const {
+        double peak = 0.0;
+        for (double v : o.lambda) {
+            peak = std::max(peak, v * v);
+        }
+        if (peak <= 0.0) {
+            return false;
+        }
+        double xi_dec = o.xi.empty() ? 1.0 : o.xi.back();
+        for (std::size_t i = o.lambda.size(); i-- > 0;) {
+            if (o.lambda[i] * o.lambda[i] > 1e-4 * peak) {
+                xi_dec = o.xi[i];
+                break;
+            }
+        }
+        return 0.5 * R * xi_dec < 0.85 * kH2pBox;
+    }
+
+    static std::string mo_label(const ses::H2plusOrbital& o, int partner) {
+        // United-atom / MO term symbol from (m, n_eta, n_xi, parity).
+        const char* g = o.parity > 0 ? "g" : "u";
+        const char* sym = o.m == 0 ? "sigma" : (o.m == 1 ? "pi" : "delta");
+        // Principal-ish index within the (m,parity) tower for a readable name.
+        std::string s = strf("%d%s_%s%s", o.n_xi + o.n_eta + o.m + 1, sym, g,
+                             o.parity < 0 && o.m == 0 ? "*" : "");
+        if (o.m > 0) {
+            s += partner == 0 ? " (y)" : " (z)";
+        }
+        return s;
+    }
+
+    void ensure_atlas() const {
+        const double R = snap_r(param_);
+        if (atlas_R_ == R && !atlas_.empty()) {
+            return;
+        }
+        atlas_.clear();
+        atlas_R_ = R;
+        const std::vector<ses::H2plusOrbital> orbs = ses::h2plus_atlas(R, 8);
+        for (const ses::H2plusOrbital& o : orbs) {
+            if (!representable(o, R)) {
+                continue;
+            }
+            const int partners = o.m > 0 ? 2 : 1;
+            for (int pp = 0; pp < partners; ++pp) {
+                atlas_.push_back({o, pp, mo_label(o, pp)});
+            }
+        }
+    }
+
+    // Mutable analytic-atlas cache (rebuilt on R change; a const lazy build).
+    mutable std::vector<Mo> atlas_;
+    mutable double atlas_R_ = -1.0;
+    int cur_ = 0;  // currently-shown atlas index
 };
 
 // ---- Benzene one-electron toy --------------------------------------------
