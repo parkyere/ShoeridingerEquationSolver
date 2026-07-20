@@ -32,10 +32,13 @@ import ses.potential;
 export namespace ses_shell {
 
 constexpr double kLd2dBox = 30.0;
-constexpr int kLd2dN = 256;
+constexpr int kLd2dN = 512;
 constexpr int kLd2dNz = 4;
 constexpr double kLd2dZHalf = 2.0;
-constexpr double kLd2dDt = 0.01;
+// dt rides h^2: the bond angle tx*dt/2 = dt/(4 h^2) is the Trotter knob,
+// and 512^2 at dt = 0.01 hit 0.18 rad/bond (orbit closure 0.38 -> 0.99).
+// 0.0025 restores the 256^2 angle; StepsPerTick x4 keeps the visual pace.
+constexpr double kLd2dDt = 0.0025;
 constexpr double kLd2dB = 0.4;
 constexpr double kLd2dBMin = 0.15;
 constexpr double kLd2dBMax = 1.2;
@@ -43,11 +46,11 @@ constexpr double kLd2dK0 = 1.5;
 constexpr double kLd2dK0Min = 0.5;
 constexpr double kLd2dK0Max = 2.5;
 constexpr double kLd2dSigma = 2.0;
-constexpr int kLd2dStepsPerTick = 8;
+constexpr int kLd2dStepsPerTick = 32;
 constexpr int kLd2dTrailCap = 900;
 // IBM-style STM height surface (like the corral): z = |psi|^2 peak-tracked.
 constexpr double kLd2dSurfH = 6.0;
-constexpr int kLd2dMeshStride = 1;  // 256^2 physics = 256^2 display mesh
+constexpr int kLd2dMeshStride = 1;  // 512^2 physics = 512^2 display mesh
 
 class Landau2DDirector final : public ScenarioDirector, public LandauApi {
 public:

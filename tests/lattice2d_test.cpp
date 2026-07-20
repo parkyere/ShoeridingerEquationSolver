@@ -529,11 +529,12 @@ TEST(Landau2DDirector, LadderRefusesPastTheLatticeBand) {
     while (climbed < 40 && api->ladder(true)) {
         ++climbed;
     }
-    // The measured band ceiling (E ~ 0.30/h^2): from the coherent boot
-    // (each a-dag adds ~2B there) refusal strikes within a handful of
-    // rungs -- but never immediately, and never unbounded.
-    EXPECT_GE(climbed, 3);
-    EXPECT_LE(climbed, 20);
+    // The measured band ceiling (E ~ 0.30/h^2) scales as h^-2, so the cap
+    // tracks the scene grid: 512^2 measures 25 rungs from the coherent
+    // boot (each a-dag adds ~2B there) -- never immediately, never
+    // unbounded.
+    EXPECT_GE(climbed, 15);
+    EXPECT_LE(climbed, 35);
     // And the climb was real: the Landau index followed the rungs.
     const double top_n = api->mean_n();
     EXPECT_GT(top_n, 0.6 * climbed);

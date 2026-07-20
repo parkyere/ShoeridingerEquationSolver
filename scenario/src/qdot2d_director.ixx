@@ -25,10 +25,13 @@ import ses.heightfield;
 export namespace ses_shell {
 
 constexpr double kQd2dBox = 20.0;
-constexpr int kQd2dN = 256;
+constexpr int kQd2dN = 512;
 constexpr int kQd2dNz = 4;
 constexpr double kQd2dZHalf = 2.0;
-constexpr double kQd2dDt = 0.01;
+// dt rides h^2 (the landau rule): 512^2 at dt = 0.01 biases the relax
+// fixed point +0.22 Ha off the Fock-Darwin ground (Trotter artifact, the
+// benzene disease); 0.0025 restores the 256^2 bond angle.
+constexpr double kQd2dDt = 0.0025;
 constexpr double kQd2dW0 = 0.5;
 constexpr double kQd2dW0Min = 0.2;
 constexpr double kQd2dW0Max = 1.0;
@@ -41,7 +44,7 @@ constexpr int kQd2dTrailCap = 900;
 // then 0.98-decay -- the base's decay-only peak_ boots ~100x too high and
 // blacked the cloud out for seconds.
 constexpr double kQd2dSurfH = 6.0;
-constexpr int kQd2dMeshStride = 1;  // 256^2 physics = 256^2 display mesh
+constexpr int kQd2dMeshStride = 1;  // 512^2 physics = 512^2 display mesh
 
 class Qdot2DDirector final : public Lattice2DDirectorBase, public QdotApi {
 public:
@@ -124,6 +127,9 @@ public:
     }
 
     double sim_dt() const override { return kQd2dDt; }
+    // x4 the base's 8: dt shrank x4 for the 512^2 bond angle, so the
+    // rosette keeps its visual pace.
+    int steps_per_tick() const override { return 32; }
 
     // ---- STM-style surface display (mesh path; cloud off) ----
     bool cloud() const override { return false; }

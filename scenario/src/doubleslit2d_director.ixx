@@ -69,7 +69,7 @@ constexpr double kDs2dSrcAmp = 0.05;
 constexpr double kDs2dSrcSigX = 2.0;
 // IBM-style STM height surface (like the corral): z = |psi|^2 peak-tracked.
 constexpr double kDs2dSurfH = 6.0;
-constexpr int kDs2dMeshStride = 2;  // 512^2 physics -> 256^2 display mesh
+constexpr int kDs2dMeshStride = 1;  // 512^2 physics = 512^2 display mesh
 
 class DoubleSlit2DDirector final : public ScenarioDirector, public SlitApi {
 public:
