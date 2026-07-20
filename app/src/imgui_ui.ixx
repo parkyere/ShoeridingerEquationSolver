@@ -926,14 +926,28 @@ void draw_spins_panel(ShellT& shell, UiState& ui, ses_shell::SpinsApi& sn) {
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Born-project EVERY site onto +-B_hat.");
     }
+    if (ImGui::Button(sn.exact_mode() ? "Mean-field (X)" : "Exact (X)")) {
+        shell.press('X');
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Switch the engine:\n"
+                          "Mean-field = product ansatz, arrows stay unit "
+                          "length (no entanglement).\n"
+                          "Exact = the full 2^16 wavefunction. Entanglement "
+                          "is real, so the arrows SHRINK\n(mean |<s>| < 1) "
+                          "as the sites correlate -- the thing mean-field "
+                          "cannot show.");
+    }
+    ImGui::SameLine();
+    ImGui::TextUnformatted(sn.exact_mode() ? "[EXACT 2^16]"
+                                           : "[mean-field]");
     float j = static_cast<float>(sn.j());
     if (ImGui::SliderFloat("Exchange J", &j, -1.0f, 1.0f, "%.2f")) {
         sn.set_j(static_cast<double>(j));
     }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("J > 0: neighbors align (ferromagnet).\n"
-                          "J < 0: they anti-align (Neel checkerboard).\n"
-                          "Mean-field product ansatz -- no entanglement.");
+                          "J < 0: they anti-align (Neel checkerboard).");
     }
     float al = static_cast<float>(sn.alpha());
     if (ImGui::SliderFloat("Damping alpha", &al, 0.0f, 0.3f, "%.2f")) {
@@ -951,8 +965,12 @@ void draw_spins_panel(ShellT& shell, UiState& ui, ses_shell::SpinsApi& sn) {
             sn.set_b(a, static_cast<double>(v));
         }
     }
-    ImGui::Text("|M| = %.2f   Neel = %.2f", sn.magnetization(),
-                sn.staggered());
+    ImGui::Text("|M| = %.2f   Neel = %.2f   mean |<s>| = %.2f",
+                sn.magnetization(), sn.staggered(), sn.arrow_mean());
+    if (sn.exact_mode() && ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("mean |<s>| < 1 = the sites are ENTANGLED "
+                          "(exact only).");
+    }
     draw_time_scale(shell, ui);
     ImGui::Separator();
     ImGui::PushTextWrapPos(0.0f);

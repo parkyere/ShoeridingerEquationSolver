@@ -14,6 +14,7 @@ module;
 export module ses.scenario.spins_director;
 export import ses.scenario;
 export import ses.spinlattice;
+export import ses.spinexact;
 
 
 // 25 pinned electron spins, INTERACTING through the mean-field
@@ -29,9 +30,10 @@ export import ses.spinlattice;
 
 export namespace ses_shell {
 
-constexpr int kSlN = 5;              // 5 x 5
+constexpr int kSlN = 4;              // 4 x 4 (= the exact 2^16 stage)
 constexpr double kSlDt = 0.002;
 constexpr int kSlStepsPerTick = 20;
+constexpr int kSlExactSteps = 8;     // exact steps cost ~1.7 ms apiece
 constexpr double kSlR = 3.2;         // per-site sphere radius
 constexpr double kSlPitch = 8.0;     // lattice spacing on screen
 constexpr double kSlJ = 0.5;
@@ -98,10 +100,77 @@ public:
         double x = 0.0;
         double y = 0.0;
         double z = 0.0;
-        ses::lattice_magnetization(lat_, &x, &y, &z);
-        return std::sqrt(x * x + y * y + z * z);
+        for (int i = 0; i < kSlN * kSlN; ++i) {
+            x += bloch_[static_cast<std::size_t>(3 * i)];
+            y += bloch_[static_cast<std::size_t>(3 * i + 1)];
+            z += bloch_[static_cast<std::size_t>(3 * i + 2)];
+        }
+        const double inv = 1.0 / (kSlN * kSlN);
+        return std::sqrt(x * x + y * y + z * z) * inv;
     }
-    double staggered() override { return ses::lattice_staggered(lat_); }
+    double staggered() override {
+        double x = 0.0;
+        double y = 0.0;
+        double z = 0.0;
+        for (int yy = 0; yy < kSlN; ++yy) {
+            for (int xx = 0; xx < kSlN; ++xx) {
+                const int i = yy * kSlN + xx;
+                const double sgn = ((xx + yy) & 1) != 0 ? -1.0 : 1.0;
+                x += sgn * bloch_[static_cast<std::size_t>(3 * i)];
+                y += sgn * bloch_[static_cast<std::size_t>(3 * i + 1)];
+                z += sgn * bloch_[static_cast<std::size_t>(3 * i + 2)];
+            }
+        }
+        const double inv = 1.0 / (kSlN * kSlN);
+        return std::sqrt(x * x + y * y + z * z) * inv;
+    }
+
+    // ---- the exact/mean-field switch ----
+    // Exact -> mean-field: each arrow COLLAPSES to a unit product spin
+    // (direction kept, entanglement discarded -- that is the honest
+    // meaning of the ansatz). Mean-field -> exact: the product embeds
+    // losslessly.
+    void set_exact(bool on) override {
+        if (on == exact_mode_) {
+            return;
+        }
+        if (on) {
+            exact_ = ses::exact_from_product(lat_);
+        } else {
+            refresh_bloch();
+            for (int i = 0; i < kSlN * kSlN; ++i) {
+                double x = bloch_[static_cast<std::size_t>(3 * i)];
+                double y = bloch_[static_cast<std::size_t>(3 * i + 1)];
+                double z = bloch_[static_cast<std::size_t>(3 * i + 2)];
+                const double n = std::sqrt(x * x + y * y + z * z);
+                if (n > 1e-9) {
+                    x /= n;
+                    y /= n;
+                    z /= n;
+                } else {
+                    x = 0.0;
+                    y = 0.0;
+                    z = 1.0;
+                }
+                lat_.s[static_cast<std::size_t>(i)] =
+                    ses::spinor_from_bloch(x, y, z);
+            }
+        }
+        exact_mode_ = on;
+        note_ = on ? "EXACT 2^16 Hamiltonian" : "mean-field (product)";
+        title_dirty_ = true;
+    }
+    bool exact_mode() const override { return exact_mode_; }
+    double arrow_mean() override {
+        double m = 0.0;
+        for (int i = 0; i < kSlN * kSlN; ++i) {
+            const double x = bloch_[static_cast<std::size_t>(3 * i)];
+            const double y = bloch_[static_cast<std::size_t>(3 * i + 1)];
+            const double z = bloch_[static_cast<std::size_t>(3 * i + 2)];
+            m += std::sqrt(x * x + y * y + z * z);
+        }
+        return m / (kSlN * kSlN);
+    }
 
     // ---- lifecycle / frame ----
     const ses::Grid3D& grid() const override { return grid_; }
@@ -117,19 +186,28 @@ public:
             const int n = pending_steps_;
             pending_steps_ = 0;
             for (int k = 0; k < n; ++k) {
-                ses::spinlattice_step(lat_, b_[0], b_[1], b_[2], j_,
-                                      alpha_, kSlDt);
+                if (exact_mode_) {
+                    // Exact mode is a CLOSED quantum system: alpha does
+                    // not apply (dissipation needs an environment).
+                    ses::exact_step(exact_, b_[0], b_[1], b_[2], j_,
+                                    kSlDt);
+                } else {
+                    ses::spinlattice_step(lat_, b_[0], b_[1], b_[2], j_,
+                                          alpha_, kSlDt);
+                }
             }
             sim_time_ += n * kSlDt;
             display_changed_ = true;
         }
+        refresh_bloch();
         rebuild_arrows();
         if (++frames_ % 10 == 0) {
             title_dirty_ = true;
         }
     }
     void tick() override {
-        const int per_tick = kSlStepsPerTick * time_scale_;
+        const int base = exact_mode_ ? kSlExactSteps : kSlStepsPerTick;
+        const int per_tick = base * time_scale_;
         pending_steps_ = std::min(pending_steps_ + per_tick, per_tick);
     }
 
@@ -152,9 +230,30 @@ public:
         }
         std::uniform_real_distribution<double> uni(0.0, 1.0);
         int plus = 0;
-        for (auto& s : lat_.s) {
-            plus += ses::spin_measure(s, nx, ny, nz, uni(rng_)) > 0 ? 1
-                                                                    : 0;
+        if (exact_mode_) {
+            // Rotate every site so B_hat -> z, Born-measure the bits
+            // sequentially (the correct joint sampling), rotate back.
+            const double th = std::acos(std::clamp(nz, -1.0, 1.0));
+            const double axn = std::hypot(-ny, nx);
+            const double ax = axn > 1e-12 ? -ny / axn : 1.0;
+            const double ay = axn > 1e-12 ? nx / axn : 0.0;
+            for (int i = 0; i < kSlN * kSlN; ++i) {
+                ses::exact_site_rotate(exact_, i, ax, ay, 0.0, -th);
+            }
+            for (int i = 0; i < kSlN * kSlN; ++i) {
+                plus += ses::exact_measure_z(exact_, i, uni(rng_)) > 0
+                            ? 1
+                            : 0;
+            }
+            for (int i = 0; i < kSlN * kSlN; ++i) {
+                ses::exact_site_rotate(exact_, i, ax, ay, 0.0, th);
+            }
+        } else {
+            for (auto& s : lat_.s) {
+                plus += ses::spin_measure(s, nx, ny, nz, uni(rng_)) > 0
+                            ? 1
+                            : 0;
+            }
         }
         note_ = strf("measured: %d/%d aligned", plus, kSlN * kSlN);
         display_changed_ = true;
@@ -172,6 +271,10 @@ public:
         }
         if (key == '4') {
             seed_neel();
+            return true;
+        }
+        if (key == 'X') {
+            set_exact(!exact_mode_);
             return true;
         }
         return false;
@@ -208,19 +311,31 @@ public:
     const std::vector<ses::Rgb>& colors() const override {
         return no_colors_;
     }
-    int marker_count() const override { return 0; }
 
     std::string title_text() override {
         std::string s = strf(
-            "25 interacting spins (mean-field Heisenberg -- product "
-            "ansatz, no entanglement)  |  t = %.1f au  J = %+.2f  "
-            "alpha = %.2f  |M| = %.2f  Neel = %.2f",
-            sim_time_, j_, alpha_, magnetization(), staggered());
+            "16 interacting spins [%s]  |  t = %.1f au  J = %+.2f  "
+            "alpha = %.2f%s  |M| = %.2f  Neel = %.2f  mean |<s>| = %.2f",
+            exact_mode_ ? "EXACT 2^16 Heisenberg"
+                        : "mean-field, no entanglement",
+            sim_time_, j_, alpha_,
+            exact_mode_ ? " (unused: closed system)" : "",
+            magnetization(), staggered(), arrow_mean());
         if (!note_.empty()) {
             s += "  [" + note_ + "]";
         }
-        s += "  keys: 2 random / 3 ferro / 4 Neel / M measure";
+        s += "  keys: 2 random / 3 ferro / 4 Neel / X exact / M measure";
         return s;
+    }
+
+    // Glassy Bloch spheres, one per site (the fresnel marker pass).
+    int marker_count() const override { return kSlN * kSlN; }
+    SceneMarker marker(int i) const override {
+        double cx = 0.0;
+        double cy = 0.0;
+        site_center(i, &cx, &cy);
+        return {static_cast<float>(cx), static_cast<float>(cy), 0.0f,
+                static_cast<float>(kSlR), 0.55f, 0.75f, 0.95f};
     }
 
     // 2 rings per site (static) + 1 arrow per site (live).
@@ -259,11 +374,32 @@ private:
     }
 
     void after_seed(const char* what) {
+        if (exact_mode_) {
+            exact_ = ses::exact_from_product(lat_);  // fresh product boot
+        }
+        refresh_bloch();
         sim_time_ = 0.0;
         pending_steps_ = 0;
         note_ = what;
         display_changed_ = true;
         title_dirty_ = true;
+    }
+
+    void refresh_bloch() {
+        for (int i = 0; i < kSlN * kSlN; ++i) {
+            double x = 0.0;
+            double y = 0.0;
+            double z = 0.0;
+            if (exact_mode_) {
+                ses::exact_site_bloch(exact_, i, &x, &y, &z);
+            } else {
+                ses::bloch_vector(lat_.s[static_cast<std::size_t>(i)],
+                                  &x, &y, &z);
+            }
+            bloch_[static_cast<std::size_t>(3 * i)] = x;
+            bloch_[static_cast<std::size_t>(3 * i + 1)] = y;
+            bloch_[static_cast<std::size_t>(3 * i + 2)] = z;
+        }
     }
 
     void rebuild_rings() {
@@ -299,11 +435,13 @@ private:
             double cx = 0.0;
             double cy = 0.0;
             site_center(site, &cx, &cy);
-            double x = 0.0;
-            double y = 0.0;
-            double z = 0.0;
-            ses::bloch_vector(lat_.s[static_cast<std::size_t>(site)], &x,
-                              &y, &z);
+            // Exact mode: |<sigma>| < 1 when entangled -- the arrow
+            // honestly SHRINKS.
+            const double x = bloch_[static_cast<std::size_t>(3 * site)];
+            const double y =
+                bloch_[static_cast<std::size_t>(3 * site + 1)];
+            const double z =
+                bloch_[static_cast<std::size_t>(3 * site + 2)];
             std::vector<float>& a =
                 arrows_[static_cast<std::size_t>(site)];
             a.push_back(static_cast<float>(cx));
@@ -328,6 +466,12 @@ private:
                       ses::Grid1D{-25.0, 25.0, 2},
                       ses::Grid1D{-25.0, 25.0, 2}};
     ses::SpinLattice lat_;
+    ses::SpinState16 exact_;  // the full 2^16 wavefunction (exact mode)
+    bool exact_mode_ = false;
+    // Per-site Bloch vectors (3 doubles/site), refreshed each frame from
+    // whichever engine is live -- the single display source.
+    std::vector<double> bloch_ =
+        std::vector<double>(3 * kSlN * kSlN, 0.0);
     double b_[3] = {0.0, 0.0, 0.2};
     double j_ = kSlJ;
     double alpha_ = kSlAlpha;

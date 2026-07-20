@@ -305,6 +305,12 @@ struct SpinsApi {
     virtual void seed_neel() = 0;
     virtual double magnetization() = 0;
     virtual double staggered() = 0;
+    // Exact 2^16 Heisenberg <-> mean-field product switch. In exact mode
+    // entanglement is real, so the per-site arrows can SHRINK below unit
+    // length -- arrow_mean() reports the mean |<sigma_i>| (1 = product).
+    virtual void set_exact(bool on) = 0;
+    virtual bool exact_mode() const = 0;
+    virtual double arrow_mean() = 0;
 };
 
 // Quantum bouncer: gravity + mirror, the Airy ladder.

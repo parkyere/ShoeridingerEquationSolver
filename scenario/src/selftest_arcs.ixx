@@ -743,14 +743,34 @@ void register_verification_arcs(ShellT* shell) {
                         const double neel = shell->sn()->staggered();
                         const double m_res =
                             shell->sn()->magnetization();
-                        const bool pass = ok1 && ok2 && m_ferro > 0.85 &&
-                                          neel > 0.85 && m_res < 0.35;
-                        std::fprintf(stderr,
-                                     "selftest-spins: ferro |M| %.2f, "
-                                     "Neel %.2f (|M| %.2f)  [%s]\n",
-                                     m_ferro, neel, m_res,
-                                     pass ? "PASS" : "FAIL");
-                        shell->request_exit(pass ? 0 : 1);
+                        // Third leg: switch to the EXACT 2^16 engine and
+                        // let the Neel product entangle -- the mean arrow
+                        // length must SHRINK below unity (the mean-field
+                        // ansatz cannot do this).
+                        shell->sn()->set_exact(true);
+                        shell->sn()->set_alpha(0.0);
+                        shell->sn()->set_b(2, 0.1);
+                        shell->sn()->seed_neel();  // resets sim_time to 0
+                        const double arrow0 = shell->sn()->arrow_mean();
+                        selftest_wait_sim_time(
+                            shell, 6.0, 0,
+                            [shell, ok1, ok2, m_ferro, neel, m_res,
+                             arrow0](bool ok3) {
+                                const double arrow1 =
+                                    shell->sn()->arrow_mean();
+                                const bool pass =
+                                    ok1 && ok2 && ok3 && m_ferro > 0.85 &&
+                                    neel > 0.85 && m_res < 0.35 &&
+                                    arrow0 > 0.95 && arrow1 < 0.9;
+                                std::fprintf(
+                                    stderr,
+                                    "selftest-spins: ferro |M| %.2f, "
+                                    "Neel %.2f (|M| %.2f), exact arrows "
+                                    "%.2f -> %.2f  [%s]\n",
+                                    m_ferro, neel, m_res, arrow0, arrow1,
+                                    pass ? "PASS" : "FAIL");
+                                shell->request_exit(pass ? 0 : 1);
+                            });
                     });
             });
         });
