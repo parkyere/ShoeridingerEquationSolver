@@ -371,7 +371,8 @@ public:
         }
         // Optional fp32 Bohmian-velocity kernel for the streakline flow. Absent
         // blob => no velocity volume (the renderer's flow feature needs it).
-        if (blobs.flow_velocity != nullptr) {
+        // Planar grids skip it: the z-gradient needs depth.
+        if (blobs.flow_velocity != nullptr && grid.z.n > 1) {
             if (!flow_vel_k_.create(ctx, blobs.flow_velocity,
                                     blobs.flow_velocity_size,
                                     {{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
@@ -2739,9 +2740,10 @@ private:
         }
         for (int i = 0; i < 2; ++i) {
             if (!ctx_->create_storage_image_3d(
-                    static_cast<std::uint32_t>(n_),
-                    static_cast<std::uint32_t>(n_),
-                    static_cast<std::uint32_t>(n_), VK_FORMAT_R16G16_SFLOAT,
+                    static_cast<std::uint32_t>(grid_.x.n),
+                    static_cast<std::uint32_t>(grid_.y.n),
+                    static_cast<std::uint32_t>(grid_.z.n),
+                    VK_FORMAT_R16G16_SFLOAT,
                     &volume_[i], /*share_across_queues=*/true)) {
                 return false;
             }
@@ -3227,26 +3229,18 @@ private:
         return upload_raw(v_buf_, vf.data(), cells_ * sizeof(float));
     }
     bool upload_k2_tables(const ses::Grid3D& grid) {
-        const std::vector<double> kx = ses::wavenumbers(grid.x);
-        const std::vector<double> ky = ses::wavenumbers(grid.y);
-        const std::vector<double> kz = ses::wavenumbers(grid.z);
-        std::vector<float> t(static_cast<std::size_t>(n_));
-        for (int i = 0; i < n_; ++i) {
-            t[static_cast<std::size_t>(i)] = static_cast<float>(kx[i] * kx[i]);
-        }
-        if (!upload_raw(kx2_buf_, t.data(), t.size() * sizeof(float))) {
-            return false;
-        }
-        for (int i = 0; i < n_; ++i) {
-            t[static_cast<std::size_t>(i)] = static_cast<float>(ky[i] * ky[i]);
-        }
-        if (!upload_raw(ky2_buf_, t.data(), t.size() * sizeof(float))) {
-            return false;
-        }
-        for (int i = 0; i < n_; ++i) {
-            t[static_cast<std::size_t>(i)] = static_cast<float>(kz[i] * kz[i]);
-        }
-        return upload_raw(kz2_buf_, t.data(), t.size() * sizeof(float));
+        // Per-axis lengths: a planar z axis has ONE bin (DC = 0), so the
+        // old to-n_ loops would read past its 1-element wavenumbers vector.
+        const auto fill = [this](Buffer& buf, const ses::Grid1D& axis) {
+            const std::vector<double> k = ses::wavenumbers(axis);
+            std::vector<float> t(k.size());
+            for (std::size_t i = 0; i < k.size(); ++i) {
+                t[i] = static_cast<float>(k[i] * k[i]);
+            }
+            return upload_raw(buf, t.data(), t.size() * sizeof(float));
+        };
+        return fill(kx2_buf_, grid.x) && fill(ky2_buf_, grid.y) &&
+               fill(kz2_buf_, grid.z);
     }
 
 #ifdef SES_HAVE_VKFFT
@@ -3274,7 +3268,9 @@ private:
         vkfft_psi_buf_ = psi_.buf;
         vkfft_buf_size_ = static_cast<std::uint64_t>(field_bytes_);
         VkFFTConfiguration conf{};
-        conf.FFTdim = 3;
+        // Planar nz == 1: the degenerate axis is no transform -- plan a 2D
+        // FFT (normalize=1 then divides by nx*ny = cells_, matching conjN).
+        conf.FFTdim = grid_.z.n == 1 ? 2 : 3;
         conf.size[0] = static_cast<std::uint64_t>(grid_.x.n);
         conf.size[1] = static_cast<std::uint64_t>(grid_.y.n);
         conf.size[2] = static_cast<std::uint64_t>(grid_.z.n);
@@ -3295,8 +3291,9 @@ private:
             release_vkfft();
             return false;
         }
-        std::fprintf(stderr, "ses_vk::Engine: VkFFT 3D plan active (%dx%dx%d)\n",
-                     grid_.x.n, grid_.y.n, grid_.z.n);
+        std::fprintf(stderr, "ses_vk::Engine: VkFFT %dD plan active (%dx%dx%d)\n",
+                     static_cast<int>(conf.FFTdim), grid_.x.n, grid_.y.n,
+                     grid_.z.n);
         vkfft_ready_ = true;
         vkfft_failed_ = false;
         return true;

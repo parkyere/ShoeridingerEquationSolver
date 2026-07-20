@@ -35,7 +35,9 @@ void main(uint3 tid : SV_DispatchThreadID) {
     int e[3] = { v.x, v.y, v.z };
     int f = e[params.freq_axis];
     int p = e[params.coord_axis];
-    int sf = (f < params.nf / 2) ? f : f - params.nf;  // signed fftfreq
+    // 2f < nf (not f < nf/2): keeps DC at 0 for nf = 1 -- the CPU-side
+    // wavenumbers contract; identical for every even nf.
+    int sf = (2 * f < params.nf) ? f : f - params.nf;  // signed fftfreq
     float kf = params.kscale * float(sf);
     float d = params.coeff * (params.cmin + float(p) * params.ch);
     psi[idx] = psi[idx] * cis(-kf * d);

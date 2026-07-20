@@ -31,6 +31,7 @@ module;
 #include <fft_line8_spv.h>
 #include <fft_line64_spv.h>
 #include <fft_line256_spv.h>
+#include <fft_line512_spv.h>
 #include <cstdio>
 export module ses.vk.engine_blobs;
 export import ses.vk.engine;
@@ -39,13 +40,14 @@ export import ses.vk.engine;
 // The solver library's embedded SPIR-V blobs: every compute kernel the
 // ses_vk engine runs, baked offline from solver/shaders/ -- the engine has
 // no resource system, so callers hand it this table. The line-FFT kernel is
-// baked at concrete sizes; pick the one matching the (cubic) grid.
+// baked at concrete sizes; pick the one matching the transform axes (the
+// cubic side, or the shared x/y side of an n x n x 1 planar grid).
 
 
 export namespace ses_vk {
 
-// Blobs for a cubic grid of side n; fft is null (engine init fails cleanly)
-// if no fft_line kernel was baked at that size.
+// Blobs for transform axes of length n; fft is null (engine init fails
+// cleanly) if no fft_line kernel was baked at that size.
 inline EngineKernels engine_blobs(int n) {
     EngineKernels b;
     b.mul = k_phase_multiply_spv;
@@ -118,6 +120,10 @@ inline EngineKernels engine_blobs(int n) {
         case 256:
             b.fft = k_fft_line256_spv;
             b.fft_size = k_fft_line256_spv_size;
+            break;
+        case 512:
+            b.fft = k_fft_line512_spv;
+            b.fft_size = k_fft_line512_spv_size;
             break;
         default:
             std::fprintf(stderr, "engine_blobs: no fft_line%d kernel baked\n", n);
