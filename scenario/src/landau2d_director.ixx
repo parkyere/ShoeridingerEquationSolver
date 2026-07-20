@@ -109,8 +109,9 @@ public:
                 return false;
             }
         } else if (e_cur - e_next < 0.05 * b_) {
-            // a removes no quantum here: the coherent orbit is an
-            // a-EIGENSTATE (a|alpha> = alpha|alpha>), the honest floor.
+            // a removes no clean quantum here: the coherent displacement
+            // dominates (a|alpha> = alpha|alpha>, near-diagonal even on
+            // the raised tower -- measured), the honest floor.
             return false;
         }
         psi_ = std::move(next);
