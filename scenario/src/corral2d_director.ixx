@@ -1,5 +1,6 @@
 module;
 #include <algorithm>
+#include <cstddef>
 #include <cmath>
 #include <complex>
 #include <memory>
@@ -9,6 +10,7 @@ module;
 export module ses.scenario.corral2d_director;
 export import ses.scenario.lattice2d_director;
 import ses.heightfield;
+import ses.potential;
 import ses.imaginary_time;
 import ses.observables;
 import ses.propagator;
@@ -26,6 +28,13 @@ import ses.parallel;
 // packet off the fence live. The adatoms render as shaded iron balls.
 // Display is the STM-style HEIGHT surface: z = |psi|^2 (peak-tracked),
 // phase as vertex color -- not the volume slab.
+// Restored IBM physics (contracts: tests/corral2d_test.cpp): the surface
+// state runs the Cu(111) effective mass m* = 0.38; the adatoms are ~50%-
+// absorbing black dots (per-step damp exp(-W dt) on the bump profile); the
+// substrate is INFINITE -- an outer absorber swallows leaked flux (no
+// periodic wrap-around) and the surviving wavefunction is renormalized
+// each tick (conditional state, norm stays 1). Damping acts in REAL time
+// only; state prep (ITP + disc projection) stays unitary.
 
 
 export namespace ses_shell {
@@ -49,6 +58,13 @@ constexpr double kCr2dRMin = 6.0;
 constexpr double kCr2dRMax = 12.0;
 constexpr double kCr2dBumpA = 1.5;
 constexpr double kCr2dBumpSigma = 0.6;
+// Cu(111) surface-state effective mass (Crommie et al.), atomic units.
+constexpr double kCr2dMass = 0.38;
+// Infinite-substrate open boundary: outer cos^2 absorber width (Bohr).
+constexpr double kCr2dEdgeW = 3.0;
+// Black-dot adatoms: peak of the absorber W(r) riding the bump profile;
+// exp(-W dt) per step eats a PART of a crossing packet (never all of it).
+constexpr double kCr2dFenceW0 = 0.8;
 constexpr int kCr2dMaxStates = 6;
 // Relax convergence: energy drift per check below this for 3 checks.
 constexpr double kCr2dConvTol = 1e-7;
@@ -73,6 +89,7 @@ public:
         start_relax(0);
     }
     double radius() const override { return radius_; }
+    double mass() const override { return kCr2dMass; }
     void relax_next() override {
         if (!relaxing_ &&
             static_cast<int>(captured_.size()) < kCr2dMaxStates) {
@@ -232,7 +249,7 @@ protected:
                 project_disc();
                 left -= c;
             }
-            const double e = ses::mean_energy(psi_, v_);
+            const double e = ses::mean_energy(psi_, v_, kCr2dMass);
             const double tol = fine_ ? kCr2dConvTol : kCr2dCoarseTol;
             if (std::abs(e - last_e_) < tol * std::max(1.0, e)) {
                 if (!fine_) {
@@ -248,7 +265,16 @@ protected:
             track_peak();
             return;
         }
-        prop_->step(psi_, n);
+        // Per-step damp (black dots + open boundary), then the conditional
+        // renormalization: the lost norm is escaped/absorbed probability.
+        for (int s2 = 0; s2 < n; ++s2) {
+            prop_->step(psi_, 1);
+            ses::parallel_for(static_cast<int>(damp_.size()), [&](int i) {
+                psi_.data()[static_cast<std::size_t>(i)] *=
+                    damp_[static_cast<std::size_t>(i)];
+            });
+        }
+        ses::normalize(psi_);
         sim_time_ += n * kCr2dDt;
         track_peak();
     }
@@ -280,13 +306,24 @@ private:
                 }
             }
         }
+        // Restored physics: per-step damp = outer open-boundary absorber
+        // (infinite substrate -- leaked flux vanishes) x black-dot fence
+        // absorption exp(-W dt), W = kCr2dFenceW0 * bump/A. Mirrors
+        // tests/corral2d_test.cpp exactly.
+        const std::vector<double> edge =
+            ses::absorbing_mask(phys_grid_, kCr2dEdgeW);
+        damp_.assign(v.size(), 1.0);
+        for (std::size_t i = 0; i < v.size(); ++i) {
+            damp_[i] = edge[i] * std::exp(-kCr2dFenceW0 *
+                                          (v[i] / kCr2dBumpA) * kCr2dDt);
+        }
         v_ = std::move(v);
         prop_ = std::make_unique<ses::SplitOperator3D>(phys_grid_, v_,
-                                                      kCr2dDt);
+                                                      kCr2dDt, kCr2dMass);
         itp_coarse_ = std::make_unique<ses::ImaginaryTimePropagator3D>(
-            phys_grid_, v_, kCr2dCoarseDtau);
+            phys_grid_, v_, kCr2dCoarseDtau, kCr2dMass);
         itp_fine_ = std::make_unique<ses::ImaginaryTimePropagator3D>(
-            phys_grid_, v_, kCr2dFineDtau);
+            phys_grid_, v_, kCr2dFineDtau, kCr2dMass);
         captured_.clear();
         energies_.clear();
     }
@@ -357,6 +394,7 @@ private:
     }
 
     std::vector<double> v_;  // fence potential (mean_energy readout)
+    std::vector<double> damp_;  // per-step black-dot x open-boundary factor
     std::unique_ptr<ses::SplitOperator3D> prop_;
     std::unique_ptr<ses::ImaginaryTimePropagator3D> itp_coarse_;
     std::unique_ptr<ses::ImaginaryTimePropagator3D> itp_fine_;

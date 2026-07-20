@@ -213,6 +213,7 @@ struct CorralApi {
     virtual ~CorralApi() = default;
     virtual void set_radius(double r) = 0;
     virtual double radius() const = 0;
+    virtual double mass() const = 0;  // Cu(111) surface-state m* (a.u.)
     virtual void relax_next() = 0;  // capture the next (deflated) state
     virtual int captured() const = 0;
     virtual double energy(int k) const = 0;

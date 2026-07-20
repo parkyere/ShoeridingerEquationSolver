@@ -992,7 +992,7 @@ void register_verification_arcs(ShellT* shell) {
                 const double e = c->energy(0);
                 const double r = c->radius();
                 const double e_hard =
-                    2.405 * 2.405 / (2.0 * r * r);
+                    2.405 * 2.405 / (2.0 * c->mass() * r * r);
                 const bool pass = conf > 0.85 && e > 0.6 * e_hard &&
                                   e < 2.0 * e_hard;
                 std::fprintf(stderr,
