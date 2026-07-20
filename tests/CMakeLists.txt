@@ -66,6 +66,7 @@ add_executable(sesolver_tests
     observables_test.cpp
     parallel_test.cpp
     phasor_test.cpp
+    pick_test.cpp
     potential_test.cpp
     projection_test.cpp
     qpc2d_test.cpp

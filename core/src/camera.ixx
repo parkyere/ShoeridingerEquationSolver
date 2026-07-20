@@ -104,4 +104,16 @@ inline Vec3d orbit_eye(double azimuth, double elevation, double distance, Vec3d 
                                      ce * std::cos(azimuth)};
 }
 
+// Inverse of the orbit camera through the z = 0 stage plane (the 2D
+// scenes' floor): NDC point -> world (x, y). False when the ray misses
+// (parallel or behind the eye). CONTRACT: tests/pick_test.cpp round-trips
+// through perspective * look_at.
+inline bool unproject_to_z0(double /*azimuth*/, double /*elevation*/,
+                            double /*distance*/, double /*fovy*/,
+                            double /*aspect*/, double /*ndc_x*/,
+                            double /*ndc_y*/, double* /*out_x*/,
+                            double* /*out_y*/) noexcept {
+    return false;  // RED stub
+}
+
 }  // namespace ses
