@@ -127,8 +127,11 @@ TEST(MolecularSeed, RandomIsNormalizedDeterministicAndArbitrary) {
     }
     EXPECT_LT(diff_ab, 1e-18) << "same seed reproduces the field";
     EXPECT_GT(diff_ac, 0.1) << "different seeds give different shapes";
-    // Arbitrary shape: NOT inversion-symmetric (|<psi|P psi>| well below 1).
+    // Arbitrary shape: NOT an inversion eigenstate. The parity overlap
+    // ratio |<psi|P psi>| / <psi|psi> is 1 for an even/odd state and well
+    // below 1 for a symmetry-broken one.
     std::complex<double> ov{};
+    double self = 0.0;
     for (int k = 0; k < g.z.n; ++k) {
         for (int j = 0; j < g.y.n; ++j) {
             for (int i = 0; i < g.x.n; ++i) {
@@ -136,10 +139,12 @@ TEST(MolecularSeed, RandomIsNormalizedDeterministicAndArbitrary) {
                 const int pj = (32 - j) % 32;
                 const int pk = (32 - k) % 32;
                 ov += std::conj(a(i, j, k)) * a(pi, pj, pk);
+                self += std::norm(a(i, j, k));
             }
         }
     }
-    EXPECT_LT(std::abs(ov), 0.9) << "a random shape is not an inversion eigenstate";
+    EXPECT_LT(std::abs(ov) / self, 0.9)
+        << "a random shape is not an inversion eigenstate";
 }
 
 TEST(MolecularSeed, SeedsRelaxToTheOrderedH2plusOrbitals) {
