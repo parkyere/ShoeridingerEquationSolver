@@ -20,6 +20,7 @@ if(NOT TARGET GTest::gtest_main)
 endif()
 
 add_executable(sesolver_tests
+    anderson1d_test.cpp
     billiard2d_test.cpp
     bloch_test.cpp
     camera_test.cpp
