@@ -39,14 +39,14 @@ TEST(Spin, LarmorPrecessesAtExactlyB) {
     double y = 0.0;
     double z = 0.0;
     ses::bloch_vector(s, &x, &y, &z);
-    // <sigma_z> frozen, the transverse pair rotates by -b t (spin-1/2
-    // precession sense pinned HERE): check angle and radius.
+    // <sigma_z> frozen, the transverse pair rotates by +b t CCW about
+    // +B (the U = e^{-i theta sigma/2} convention, pinned HERE).
     EXPECT_NEAR(z, 0.0, 1e-12);
     EXPECT_NEAR(std::hypot(x, y), 1.0, 1e-12);
     const double phase = std::atan2(y, x);
-    double expect = -b * n * dt;
-    while (expect < -kPi) {
-        expect += 2.0 * kPi;
+    double expect = b * n * dt;
+    while (expect > kPi) {
+        expect -= 2.0 * kPi;
     }
     EXPECT_NEAR(phase, expect, 1e-9);
     EXPECT_NEAR(std::norm(s.up) + std::norm(s.dn), 1.0, 1e-12);
@@ -60,9 +60,9 @@ TEST(Spin, ResonantCircularDriveRabiFlips) {
     const int n = static_cast<int>(kPi / b1 / dt + 0.5);  // half Rabi cycle
     for (int k = 0; k < n; ++k) {
         const double t = k * dt;
-        // Lab-frame circular drive rotating WITH the precession sense.
+        // Lab-frame circular drive co-rotating with the +B CCW sense.
         const double bx = b1 * std::cos(b0 * t);
-        const double by = -b1 * std::sin(b0 * t);
+        const double by = b1 * std::sin(b0 * t);
         ses::spin_step(s, bx, by, b0, dt);
     }
     double x = 0.0;
