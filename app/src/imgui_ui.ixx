@@ -250,7 +250,7 @@ inline void draw_spectrometer(ses_shell::HydrogenApi& hy) {
     for (int k = 0; k < distinct; ++k) {
         const double ev = cents[k] / 100.0;
         const float y = by + bh * static_cast<float>(1.0 - ev / emax);
-        const int a = counts[k] > 3 ? 255 : 160 + 32 * counts[k];
+        const int a = counts[k] > 2 ? 255 : 160 + 32 * counts[k];
         dl->AddRectFilled(ImVec2(bx - 3, y - 1),
                           ImVec2(bx + bw + 3, y + 1),
                           IM_COL32(255, 255, 255, a));

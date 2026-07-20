@@ -473,7 +473,8 @@ public:
     // it is measured against.
     double sim_rate() const { return perf_sim_rate_; }
     double baseline_sim_rate() const {
-        return (1000.0 / kTickMs) * director_->sim_dt();
+        return (1000.0 / kTickMs) * director_->sim_dt() *
+               director_->steps_per_tick_x1();
     }
 
     // ImGui panel entry point: feed a scenario key as if typed.
@@ -911,13 +912,25 @@ int main(int argc, char* argv[]) {
     }
     po::variables_map vm;
     try {
-        po::store(po::parse_command_line(argc, argv, desc), vm);
+        // No abbreviation guessing: a shortened --selftest-cor would parse
+        // here yet never match the arcs' exact has_arg() lookups -- the run
+        // would boot a normal window instead of the requested arc.
+        po::store(po::command_line_parser(argc, argv)
+                      .options(desc)
+                      .style(po::command_line_style::default_style &
+                             ~po::command_line_style::allow_guessing)
+                      .run(),
+                  vm);
         po::notify(vm);
     } catch (const po::error& e) {
         std::fprintf(stderr, "arguments: %s\n", e.what());
         std::ostringstream help;
         help << desc;
         std::fprintf(stderr, "%s", help.str().c_str());
+        // Release builds run in the GUI subsystem: stderr is detached, so a
+        // flag typo must not exit SILENTLY.
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "arguments", e.what(),
+                                 nullptr);
         return 2;
     }
     if (vm.count("help") > 0) {

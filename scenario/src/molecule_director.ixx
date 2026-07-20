@@ -1,4 +1,5 @@
 module;
+#include <utility>
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -102,8 +103,15 @@ public:
         apply_geometry();
     }
     void set_parameter(double p) override {
+        // Drag memo (the hydrogen uploaded_* rule): ImGui fires every drag
+        // frame; an unchanged SNAPPED geometry must not rebuild the 256^3
+        // sim and throw the relax chain away.
+        const double snapped = clamp_parameter(p);
+        if (geom_ == -1 && snapped == param_) {
+            return;
+        }
         geom_ = -1;  // custom knob value
-        param_ = clamp_parameter(p);
+        param_ = snapped;
         apply_geometry();
     }
 

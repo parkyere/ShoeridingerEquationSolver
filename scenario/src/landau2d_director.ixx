@@ -1,4 +1,5 @@
 module;
+#include <cstddef>
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -216,6 +217,7 @@ public:
     int time_scale() const override { return time_scale_; }
     double sim_time() const override { return sim_time_; }
     double sim_dt() const override { return kLd2dDt; }
+    int steps_per_tick_x1() const override { return kLd2dStepsPerTick; }
 
     // ---- display ----
     bool cloud() const override { return false; }  // STM height surface

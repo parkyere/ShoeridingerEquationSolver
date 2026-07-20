@@ -1,4 +1,5 @@
 module;
+#include <cstddef>
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -15,7 +16,6 @@ export import ses.scenario;
 export import ses.field;
 export import ses.grid;
 export import ses.lattice2d;
-import ses.parallel;
 
 
 // Shared base for the corral and qdot CPU 2D lattice scenes (doubleslit/
@@ -122,6 +122,7 @@ protected:
     // Scene hooks: the subclass owns the propagator and the batch.
     virtual void do_steps(int n) = 0;
     virtual int steps_per_tick() const { return 8; }
+    int steps_per_tick_x1() const override { return steps_per_tick(); }
     // Display rebuild after psi moved: default = the phase-hued volume
     // slab; a scene may substitute its own display (corral's heightfield).
     virtual void rebuild_display() { rebuild_staging(); }

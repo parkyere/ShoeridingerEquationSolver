@@ -367,6 +367,10 @@ public:
     // performance readout derives the achieved au/s from these.
     virtual double sim_time() const { return 0.0; }
     virtual double sim_dt() const { return 0.0; }
+    // Integrator steps a x1 tick SUPPLIES: the readout's honest baseline is
+    // ticks/s x dt x THIS (a scene feeding 8 steps/tick showed "x8.0" at
+    // the x1 dial before this seam).
+    virtual int steps_per_tick_x1() const { return 1; }
 
     // ---- display accessors (FrameInput assembly + title) ----
     virtual bool cloud() const = 0;

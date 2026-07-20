@@ -91,7 +91,7 @@ float4 main(FSIn input) : SV_Target {
 
     // Terminate the march at the NEAREST marker ball: cloud IN FRONT still
     // fogs it, cloud BEHIND is correctly occluded. One analytic sphere test
-    // per ball (<= 16), nothing per march step.
+    // per ball (<= 64), nothing per march step.
     int hit_marker = -1;
     float hit_t = 0.0;
     int n_markers = int(ubo.marker_meta.x + 0.5);

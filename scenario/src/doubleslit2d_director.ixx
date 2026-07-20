@@ -1,4 +1,5 @@
 module;
+#include <cstddef>
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -105,6 +106,7 @@ public:
         flux_ = phi;
         prop_->set_solenoid(flux_, solenoid_x(), 0.0);
         fire();
+        rebuild_props_overlays();  // the flux arrow length encodes Phi
     }
     double flux() const override { return flux_; }
     void refire() override { fire(); }
@@ -204,6 +206,7 @@ public:
     int time_scale() const override { return time_scale_; }
     double sim_time() const override { return sim_time_; }
     double sim_dt() const override { return kDs2dDt; }
+    int steps_per_tick_x1() const override { return kDs2dStepsPerTick; }
 
     // ---- display ----
     bool cloud() const override { return false; }  // STM height surface
