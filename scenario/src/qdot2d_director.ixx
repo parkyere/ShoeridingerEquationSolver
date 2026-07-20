@@ -4,6 +4,7 @@ module;
 #include <cmath>
 #include <complex>
 #include <memory>
+#include <random>
 #include <string>
 #include <utility>
 #include <vector>
@@ -45,6 +46,11 @@ constexpr int kQd2dTrailCap = 900;
 // blacked the cloud out for seconds.
 constexpr double kQd2dSurfH = 6.0;
 constexpr int kQd2dMeshStride = 1;  // 512^2 physics = 512^2 display mesh
+// Translucent red PARABOLOID: z = kQd2dEScale V(r), capped at ParaTop.
+constexpr double kQd2dEScale = 0.5;
+constexpr double kQd2dParaTop = 11.0;
+constexpr int kQd2dParaRings = 14;
+constexpr int kQd2dParaSegs = 48;
 
 class Qdot2DDirector final : public Lattice2DDirectorBase, public QdotApi {
 public:
@@ -112,6 +118,120 @@ public:
         mark_fired();
     }
 
+    // Circular ladder (keys 3/4): a_R-dag adds one w0 quantum (+1 L_z).
+    // At B != 0 the lattice gauge is NOT the symmetric gauge the circular
+    // ladder lives in -- honest refuse, not silent wrongness.
+    // CONTRACT: tests/ho2d_test.cpp (core op).
+    bool ho_ladder(bool up) override {
+        if (relaxing_) {
+            return false;
+        }
+        if (b_ != 0.0) {
+            note_ = "ladder needs B = 0 (gauge)";
+            title_dirty_ = true;
+            return false;
+        }
+        ses::Field3D next = ses::ho2d_ladder(psi_, w0_, up);
+        if (ses::norm_sq(next) < 1e-6) {
+            note_ = "a|0> = 0: refused";
+            title_dirty_ = true;
+            return false;
+        }
+        ses::normalize(next);
+        psi_ = std::move(next);
+        note_.clear();
+        trail_.clear();
+        track_peak();
+        staging_dirty_ = true;
+        display_changed_ = true;
+        title_dirty_ = true;
+        return true;
+    }
+
+    // Random coherent packet (key S): displaced Gaussian with a random
+    // kick -- a fresh classical orbit each press.
+    void random_packet() override {
+        relaxing_ = false;
+        std::uniform_real_distribution<double> ang(0.0,
+                                                   6.28318530717958647692);
+        std::uniform_real_distribution<double> rad(2.0, 5.0);
+        std::uniform_real_distribution<double> kick(0.0, 2.0 * w0_);
+        const double th = ang(rng_);
+        const double r0 = rad(rng_);
+        const double x0 = r0 * std::cos(th);
+        const double y0 = r0 * std::sin(th);
+        const double kth = ang(rng_);
+        const double kk = kick(rng_);
+        const double kx = kk * std::cos(kth);
+        const double ky = kk * std::sin(kth);
+        const double om = energy_pred();  // Omega sets the coherent width
+        ses::parallel_for(kQd2dN, [&](int j) {
+            const double y = phys_grid_.y.coord(j) - y0;
+            for (int i = 0; i < kQd2dN; ++i) {
+                const double x = phys_grid_.x.coord(i) - x0;
+                const double ph = kx * phys_grid_.x.coord(i) +
+                                  ky * phys_grid_.y.coord(j);
+                psi_(i, j, 0) =
+                    std::exp(-0.5 * om * (x * x + y * y)) *
+                    std::complex<double>{std::cos(ph), std::sin(ph)};
+            }
+        });
+        ses::normalize(psi_);
+        note_.clear();
+        trail_.clear();
+        disp_peak_ = 0.0;
+        track_peak();
+        mark_fired();
+    }
+
+    // ---- interactive grab (the pick-and-gather toy) ----
+    // While grabbed the evolution PAUSES; the display blends the held
+    // state with a coherent Gaussian at the grab point -- pull higher,
+    // gather harder. Release: the blend IS the new state, time resumes.
+    void begin_grab(double x, double y) override {
+        relaxing_ = false;
+        grab_x_ = std::clamp(x, -kQd2dBox, kQd2dBox);
+        grab_y_ = std::clamp(y, -kQd2dBox, kQd2dBox);
+        grab_base_ = psi_;
+        grabbing_ = true;
+        note_ = "grabbed";
+        title_dirty_ = true;
+    }
+    void update_grab(double strength) override {
+        if (!grabbing_) {
+            return;
+        }
+        const double s = std::clamp(strength, 0.0, 1.0);
+        const double om = energy_pred();
+        ses::Field3D gath{phys_grid_};
+        ses::parallel_for(kQd2dN, [&](int j) {
+            const double y = phys_grid_.y.coord(j) - grab_y_;
+            for (int i = 0; i < kQd2dN; ++i) {
+                const double x = phys_grid_.x.coord(i) - grab_x_;
+                gath(i, j, 0) = std::exp(-0.5 * om * (x * x + y * y));
+            }
+        });
+        ses::normalize(gath);
+        for (std::size_t c = 0; c < psi_.data().size(); ++c) {
+            psi_.data()[c] =
+                (1.0 - s) * grab_base_.data()[c] + s * gath.data()[c];
+        }
+        ses::normalize(psi_);
+        track_peak();
+        staging_dirty_ = true;
+        display_changed_ = true;
+    }
+    void end_grab() override {
+        if (!grabbing_) {
+            return;
+        }
+        grabbing_ = false;
+        note_.clear();
+        trail_.clear();
+        title_dirty_ = true;
+    }
+    bool grabbing() const override { return grabbing_; }
+
     void reset_simulation() override { relax_ground(); }
 
     bool handle_key(char key) override {
@@ -121,6 +241,18 @@ public:
         }
         if (key == 'F') {
             fire_displaced();
+            return true;
+        }
+        if (key == '3') {
+            ho_ladder(true);
+            return true;
+        }
+        if (key == '4') {
+            ho_ladder(false);
+            return true;
+        }
+        if (key == 'S') {
+            random_packet();
             return true;
         }
         return false;
@@ -171,19 +303,31 @@ public:
         if (relaxing_) {
             s += "  [relaxing...]";
         }
-        s += "  keys: 2 relax ground / F displace";
+        if (!note_.empty()) {
+            s += "  [" + note_ + "]";
+        }
+        s += "  keys: 2 ground / F displace / 3 up / 4 down / S random / "
+             "drag the surface to gather";
         return s;
     }
 
-    // The measured <r>(t) breadcrumb trail (the rosette).
-    int overlay_curve_count() const override { return 1; }
-    OverlayCurve overlay_curve(int /*i*/) const override {
+    // 0 = the translucent red potential paraboloid (drawn first),
+    // 1 = the measured <r>(t) breadcrumb trail (the rosette).
+    int overlay_curve_count() const override { return 2; }
+    OverlayCurve overlay_curve(int i) const override {
+        if (i == 0) {
+            return {para_.data(), static_cast<int>(para_.size() / 3),
+                    1.0f, 0.30f, 0.25f, 0.28f, true};
+        }
         return {trail_.data(), static_cast<int>(trail_.size() / 3),
                 1.0f, 1.0f, 1.0f, 0.9f};
     }
 
 protected:
     void do_steps(int n) override {
+        if (grabbing_) {
+            return;  // held: time stands still until release
+        }
         if (relaxing_) {
             prop_->relax(psi_, 4 * n);
             const double e = prop_->energy(psi_);
@@ -225,6 +369,40 @@ private:
         prop_ = std::make_unique<ses::PeierlsLattice2D>(phys_grid_, v,
                                                         kQd2dDt);
         prop_->set_uniform_field(b_);
+        rebuild_paraboloid();
+    }
+
+    // Concentric triangle-strip rings up to the display cap; z rides the
+    // SAME e-scale the well would, so a stiffer w0 visibly narrows it.
+    void rebuild_paraboloid() {
+        para_.clear();
+        const double pi = 3.14159265358979323846;
+        const double r_top = std::min(
+            0.95 * kQd2dBox,
+            std::sqrt(2.0 * kQd2dParaTop / (kQd2dEScale * w0_ * w0_)));
+        auto put = [&](double r, double th) {
+            para_.push_back(static_cast<float>(r * std::cos(th)));
+            para_.push_back(static_cast<float>(r * std::sin(th)));
+            para_.push_back(static_cast<float>(
+                kQd2dEScale * 0.5 * w0_ * w0_ * r * r));
+        };
+        for (int k = 0; k < kQd2dParaRings; ++k) {
+            const double r0 = r_top * k / kQd2dParaRings;
+            const double r1 = r_top * (k + 1) / kQd2dParaRings;
+            if (!para_.empty()) {
+                // degenerate bridge: repeat last vertex + the next head
+                const std::size_t n = para_.size();
+                para_.push_back(para_[n - 3]);
+                para_.push_back(para_[n - 2]);
+                para_.push_back(para_[n - 1]);
+                put(r0, 0.0);
+            }
+            for (int t = 0; t <= kQd2dParaSegs; ++t) {
+                const double th = 2.0 * pi * t / kQd2dParaSegs;
+                put(r0, th);
+                put(r1, th);
+            }
+        }
     }
 
     void push_trail() {
@@ -257,6 +435,14 @@ private:
     double last_e_ = 1e30;
     int conv_streak_ = 0;
     bool relaxing_ = false;
+    std::string note_;
+    std::mt19937 rng_{20260720u};
+    std::vector<float> para_;
+    // Grab state: held base + pick point (the pick-and-gather toy).
+    bool grabbing_ = false;
+    double grab_x_ = 0.0;
+    double grab_y_ = 0.0;
+    ses::Field3D grab_base_{phys_grid_};
 };
 
 }  // namespace ses_shell

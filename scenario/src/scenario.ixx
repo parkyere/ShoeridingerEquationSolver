@@ -251,6 +251,15 @@ struct QdotApi {
     virtual double energy_meas() const = 0;
     virtual double energy_pred() const = 0;  // Omega = sqrt(w0^2 + B^2/4)
     virtual void fire_displaced() = 0;  // coherent orbit / rosette
+    // 2D-HO extensions: circular ladder (B = 0 only -- gauge), a random
+    // coherent packet, and the pick-and-gather grab (drag the surface;
+    // time stands still while held, resumes on release).
+    virtual bool ho_ladder(bool up) = 0;
+    virtual void random_packet() = 0;
+    virtual void begin_grab(double x, double y) = 0;
+    virtual void update_grab(double strength) = 0;
+    virtual void end_grab() = 0;
+    virtual bool grabbing() const = 0;
 };
 
 // Quantum bouncer: gravity + mirror, the Airy ladder.

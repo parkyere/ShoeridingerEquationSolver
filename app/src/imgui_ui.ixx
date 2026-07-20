@@ -919,6 +919,16 @@ void draw_qdot_panel(ShellT& shell, UiState& ui, ses_shell::QdotApi& qd) {
     if (ImGui::Button("Relax ground (2)")) shell.press('2');
     ImGui::SameLine();
     if (ImGui::Button("Displace (F)")) shell.press('F');
+    ImGui::SameLine();
+    if (ImGui::Button("Random packet (S)")) shell.press('S');
+    if (ImGui::Button("Ladder +w (3)")) shell.press('3');
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Circular a_R-dag: +one w0 quantum, +1 L_z.\n"
+                          "Needs B = 0 (the lattice gauge is not the\n"
+                          "symmetric gauge the circular ladder lives in).");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Ladder -w (4)")) shell.press('4');
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Shift the relaxed ground sideways: a coherent "
                           "state. At B = 0 it\nswings at w0; with B it "
