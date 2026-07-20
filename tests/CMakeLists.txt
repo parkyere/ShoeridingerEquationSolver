@@ -65,6 +65,7 @@ add_executable(sesolver_tests
     phasor_test.cpp
     potential_test.cpp
     projection_test.cpp
+    qpc2d_test.cpp
     propagator_tables_test.cpp
     propagator_test.cpp
     radial_test.cpp
