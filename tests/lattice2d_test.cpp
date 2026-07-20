@@ -467,50 +467,84 @@ TEST(PeierlsLattice2D, LandauLadderClimbsOneCyclotronQuantum) {
 // band energy of k0) feeding an OPEN box (absorber frame each step, no
 // renormalization) must reach a STEADY state -- injected flux balances
 // absorbed flux; the norm saturates instead of growing without bound.
-TEST(PeierlsLattice2D, BeamSourceWithOpenBoundaryReachesSteadyState) {
+// The double-slit stage fires ONE electron per shot (user order): a
+// normalized packet, per-step edge absorbers, NO injection and NO
+// renormalization -- the norm can only fall (leaked flux = the electron
+// leaving), and the screen column integrates the arrivals of the shot.
+TEST(PeierlsLattice2D, SinglePacketDrainsThroughTheOpenBoundary) {
     const ses::Grid3D g{ses::Grid1D{-30.0, 30.0, 128},
                         ses::Grid1D{-15.0, 15.0, 64}, ses::Grid1D{0.0, 2.0, 1}};
     const std::vector<double> zero(static_cast<std::size_t>(g.size()), 0.0);
     const double dt = 0.01;
     ses::PeierlsLattice2D prop{g, zero, dt};
-    const std::vector<double> mask = ses::absorbing_mask(g, 6.0);
-    const double k0 = 2.0;
-    const double hx = g.x.spacing();
-    const double w = (1.0 - std::cos(k0 * hx)) / (hx * hx);  // on-shell
-    ses::Field3D psi{g};  // vacuum boot: the source fills the box
-    ses::Field3D src{g};
+    // Gentle quadratic CAP, exp(-W dt) per step with W = W0 (1 - d/width)^2:
+    // the cos^2 display mask is FAR too stiff here (-ln m / dt is Ha-scale
+    // at the ramp head) and reflects ~30% of a slow k0 = 1 packet back in.
+    const double w0 = 4.0;
+    const double width = 6.0;
+    std::vector<double> mask(static_cast<std::size_t>(g.size()));
+    for (int j = 0; j < g.y.n; ++j) {
+        const double y = g.y.coord(j);
+        const double dy = std::min(y - g.y.xmin, g.y.xmax - y);
+        for (int i = 0; i < g.x.n; ++i) {
+            const double x = g.x.coord(i);
+            const double dx = std::min(x - g.x.xmin, g.x.xmax - x);
+            double w = 0.0;
+            if (dx < width) {
+                const double t = 1.0 - dx / width;
+                w += w0 * t * t;
+            }
+            if (dy < width) {
+                const double t = 1.0 - dy / width;
+                w += w0 * t * t;
+            }
+            mask[static_cast<std::size_t>(g.flat(i, j, 0))] =
+                std::exp(-w * dt);
+        }
+    }
+    const double k0 = 1.0;  // the scene's long-wavelength shot
+    ses::Field3D psi{g};
     for (int j = 0; j < g.y.n; ++j) {
         const double y = g.y.coord(j);
         for (int i = 0; i < g.x.n; ++i) {
             const double x = g.x.coord(i);
-            const double dxs = x + 18.0;  // emitter column
-            src(i, j, 0) = std::exp(-dxs * dxs / 8.0 - y * y / 50.0) *
+            const double dxs = x + 18.0;
+            psi(i, j, 0) = std::exp(-dxs * dxs / 36.0 - y * y / 50.0) *
                            std::complex<double>{std::cos(k0 * x),
                                                 std::sin(k0 * x)};
         }
     }
-    auto run = [&](int nsteps, double t0) {
+    const double n0 = ses::norm_sq(psi);
+    ASSERT_GT(n0, 0.0);
+    for (auto& c : psi.data()) {
+        c /= std::sqrt(n0);
+    }
+    const int i_scr = 102;  // x ~ +18 (the screen column)
+    double arrivals = 0.0;
+    double arrivals_early = 0.0;
+    auto run = [&](int nsteps) {
         for (int s = 0; s < nsteps; ++s) {
             prop.step(psi, 1);
-            const double t = t0 + (s + 1) * dt;
-            const std::complex<double> ph{std::cos(w * t), -std::sin(w * t)};
             for (std::size_t i = 0; i < psi.data().size(); ++i) {
-                psi.data()[i] = psi.data()[i] * mask[i] +
-                                0.05 * dt * ph * src.data()[i];
+                psi.data()[i] *= mask[i];
+            }
+            for (int j = 0; j < g.y.n; ++j) {
+                arrivals += std::norm(psi(i_scr, j, 0)) * dt;
             }
         }
-        return t0 + nsteps * dt;
     };
-    // Box transit ~ 35 au (v_g = sin(k0 h)/h ~ 1.7): equilibration needs a
-    // few transits, so the plateau probe sits at t ~ 60-75 au.
-    double t = run(800, 0.0);
-    const double n_early = ses::norm_sq(psi);
-    t = run(5200, t);
+    // Launch -18 -> screen +18 -> +x absorber at v_g = sin(k0 h)/h ~ 0.96.
+    run(1000);
+    arrivals_early = arrivals;
     const double n_mid = ses::norm_sq(psi);
-    run(1500, t);
+    run(5000);
     const double n_late = ses::norm_sq(psi);
-    EXPECT_GT(n_mid, 2.0 * n_early);       // the beam filled the box...
-    EXPECT_NEAR(n_late / n_mid, 1.0, 0.1); // ...then injection = absorption
+    EXPECT_LE(n_mid, 1.0 + 1e-9);    // no injection: the norm only falls...
+    EXPECT_LE(n_late, n_mid + 1e-9);
+    EXPECT_LT(n_late, 0.1);          // ...and the electron LEFT the stage
+    // The screen integrated the shot (vs the pre-arrival tail).
+    EXPECT_GT(arrivals, 100.0 * std::max(arrivals_early, 1e-30));
+    EXPECT_GT(arrivals, 1e-4);
 }
 
 // Measured on the scene grid (B = 0.4, 256^2, +-30): rungs hold +B within

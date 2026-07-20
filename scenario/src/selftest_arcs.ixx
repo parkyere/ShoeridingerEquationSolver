@@ -851,36 +851,53 @@ void register_verification_arcs(ShellT* shell) {
                 }
                 const double pi = 3.14159265358979323846;
                 // First dark fringe: path difference lambda/2 at the
-                // screen, y = lambda L / (2 d).
-                const double lam = 2.0 * pi / 2.0;   // k0 = 2
+                // screen, y = lambda L / (2 d). ONE electron per shot
+                // (user order): k0 = 1 long-wavelength packet, transit
+                // ~80 au + tail -- t_run covers a full shot.
+                const double lam = 2.0 * pi / 1.0;   // k0 = 1
                 const double ell = 45.0 - 0.75;      // wall mid -> screen
                 const double yd = lam * ell / (2.0 * sl->separation());
-                const double t_run = 60.0;
+                const double t_run = 120.0;
                 shell->set_time_scale(16);
                 selftest_wait_sim_time(shell, t_run, 0, [shell, yd, pi,
                                                          t_run](bool ok1) {
                     const double b0 = shell->sl()->screen_at(0.0);
                     const double d0 = shell->sl()->screen_at(yd);
-                    shell->sl()->set_flux(pi);  // refire, screen resets
-                    selftest_wait_sim_time(
-                        shell, t_run, 0,
-                        [shell, yd, ok1, b0, d0](bool ok2) {
-                            const double bpi = shell->sl()->screen_at(0.0);
-                            const double dpi = shell->sl()->screen_at(yd);
-                            const bool young_ok = d0 < 0.35 * b0;
-                            const bool ab_ok =
-                                bpi < 0.35 * b0 && dpi > 0.5 * d0 &&
-                                dpi > 0.35 * b0;
-                            const bool pass =
-                                ok1 && ok2 && b0 > 0.0 && young_ok && ab_ok;
-                            std::fprintf(
-                                stderr,
-                                "selftest-doubleslit2d: screen(axis/dark) "
-                                "Phi=0: %.3e/%.3e, Phi=pi: %.3e/%.3e  "
-                                "[%s]\n",
-                                b0, d0, bpi, dpi, pass ? "PASS" : "FAIL");
-                            shell->request_exit(pass ? 0 : 1);
-                        });
+                    // Fire a SECOND electron: the screen must keep the
+                    // first shot's arrivals and roughly double on axis.
+                    shell->sl()->refire();
+                    selftest_wait_sim_time(shell, 2.0 * t_run, 0, [shell,
+                                                                   yd, pi,
+                                                                   t_run, ok1,
+                                                                   b0, d0](
+                                                                      bool
+                                                                          okr) {
+                        const double b2 = shell->sl()->screen_at(0.0);
+                        shell->sl()->set_flux(pi);  // full reset + refire
+                        selftest_wait_sim_time(
+                            shell, t_run, 0,
+                            [shell, yd, ok1, okr, b0, d0, b2](bool ok2) {
+                                const double bpi = shell->sl()->screen_at(0.0);
+                                const double dpi = shell->sl()->screen_at(yd);
+                                const bool young_ok = d0 < 0.35 * b0;
+                                const bool accum_ok =
+                                    b2 > 1.6 * b0 && b2 < 2.4 * b0;
+                                const bool ab_ok =
+                                    bpi < 0.35 * b0 && dpi > 0.5 * d0 &&
+                                    dpi > 0.35 * b0;
+                                const bool pass = ok1 && okr && ok2 &&
+                                                  b0 > 0.0 && young_ok &&
+                                                  accum_ok && ab_ok;
+                                std::fprintf(
+                                    stderr,
+                                    "selftest-doubleslit2d: screen(axis/dark) "
+                                    "Phi=0: %.3e/%.3e, shot2 x%.2f, "
+                                    "Phi=pi: %.3e/%.3e  [%s]\n",
+                                    b0, d0, b0 > 0.0 ? b2 / b0 : 0.0, bpi,
+                                    dpi, pass ? "PASS" : "FAIL");
+                                shell->request_exit(pass ? 0 : 1);
+                            });
+                    });
                 });
             });
         });
