@@ -641,6 +641,16 @@ void draw_landau_panel(ShellT& shell, UiState& ui, ses_shell::LandauApi& la) {
     draw_perf_readout(shell);
     if (ImGui::Button("Refire (2)")) shell.press('2');
     ImGui::SameLine();
+    if (ImGui::Button("Ladder +B (3)")) shell.press('3');
+    ImGui::SameLine();
+    if (ImGui::Button("Ladder -B (4)")) shell.press('4');
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "a-dag / a: one cyclotron quantum (E_n = B(n + 1/2)).\n"
+            "Up refuses past the lattice band ceiling; down refuses on the\n"
+            "coherent orbit (a|alpha> = alpha|alpha>: no quantum to remove).");
+    }
+    ImGui::SameLine();
     if (ImGui::Button("Pause (Space)")) shell.toggle_pause();
     ImGui::SameLine();
     if (ImGui::Button("Face z (Z)")) shell.snap_camera_z();
@@ -733,6 +743,13 @@ void draw_corral_panel(ShellT& shell, UiState& ui, ses_shell::CorralApi& cr) {
         ImGui::SetTooltip("Relax the next standing-wave mode (deflated "
                           "against the captured\nones): the higher ripple "
                           "patterns of the STM image.");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Fermi wave (5)")) shell.press('5');
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "The state the STM actually images: the standing wave AT the\n"
+            "Fermi energy (k_F R ~ j0_10: ~10 radial nodes), not the ground.");
     }
     ImGui::SameLine();
     if (ImGui::Button("Packet (F)")) shell.press('F');

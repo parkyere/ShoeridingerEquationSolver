@@ -136,6 +136,39 @@ public:
         mark_fired();
     }
 
+    // CONTRACT: tests/corral2d_test.cpp FermiWaveIsQuasiStationary.
+    void fermi_wave() override {
+        // Node count is fence-limited, not display-limited: the E_F wave
+        // must still SCATTER off the sigma = 0.6 bumps. E = (j0_n/R)^2 /
+        // (2 m*) climbs fast (j0_10 -> 12.3 Ha vs the 1.5 fence: smooth
+        // bumps are transparent there -- the real corral reflects at E_F
+        // via Fe d-resonance phase shifts our toy cannot mimic), so the
+        // demo uses the highest count the fence quasi-confines.
+        const double j0_n = 10.1734681350627;  // 3rd zero of J0 (E < saddle)
+        const double kf = j0_n / radius_;
+        disp_peak_ = 0.0;  // re-snap: ~10 rings are much flatter than a dome
+        relaxing_ = false;
+        ses::parallel_for(kCr2dN, [&](int j) {
+            const double y = phys_grid_.y.coord(j);
+            for (int i = 0; i < kCr2dN; ++i) {
+                const double x = phys_grid_.x.coord(i);
+                const double r = std::sqrt(x * x + y * y);
+                // J0(kf r) inside, smooth cos^2 rolloff across the fence.
+                double w = 1.0;
+                if (r > radius_) {
+                    const double t = (r - radius_) / (2.0 * kCr2dBumpSigma);
+                    w = t >= 1.0 ? 0.0 : std::cos(0.5 * 3.14159265358979323846 * t);
+                    w *= w;
+                }
+                psi_(i, j, 0) = w * std::cyl_bessel_j(0.0, kf * r);
+            }
+        });
+        ses::normalize(psi_);
+        track_peak();
+        mark_fired();
+        title_dirty_ = true;
+    }
+
     void reset_simulation() override {
         captured_.clear();
         energies_.clear();
@@ -143,6 +176,10 @@ public:
     }
 
     bool handle_key(char key) override {
+        if (key == '5') {
+            fermi_wave();
+            return true;
+        }
         if (key == '2') {
             reset_simulation();
             return true;
@@ -200,7 +237,7 @@ public:
         if (relaxing_) {
             s += "  [relaxing...]";
         }
-        s += "  keys: 2 ground / 3 next state / F packet";
+        s += "  keys: 2 ground / 3 next state / 5 Fermi wave / F packet";
         return s;
     }
 

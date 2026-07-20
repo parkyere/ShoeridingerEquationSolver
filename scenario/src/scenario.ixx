@@ -224,6 +224,9 @@ struct CorralApi {
     virtual double confinement() const = 0;  // probability inside the ring
     virtual bool relaxing() const = 0;
     virtual void fire_packet() = 0;  // scatter a packet off the fence
+    // The state the STM images: the standing wave AT the Fermi energy
+    // (k_F R ~ j0_10 => ~10 radial nodes), not the relaxed ground.
+    virtual void fermi_wave() = 0;
 };
 
 // 2D quantum dot: parabolic confinement + optional uniform B -- the

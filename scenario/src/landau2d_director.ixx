@@ -17,6 +17,7 @@ export import ses.grid;
 export import ses.lattice2d;
 import ses.parallel;
 import ses.heightfield;
+import ses.potential;
 
 
 // Landau levels / cyclotron: 2D electron, uniform B along z (Peierls
@@ -148,6 +149,11 @@ public:
             while (n > 0) {
                 const int chunk = std::min(n, 8);
                 prop_->step(psi_, chunk);
+                ses::parallel_for(static_cast<int>(mask_.size()), [&](int c) {
+                    psi_.data()[static_cast<std::size_t>(c)] *=
+                        mask_[static_cast<std::size_t>(c)];
+                });
+                ses::normalize(psi_);
                 sim_time_ += chunk * kLd2dDt;
                 n -= chunk;
                 measure();
@@ -276,6 +282,10 @@ private:
         prop_ = std::make_unique<ses::PeierlsLattice2D>(phys_grid_, zero,
                                                         kLd2dDt);
         prop_->set_uniform_field(b_);
+        // Infinite plane, not a periodic torus: tunneled-out amplitude is
+        // ABSORBED at the frame (it visibly wrapped back before), and the
+        // conditional state renormalizes each chunk (the corral rule).
+        mask_ = ses::absorbing_mask(phys_grid_, 4.0);
     }
 
     // Launch on the y = 0 row (where mechanical = canonical momentum in
@@ -438,6 +448,7 @@ private:
     ses::Heightfield hf_;
     bool mesh_dirty_ = false;
     double disp_peak_ = 0.0;
+    std::vector<double> mask_;  // open-plane absorber frame
     std::unique_ptr<ses::PeierlsLattice2D> prop_;
     std::vector<float> staging_;
     std::vector<float> orbit_curve_;
