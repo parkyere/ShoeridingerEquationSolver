@@ -35,6 +35,7 @@ import ses.field;
 import ses.grid;
 import ses.lattice2d;
 import ses.potential;
+import ses.scenario.landau2d_director;
 
 namespace {
 
@@ -510,6 +511,39 @@ TEST(PeierlsLattice2D, BeamSourceWithOpenBoundaryReachesSteadyState) {
     const double n_late = ses::norm_sq(psi);
     EXPECT_GT(n_mid, 2.0 * n_early);       // the beam filled the box...
     EXPECT_NEAR(n_late / n_mid, 1.0, 0.1); // ...then injection = absorption
+}
+
+// Measured on the scene grid (B = 0.4, 256^2, +-30): rungs hold +B within
+// ~5% up to n ~ 13, then the central-difference ladder pushes the state
+// into the lattice band top and the "rung" explodes (12x by n = 21, then
+// NEGATIVE past the band fold at n ~ 27); the box never matters (edge
+// weight < 1e-25 throughout). The scene therefore guards each jump with a
+// measurement-based rung check (the 1D ladder_cap rule): <H> must move by
+// omega_c = B within 15%, else the jump is REFUSED. This contract climbs
+// through the director and pins the refusal into the lattice-band window.
+TEST(Landau2DDirector, LadderRefusesPastTheLatticeBand) {
+    ses_shell::Landau2DDirector d;
+    ses_shell::LandauApi* api = d.landau();
+    ASSERT_NE(api, nullptr);
+    int climbed = 0;
+    while (climbed < 40 && api->ladder(true)) {
+        ++climbed;
+    }
+    // The measured band edge: refusal strikes in the n ~ 10..18 window
+    // (5-15% rung tolerance around the probe's n ~ 13 knee).
+    EXPECT_GE(climbed, 8);
+    EXPECT_LE(climbed, 18);
+    // And the climb was real: the Landau index followed the rungs.
+    EXPECT_GT(api->mean_n(), 0.6 * climbed);
+    // Descending unwinds the tower and REFUSES at the bottom (a|0> = 0 --
+    // the boot packet is a coherent superposition, so the first few downs
+    // legitimately succeed; termination is the contract).
+    int descended = 0;
+    while (descended < 40 && api->ladder(false)) {
+        ++descended;
+    }
+    EXPECT_LT(descended, 40);
+    EXPECT_LT(api->mean_n(), 3.0);
 }
 
 }  // namespace
