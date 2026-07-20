@@ -92,8 +92,28 @@ public:
         if (ses::norm_sq(next) < 1e-6) {
             return false;  // a|lowest> = 0: refuse the down-jump
         }
+        ses::normalize(next);
+        // Measurement-based cap (the 1D ladder_cap rule; calibrated by the
+        // band probe on this grid: eigen-rungs hold +B to n ~ 13 = E ~
+        // 0.30/h^2, then the central-difference ladder pumps band-top
+        // artifacts -- rungs explode 12x then fold NEGATIVE). The guard is
+        // an energy CEILING, not a rung check: a-dag on the coherent orbit
+        // legitimately adds ~2B (it only shifts energy by B on
+        // eigenstates). CONTRACT: lattice2d_test
+        // LadderRefusesPastTheLatticeBand.
+        const double e_cur = prop_->energy(psi_);
+        const double e_next = prop_->energy(next);
+        if (up) {
+            const double h = phys_grid_.x.spacing();
+            if (e_next > 0.30 / (h * h)) {
+                return false;
+            }
+        } else if (e_cur - e_next < 0.3 * b_) {
+            // a removes no quantum here: the coherent orbit is an
+            // a-EIGENSTATE (a|alpha> = alpha|alpha>), the honest floor.
+            return false;
+        }
         psi_ = std::move(next);
-        ses::normalize(psi_);
         trail_.clear();
         push_trail();
         antipode_dist_ = -1.0;
