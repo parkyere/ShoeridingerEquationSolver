@@ -314,6 +314,13 @@ void draw_hydrogen_panel(ShellT& shell, UiState& ui, ses_shell::HydrogenApi& hy)
     if (ImGui::Button("Relax 2s (4)")) hy.relax_to_2s();
     ImGui::SameLine();
     if (ImGui::Button("Excite n=3/4 (5)")) hy.excite_n3();
+    ImGui::SameLine();
+    if (ImGui::Button("Kepler packet (K)")) hy.seed_kepler();
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Circular-state Rydberg packet: the density lobe\n"
+                          "orbits the nucleus at the classical Kepler rate\n"
+                          "1/n^3, disperses, and partially revives.");
+    }
 
     if (ImGui::Button("Decay (D)")) hy.toggle_decay();
     ImGui::SameLine();

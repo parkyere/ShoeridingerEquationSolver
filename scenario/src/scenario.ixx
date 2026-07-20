@@ -67,7 +67,10 @@ struct HydrogenApi {
     virtual double spectro_ev(int /*i*/) const { return 0.0; }
     virtual double spectro_max_ev() const { return 0.0; }
     virtual int last_measured_index() const = 0;
+    virtual void seed_kepler() = 0;  // circular-state Rydberg packet (K)
     virtual double mean_z() = 0;
+    virtual double mean_x() = 0;  // Kepler-orbit readout pair
+    virtual double mean_y() = 0;
     virtual double peak_excited_population() const = 0;
     virtual void debug_prepare_state(int idx) = 0;
     virtual double probe_population(int idx) = 0;

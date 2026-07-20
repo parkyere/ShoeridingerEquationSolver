@@ -19,6 +19,11 @@ import ses.measurement;
 
 export namespace ses_shell {
 
+// Scene defaults: n_bar mid-manifold (r ~ n^2 ~ 20 a0 fits the +-80 box);
+// sigma trades angular localization against the low-n fast-rate skew.
+inline constexpr double kKeplerNBar = 4.5;
+inline constexpr double kKeplerSigmaN = 1.0;
+
 struct KeplerPair {
     int n;        // principal quantum number (l = m = n - 1)
     int idx_cos;  // kStateSpec entry with m = +l

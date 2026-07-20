@@ -7,6 +7,7 @@ module;
 #include <string>
 export module ses.scenario.selftest_arcs;
 export import ses.scenario.manifold_spec;
+import ses.scenario.kepler_seed;
 
 
 // Verification + selftest arcs: every --dump-frame* and --selftest-* arc,
@@ -443,6 +444,67 @@ void register_verification_arcs(ShellT* shell) {
     // Magnetic arc: prepare 2p_x (decay off), B along z, require P(2p_y) to
     // rise past 0.3 -- proving psi ITSELF precesses. Probed periodically so
     // the sin^2 oscillation phase cannot alias the verdict.
+    // Kepler packet arc: the circular-state superposition ORBITS the
+    // nucleus CCW at the Kepler rate (correspondence principle). Polls
+    // <x>,<y>, accumulates the unwrapped azimuth, and gates the measured
+    // angular rate into a window around 1/n_bar^3 (the low-n tail and the
+    // grid radial overlaps skew the weighted mean, hence the width).
+    if (shell->has_arg("--selftest-kepler")) {
+        run_when_manifold_ready(shell, [shell] {
+            shell->hy()->toggle_decay();  // pure orbital beat
+            shell->hy()->seed_kepler();
+            struct Orbit {
+                double phi_prev = 0.0;
+                double phi_acc = 0.0;
+                double t0 = -1.0;
+                double r_lo = 1e9;
+                double r_hi = 0.0;
+                double z_hi = 0.0;
+            };
+            auto ob = std::make_shared<Orbit>();
+            const double pi = 3.14159265358979323846;
+            const int probe = shell->sched().every(1500, [shell, ob, pi] {
+                const double x = shell->hy()->mean_x();
+                const double y = shell->hy()->mean_y();
+                const double phi = std::atan2(y, x);
+                const double r = std::sqrt(x * x + y * y);
+                ob->r_lo = std::min(ob->r_lo, r);
+                ob->r_hi = std::max(ob->r_hi, r);
+                ob->z_hi = std::max(ob->z_hi, std::abs(shell->hy()->mean_z()));
+                if (ob->t0 < 0.0) {
+                    ob->t0 = shell->director().sim_time();
+                } else {
+                    double d = phi - ob->phi_prev;
+                    while (d > pi) d -= 2.0 * pi;
+                    while (d < -pi) d += 2.0 * pi;
+                    ob->phi_acc += d;
+                }
+                ob->phi_prev = phi;
+            });
+            shell->sched().after(90000, [shell, ob, probe] {
+                shell->sched().cancel(probe);
+                const double dt = shell->director().sim_time() - ob->t0;
+                const double n_bar = kKeplerNBar;
+                const double w_pred = 1.0 / (n_bar * n_bar * n_bar);
+                const double rate = dt > 0.0 ? ob->phi_acc / dt : 0.0;
+                const bool ccw = ob->phi_acc > 0.0;
+                const bool rate_ok =
+                    rate > 0.6 * w_pred && rate < 2.0 * w_pred;
+                const bool radius_ok = ob->r_lo > 8.0 && ob->r_hi < 35.0;
+                const bool planar_ok = ob->z_hi < 4.0;
+                const bool pass =
+                    dt > 40.0 && ccw && rate_ok && radius_ok && planar_ok;
+                std::fprintf(stderr,
+                             "selftest-kepler: dphi = %.2f rad over %.0f au "
+                             "(rate %.4f vs 1/n^3 %.4f), r in [%.1f, %.1f], "
+                             "|z| < %.2f  [%s]\n",
+                             ob->phi_acc, dt, rate, w_pred, ob->r_lo,
+                             ob->r_hi, ob->z_hi, pass ? "PASS" : "FAIL");
+                shell->request_exit(pass ? 0 : 1);
+            });
+        });
+    }
+
     if (shell->has_arg("--selftest-magnetic")) {
         run_when_manifold_ready(shell, [shell] {
             shell->hy()->toggle_decay();            // decay OFF: pure precession

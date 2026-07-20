@@ -12,6 +12,7 @@ module;
 #include <vector>
 export module ses.scenario.hydrogen_director;
 export import ses.scenario.manifold_spec;
+export import ses.scenario.kepler_seed;
 export import ses.grid;
 export import ses.vec;
 export import ses.scenario.base_director;
@@ -529,6 +530,54 @@ public:
         stepping_ = BaseStepping::RealTime;
     }
 
+    // Rydberg Kepler packet (key K): Gaussian-in-n circular-state
+    // superposition (ses.scenario.kepler_seed) -- the lobe orbits the
+    // nucleus CCW at ~1/n_bar^3, disperses, and partially revives (the
+    // correspondence principle live). CONTRACT: --selftest-kepler.
+    void seed_kepler() override {
+        if (!gpu_ok_ || solving() || !atom_.radial_ready()) {
+            return;
+        }
+        if (mode_ != BaseViewMode::Cloud) {
+            mode_ = BaseViewMode::Cloud;
+        }
+        const auto c = kepler_coefficients(kKeplerNBar, kKeplerSigmaN);
+        bool anchored = false;
+        for (int s = 0; s < kNumStates; ++s) {
+            if (std::norm(c[static_cast<std::size_t>(s)]) < 1e-18) {
+                continue;
+            }
+            const int buf = atom_.synth_transient(engine_, s);
+            if (buf < 0) {
+                continue;
+            }
+            const std::complex<double> z = c[static_cast<std::size_t>(s)];
+            if (!anchored) {
+                // First circular cos entry: real positive by construction.
+                engine_.copy_into_psi(buf);
+                engine_.scale(static_cast<float>(z.real()));
+                anchored = true;
+            } else {
+                engine_.add_state_into_psi(buf, z.real(), z.imag());
+            }
+            engine_.release_state(buf);
+        }
+        if (!anchored) {
+            return;
+        }
+        const ses_vk::Engine::NormPeak np = engine_.norm_and_peak();
+        if (np.sum > 0.0) {
+            engine_.scale(static_cast<float>(1.0 / std::sqrt(np.sum)));
+            peak_ = np.peak / np.sum;
+        }
+        norm_display_ = 1.0;
+        reset_ionized_tally();
+        cpu_is_truth_ = false;
+        stepping_ = BaseStepping::RealTime;
+        write_display_texture();
+        volume_dirty_ = false;
+    }
+
     // Cycle the laser off -> Z -> X -> off. Carrier and E0 both come from
     // our own spectrum / dipole element; X pumps 2p_x, so the monitored
     // P(2pz) stays flat (selection rule).
@@ -621,6 +670,7 @@ public:
             case '3': relax_to_excited(); return true;
             case '4': relax_to_2s(); return true;
             case '5': excite_n3(); return true;
+            case 'K': seed_kepler(); return true;
             case 'D': toggle_decay(); return true;
             case 'E': measure_energy_now(); return true;
             case 'L': toggle_laser(); return true;
@@ -658,6 +708,16 @@ public:
     double mean_z() override {
         ensure_cpu_current();
         return ses::mean_position(sim_.psi()).z;
+    }
+    // Kepler-orbit readout: <x>,<y> off the same bridged field (the
+    // ensure_cpu_current dirty flag makes back-to-back polls one bridge).
+    double mean_x() override {
+        ensure_cpu_current();
+        return ses::mean_position(sim_.psi()).x;
+    }
+    double mean_y() override {
+        ensure_cpu_current();
+        return ses::mean_position(sim_.psi()).y;
     }
     double peak_excited_population() const override { return rabi_peak_; }
 
