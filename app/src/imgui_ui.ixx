@@ -595,7 +595,8 @@ void draw_h2plus_panel(ShellT& shell, UiState& ui, ses_shell::MoleculeApi& ml) {
         if (ImGui::Button(lbl)) {
             shell.press(static_cast<char>('2' + k));
         }
-        if (k + 1 < nmo) {
+        // Wrap 3 per row so a wide atlas stays inside the panel.
+        if ((k + 1) % 3 != 0 && k + 1 < nmo) {
             ImGui::SameLine();
         }
     }
@@ -615,17 +616,11 @@ void draw_h2plus_panel(ShellT& shell, UiState& ui, ses_shell::MoleculeApi& ml) {
     if (ImGui::Button("Pause (Space)")) shell.toggle_pause();
     ImGui::SameLine();
     if (ImGui::Button("Face z (Z)")) shell.snap_camera_z();
-    if (ImGui::SliderFloat("Bond R (Bohr)", &ui.h2p_r, 1.0f, 8.0f, "%.2f")) {
-        ml.set_parameter(static_cast<double>(ui.h2p_r));
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Fixed nuclei (Born-Oppenheimer); the director "
-                          "snaps R to grid\npoints and re-relaxes sigma_g. "
-                          "Watch E_total = E + 1/R dip near\nR ~ 2: that dip "
-                          "IS the chemical bond.");
-    }
+    // No bond-length slider: R is the fixed physical equilibrium (~2.0 bohr,
+    // rigid Born-Oppenheimer nuclei) -- a free knob would misrepresent it.
     if (ml.prepared(0)) {
-        ImGui::Text("E_total(R) = %.4f Ha", ml.energy(0) + ml.nuclear_repulsion());
+        ImGui::Text("R fixed at equilibrium; E_total(1sigma_g) = %.4f Ha",
+                    ml.energy(0) + ml.nuclear_repulsion());
     }
     draw_time_scale(shell, ui);
     ImGui::Separator();

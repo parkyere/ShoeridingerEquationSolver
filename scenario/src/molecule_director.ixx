@@ -394,10 +394,15 @@ protected:
 
 // ---- H2+ ------------------------------------------------------------------
 
-constexpr double kH2pBox = 20.0;   // Bohr half-extent, 256^3 (h ~ 0.156)
+// Half-extent 30 bohr (256^3, h ~ 0.234): the atlas count is BOX-limited
+// (diffuse high orbitals must fit), not resolution-limited, and orbitals are
+// synthesized one at a time (not resident), so a wider box buys more of the
+// representable spectrum cheaply. The 1sigma_g is displayed a touch blockier,
+// but the reported energies are the EXACT atlas values, not the grid <H>.
+constexpr double kH2pBox = 30.0;
 constexpr int kH2pPoints = 256;
 constexpr double kH2pDt = 0.04;
-constexpr double kH2pRDefault = 2.0;  // near the true equilibrium R ~ 2.0
+constexpr double kH2pRDefault = 2.0;  // H2+ equilibrium bond length ~ 2.0 bohr
 constexpr double kH2pRMin = 1.0;
 constexpr double kH2pRMax = 8.0;
 
@@ -410,7 +415,14 @@ public:
 
     double default_camera_azimuth() const override { return 0.35; }
     double default_camera_elevation() const override { return 0.28; }
-    double default_camera_distance() const override { return 55.0; }
+    double default_camera_distance() const override { return 78.0; }
+
+    // The internuclear distance is a fixed physical constant (the H2+
+    // equilibrium bond length ~2.0 bohr): nuclei are rigid in the
+    // Born-Oppenheimer picture, so there is NO knob (user call -- a slider
+    // would imply R is free, which departs from the physical fact).
+    void set_geometry(int /*variant*/) override {}
+    void set_parameter(double /*p*/) override {}
 
 protected:
     const char* scene_name() const override { return "H2+ molecular ion"; }
@@ -517,7 +529,7 @@ protected:
                       atlas_[static_cast<std::size_t>(cur_)].label.c_str(),
                       atlas_[static_cast<std::size_t>(cur_)].orb.energy);
         }
-        s += strf("  (%d orbitals)  keys: 2.. orbitals / S random / R slider",
+        s += strf("  (%d known orbitals)  keys: 2.. orbitals / S random",
                   static_cast<int>(atlas_.size()));
         return s;
     }
@@ -616,12 +628,15 @@ private:
         // sesolver_genatlas): the exact prolate-spheroidal orbitals for the
         // nearest snapped R -- zero runtime ODE solve.
         const std::vector<ses::H2plusOrbital> orbs = ses::h2plus_atlas_baked(R);
+        constexpr int kMaxExposed = 12;  // UI-sane; the box admits more
         for (const ses::H2plusOrbital& o : orbs) {
             if (!representable(o, R)) {
                 continue;
             }
             const int partners = o.m > 0 ? 2 : 1;
-            for (int pp = 0; pp < partners; ++pp) {
+            for (int pp = 0;
+                 pp < partners && static_cast<int>(atlas_.size()) < kMaxExposed;
+                 ++pp) {
                 atlas_.push_back({o, pp, mo_label(o, pp)});
             }
         }

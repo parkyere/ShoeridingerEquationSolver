@@ -1493,7 +1493,7 @@ void register_verification_arcs(ShellT* shell) {
                     return;
                 }
                 shell->set_time_scale(16);
-                ml->prepare(1);  // chain: sigma_g then sigma_u
+                ml->prepare(1);  // atlas: 1sigma_g, then 1sigma_u*
                 auto poll = std::make_shared<int>(-1);
                 *poll = shell->sched().every(2000, [shell, poll] {
                     auto* m = shell->ml();
@@ -1501,39 +1501,22 @@ void register_verification_arcs(ShellT* shell) {
                         return;
                     }
                     shell->sched().cancel(*poll);
+                    // R is fixed at equilibrium (no bond scan): check the
+                    // bonding/antibonding ordering AND that the total energy
+                    // binds vs the dissociation limit H(1s) + p = -0.5 Ha.
                     const double e_g = m->energy(0);
                     const double e_u = m->energy(1);
-                    const double et_eq = e_g + m->nuclear_repulsion();
-                    m->set_geometry(1);  // stretched: auto re-relax sigma_g
-                    auto poll2 = std::make_shared<int>(-1);
-                    *poll2 = shell->sched().every(2000, [shell, poll2, e_g,
-                                                        e_u, et_eq] {
-                        auto* m2 = shell->ml();
-                        if (!m2->prepared(0)) {
-                            return;
-                        }
-                        shell->sched().cancel(*poll2);
-                        const double et_far =
-                            m2->energy(0) + m2->nuclear_repulsion();
-                        const bool order_ok = e_u > e_g;
-                        const bool bond_ok = et_eq < et_far;
-                        const bool pass = order_ok && bond_ok;
-                        std::fprintf(stderr,
-                                     "selftest-h2p: E_g = %.4f, E_u = %.4f, "
-                                     "E_tot(eq) = %.4f < E_tot(far) = %.4f?  "
-                                     "[%s]\n",
-                                     e_g, e_u, et_eq, et_far,
-                                     pass ? "PASS" : "FAIL");
-                        shell->request_exit(pass ? 0 : 1);
-                    });
-                    shell->sched().after(240000, [shell, poll2] {
-                        shell->sched().cancel(*poll2);
-                        std::fprintf(stderr, "selftest-h2p: stretched relax "
-                                             "TIMEOUT  [FAIL]\n");
-                        shell->request_exit(1);
-                    });
+                    const double et = e_g + m->nuclear_repulsion();
+                    const bool order_ok = e_u > e_g;
+                    const bool bond_ok = et < -0.5;
+                    const bool pass = order_ok && bond_ok;
+                    std::fprintf(stderr,
+                                 "selftest-h2p: E_g = %.4f, E_u = %.4f, "
+                                 "E_tot = %.4f < -0.5 (bound)?  [%s]\n",
+                                 e_g, e_u, et, pass ? "PASS" : "FAIL");
+                    shell->request_exit(pass ? 0 : 1);
                 });
-                shell->sched().after(240000, [shell, poll] {
+                shell->sched().after(60000, [shell, poll] {
                     shell->sched().cancel(*poll);
                     if (!shell->ml()->prepared(1)) {
                         std::fprintf(stderr, "selftest-h2p: chain TIMEOUT  "

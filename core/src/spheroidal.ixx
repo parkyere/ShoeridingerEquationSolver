@@ -305,7 +305,7 @@ inline H2plusOrbital h2plus_orbital(double R, int m, int n_eta, int n_xi) {
 // max_states. Sweeps small (m, n_eta, n_xi) and keeps the bound ones.
 inline std::vector<H2plusOrbital> h2plus_atlas(double R, int max_states) {
     std::vector<H2plusOrbital> out;
-    for (int shell = 0; shell <= 3 && static_cast<int>(out.size()) <
+    for (int shell = 0; shell <= 4 && static_cast<int>(out.size()) <
                                           max_states + 8; ++shell) {
         for (int m = 0; m <= shell; ++m) {
             for (int n_eta = 0; n_eta + m <= shell; ++n_eta) {
