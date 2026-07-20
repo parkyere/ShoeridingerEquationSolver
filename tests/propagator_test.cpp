@@ -18,12 +18,15 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <complex>
 #include <vector>
 import ses.propagator;
 import ses.observables;
 import ses.grid;
 import ses.field;
 import ses.wavepacket;
+import ses.potential;
+import ses.imaginary_time;
 
 namespace {
 
@@ -85,3 +88,64 @@ TEST(SplitOperator, ConservesMeanMomentum) {
 }
 
 }  // namespace
+
+// RED: the mass parameter -- the Cu(111) surface-state electron (corral
+// scene) propagates with m* != 1, so the split-operator pair and the energy
+// readout take a trailing mass (default 1 = every existing caller, bitwise).
+//   - kinetic phase: exp(-i k^2/(2 m) dt)  ->  free packet drifts at k0/m
+//   - ITP weight:    exp(-k^2/(2 m) dtau)  ->  harmonic ground E0 = w/(2 sqrt(m))
+//   - mean_energy(psi, v, m): kinetic term <k^2>/(2 m)
+TEST(MassParameter, FreePacketDriftsAtK0OverM) {
+    const ses::Grid3D g{ses::Grid1D{-32.0, 32.0, 128}, ses::Grid1D{-1.0, 1.0, 1},
+                        ses::Grid1D{-1.0, 1.0, 1}};
+    const std::vector<double> v(static_cast<std::size_t>(g.size()), 0.0);
+    const double k0 = 1.0;
+    const double mass = 2.0;
+    const double t_total = 4.0;
+    const int nsteps = 200;
+    ses::Field3D psi = ses::gaussian_wavepacket(
+        g, ses::Vec3d{-8.0, 0.0, 0.0}, ses::Vec3d{2.0, 0.5, 0.5},
+        ses::Vec3d{k0, 0.0, 0.0});
+    const ses::SplitOperator3D prop{g, v, t_total / nsteps, mass};
+    prop.step(psi, nsteps);
+    // Half the mass-1 group velocity: <x> = -8 + (k0/m) t = -6.
+    EXPECT_NEAR(ses::mean_position(psi).x, -8.0 + (k0 / mass) * t_total, 0.05);
+}
+
+TEST(MassParameter, DefaultMassIsBitwiseTheLegacyTables) {
+    const ses::Grid3D g{ses::Grid1D{-8.0, 8.0, 16}, ses::Grid1D{-8.0, 8.0, 16},
+                        ses::Grid1D{-1.0, 1.0, 1}};
+    std::vector<double> v(static_cast<std::size_t>(g.size()));
+    for (int i = 0; i < g.size(); ++i) {
+        v[static_cast<std::size_t>(i)] = 0.01 * i;
+    }
+    const ses::SplitOperator3D legacy{g, v, 0.05};
+    const ses::SplitOperator3D unit{g, v, 0.05, 1.0};
+    for (std::size_t i = 0; i < legacy.kinetic_phase().size(); ++i) {
+        ASSERT_EQ(legacy.kinetic_phase()[i], unit.kinetic_phase()[i]);
+    }
+    const ses::ImaginaryTimePropagator3D ilegacy{g, v, 0.05};
+    const ses::ImaginaryTimePropagator3D iunit{g, v, 0.05, 1.0};
+    for (std::size_t i = 0; i < ilegacy.kinetic_weight().size(); ++i) {
+        ASSERT_EQ(ilegacy.kinetic_weight()[i], iunit.kinetic_weight()[i]);
+    }
+}
+
+TEST(MassParameter, HarmonicGroundUnderMassRelaxesToOmegaOverTwoRootM) {
+    // Flat axes pinned AT the origin (coord(0) = xmin), so the isotropic
+    // well contributes no constant y^2/z^2 offset.
+    const ses::Grid3D g{ses::Grid1D{-12.0, 12.0, 64}, ses::Grid1D{0.0, 2.0, 1},
+                        ses::Grid1D{0.0, 2.0, 1}};
+    const double w = 1.0;
+    const double mass = 4.0;  // Omega = w/sqrt(m) = 0.5 -> E0 = 0.25
+    const std::vector<double> v =
+        ses::harmonic_potential(g, w, ses::Vec3d{0.0, 0.0, 0.0});
+    ses::Field3D psi = ses::gaussian_wavepacket(
+        g, ses::Vec3d{1.0, 0.0, 0.0}, ses::Vec3d{2.0, 0.5, 0.5},
+        ses::Vec3d{0.0, 0.0, 0.0});
+    const ses::ImaginaryTimePropagator3D itp{g, v, 0.02, mass};
+    itp.relax(psi, 4000);
+    EXPECT_NEAR(ses::mean_energy(psi, v, mass), 0.5 * w / std::sqrt(mass), 2e-3);
+    // The mass-aware readout differs from the m = 1 readout (kinetic /m).
+    EXPECT_GT(ses::mean_energy(psi, v), ses::mean_energy(psi, v, mass));
+}

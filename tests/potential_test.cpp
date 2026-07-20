@@ -43,6 +43,25 @@ TEST(AbsorbingMask, OneInInteriorTapersToZeroAtWalls) {
     EXPECT_NEAR(m[static_cast<std::size_t>(g.flat(1, 8, 8))], s * s, 1e-12);
 }
 
+// RED: a collapsed axis (n == 1) is a dimensionless direction -- it has no
+// walls, so its factor is exactly 1 everywhere and a 2D (n, n, 1) grid keeps
+// its interior alive (the corral's open-boundary mask depends on this;
+// today the single z point sits ON its wall and zeroes the whole plane).
+TEST(AbsorbingMask, CollapsedAxisHasNoWalls) {
+    const ses::Grid1D flat{-1.0, 1.0, 1};
+    const std::vector<double> m1 = ses::absorbing_mask(flat, 3.0);
+    ASSERT_EQ(m1.size(), 1u);
+    EXPECT_DOUBLE_EQ(m1[0], 1.0);
+
+    const ses::Grid1D ax{-16.0, 16.0, 8};  // h = 4: interior well clear of walls
+    const ses::Grid3D g{ax, ax, flat};
+    const std::vector<double> m = ses::absorbing_mask(g, 4.0);
+    // Center cell: x and y are deep interior, z contributes exactly 1.
+    EXPECT_DOUBLE_EQ(m[static_cast<std::size_t>(g.flat(4, 4, 0))], 1.0);
+    // The x/y wall ramp itself must survive (mask is not all-1 either).
+    EXPECT_NEAR(m[static_cast<std::size_t>(g.flat(0, 4, 0))], 0.0, 1e-12);
+}
+
 TEST(BarrierPotential, SlabAlongXExactAndZeroElsewhere) {
     const ses::Grid1D ax{-8.0, 8.0, 16};  // h = 1: coords -8 .. 7
     const ses::Grid3D g{ax, ax, ax};
