@@ -353,9 +353,38 @@ inline Field3D landau_ladder(const Field3D& psi, double b, bool up) {
 // (right-circular quantum: a_R-dag adds exactly omega to <H> and +1 to
 // <L_z>). Central differences; UNNORMALIZED like landau_ladder.
 // CONTRACT: tests/ho2d_test.cpp.
-inline Field3D ho2d_ladder(const Field3D& psi, double /*omega*/,
-                           bool /*up*/) {
-    return Field3D{psi.grid()};  // RED stub
+inline Field3D ho2d_ladder(const Field3D& psi, double omega, bool up) {
+    const Grid3D& g = psi.grid();
+    const double inv2h = 1.0 / (2.0 * g.x.spacing());
+    const double cx = std::sqrt(omega / 2.0);   // sqrt(w/2) x term
+    const double cd = 1.0 / std::sqrt(2.0 * omega);  // d/dx term
+    const double s = 1.0 / std::sqrt(2.0);      // circular mix
+    Field3D out{g};
+    parallel_for(g.y.n, [&](int j) {
+        const int ny = g.y.n;
+        const int nx = g.x.n;
+        const double y = g.y.coord(j);
+        const int jp = (j + 1) % ny;
+        const int jm = (j - 1 + ny) % ny;
+        const std::complex<double> kI{0.0, 1.0};
+        for (int i = 0; i < nx; ++i) {
+            const int ip = (i + 1) % nx;
+            const int im = (i - 1 + nx) % nx;
+            const double x = g.x.coord(i);
+            const std::complex<double> ddx =
+                (psi(ip, j, 0) - psi(im, j, 0)) * inv2h;
+            const std::complex<double> ddy =
+                (psi(i, jp, 0) - psi(i, jm, 0)) * inv2h;
+            // a_x = sqrt(w/2) x + d_x / sqrt(2w) (and the dagger flips
+            // the derivative sign); a_R = (a_x - i a_y)/sqrt(2).
+            out(i, j, 0) =
+                up ? s * (cx * (x + kI * y) * psi(i, j, 0) -
+                          cd * (ddx + kI * ddy))
+                   : s * (cx * (x - kI * y) * psi(i, j, 0) +
+                          cd * (ddx - kI * ddy));
+        }
+    });
+    return out;
 }
 
 }  // namespace ses
