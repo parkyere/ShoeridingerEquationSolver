@@ -66,6 +66,8 @@
 #include <fft_line64_spv.h>
 #include <fft_line256_spv.h>
 #include <fft_line512_spv.h>
+#include <spin_site_gate_spv.h>
+#include <spin_bond_gate_spv.h>
 
 #include <algorithm>
 #include <array>
@@ -93,6 +95,7 @@ import ses.field;
 import ses.harmonics;
 import ses.wavepacket;
 import ses.potential;
+import ses.spinexact;
 
 namespace {
 
@@ -1020,6 +1023,202 @@ bool check_line_fft(ses_vk::DeviceContext& ctx, int N, const unsigned char* spv,
     const bool pass = max_err < tol;
     std::printf("line FFT N=%d (raw Vulkan): max |gpu - cpu| = %.3e  [%s]\n", N,
                 max_err, pass ? "PASS" : "FAIL");
+    return pass;
+}
+
+// The exact 2^16 spin gates on GPU (fp32) vs ses.spinexact (fp64): a mixed
+// sequence of single-site rotations and Heisenberg bond gates, run as
+// aliasing dispatches on one 65536-amplitude buffer with a
+// compute-to-compute barrier between each, then compared amplitude-wise.
+// Both sides share the SAME gate coefficients (site_gate_matrix /
+// bond_gate_params), so this isolates the GPU index math + fp32 arithmetic.
+bool check_spin_step(ses_vk::DeviceContext& ctx) {
+    struct alignas(16) SiteParams {
+        std::uint32_t half_n, site, pad0, pad1;
+        float row0[4];  // a00.re,a00.im, a01.re,a01.im
+        float row1[4];  // a10.re,a10.im, a11.re,a11.im
+    };
+    struct alignas(16) BondParams {
+        std::uint32_t quarter_n, site_i, site_j, pad;
+        float gate[4];  // phase.re,phase.im, diag.re,diag.im
+        float off4[4];  // off.re,off.im, 0, 0
+    };
+    // A generic (fully populated) state -- a stronger test than a product
+    // boot since every one of the 2^16 amplitudes is nonzero.
+    const std::size_t dim = ses::kExactDim;
+    ses::SpinState16 cpu;
+    cpu.c.resize(dim);
+    double nrm = 0.0;
+    for (std::size_t m = 0; m < dim; ++m) {
+        cpu.c[m] = std::complex<double>{std::sin(0.3 * m + 1.0),
+                                        std::cos(0.17 * m) - 0.2};
+        nrm += std::norm(cpu.c[m]);
+    }
+    const double inv = 1.0 / std::sqrt(nrm);
+    for (auto& z : cpu.c) {
+        z *= inv;
+    }
+
+    // The gate sequence: site + bond, adjacent and non-adjacent bits.
+    struct Gate {
+        bool bond;
+        int a, b;      // site (a) or bond sites (a,b)
+        double param;  // angle (site) or theta (bond)
+        double nx, ny, nz;
+    };
+    const std::vector<Gate> seq = {
+        {false, 3, 0, 0.7, 0.0, 0.0, 1.0},   // Rz-ish on site 3
+        {true, 5, 6, 0.25, 0, 0, 0},         // bond (5,6)
+        {false, 10, 0, 0.9, 0.577, 0.577, 0.577},  // tilted axis, site 10
+        {true, 1, 5, 0.25, 0, 0, 0},         // non-adjacent bond (1,5)
+        {false, 0, 0, 0.4, 1.0, 0.0, 0.0},   // Rx on site 0
+        {true, 0, 4, 0.25, 0, 0, 0},         // bond touching site 0
+    };
+    // CPU reference: apply the identical gates via ses.spinexact.
+    for (const Gate& g : seq) {
+        if (g.bond) {
+            ses::exact_bond_gate(cpu, g.a, g.b, g.param);
+        } else {
+            ses::exact_site_rotate(cpu, g.a, g.nx, g.ny, g.nz, g.param);
+        }
+    }
+
+    const VkDeviceSize bytes = dim * 2 * sizeof(float);
+    std::vector<float> in(dim * 2);
+    // (re-derive the fp32 input from the pre-gate state)
+    {
+        double n2 = 0.0;
+        std::vector<std::complex<double>> boot(dim);
+        for (std::size_t m = 0; m < dim; ++m) {
+            boot[m] = std::complex<double>{std::sin(0.3 * m + 1.0),
+                                           std::cos(0.17 * m) - 0.2};
+            n2 += std::norm(boot[m]);
+        }
+        const double iv = 1.0 / std::sqrt(n2);
+        for (std::size_t m = 0; m < dim; ++m) {
+            in[2 * m] = static_cast<float>(boot[m].real() * iv);
+            in[2 * m + 1] = static_cast<float>(boot[m].imag() * iv);
+        }
+    }
+
+    ses_vk::Kernel site_k, bond_k;
+    ses_vk::Buffer data{}, staging{};
+    std::vector<ses_vk::Buffer> ubos(seq.size());
+    Scope s(ctx);
+    s.kernels = {&site_k, &bond_k};
+    s.buffers = {&data, &staging};
+    for (auto& u : ubos) {
+        s.buffers.push_back(&u);
+    }
+    if (!site_k.create(ctx, k_spin_site_gate_spv, k_spin_site_gate_spv_size,
+                       {{0, kStorage}, {1, kUniform}}) ||
+        !bond_k.create(ctx, k_spin_bond_gate_spv, k_spin_bond_gate_spv_size,
+                       {{0, kStorage}, {1, kUniform}})) {
+        return false;
+    }
+    if (!ctx.create_device_buffer(bytes, &data) ||
+        !ctx.create_host_buffer(bytes,
+                                VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                &staging)) {
+        return false;
+    }
+    std::memcpy(staging.mapped, in.data(), bytes);
+    flush(ctx, staging);
+
+    const std::uint32_t half_n = static_cast<std::uint32_t>(dim / 2);
+    const std::uint32_t quarter_n = static_cast<std::uint32_t>(dim / 4);
+    const int ng = static_cast<int>(seq.size());
+    if (!s.arena.create(ctx, ng, ng, ng)) {
+        return false;
+    }
+    std::vector<VkDescriptorSet> sets(seq.size(), VK_NULL_HANDLE);
+    for (int gi = 0; gi < ng; ++gi) {
+        const Gate& g = seq[static_cast<std::size_t>(gi)];
+        const std::size_t usz =
+            g.bond ? sizeof(BondParams) : sizeof(SiteParams);
+        if (!ctx.create_host_buffer(usz, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                    &ubos[static_cast<std::size_t>(gi)])) {
+            return false;
+        }
+        if (g.bond) {
+            const ses::BondGate bg = ses::bond_gate_params(g.param);
+            BondParams bp{};
+            bp.quarter_n = quarter_n;
+            bp.site_i = static_cast<std::uint32_t>(g.a);
+            bp.site_j = static_cast<std::uint32_t>(g.b);
+            bp.gate[0] = static_cast<float>(bg.phase.real());
+            bp.gate[1] = static_cast<float>(bg.phase.imag());
+            bp.gate[2] = static_cast<float>(bg.diag.real());
+            bp.gate[3] = static_cast<float>(bg.diag.imag());
+            bp.off4[0] = static_cast<float>(bg.off.real());
+            bp.off4[1] = static_cast<float>(bg.off.imag());
+            std::memcpy(ubos[static_cast<std::size_t>(gi)].mapped, &bp,
+                        sizeof(bp));
+        } else {
+            const ses::SiteGate sg =
+                ses::site_gate_matrix(g.nx, g.ny, g.nz, g.param);
+            SiteParams sp{};
+            sp.half_n = half_n;
+            sp.site = static_cast<std::uint32_t>(g.a);
+            sp.row0[0] = static_cast<float>(sg.a00.real());
+            sp.row0[1] = static_cast<float>(sg.a00.imag());
+            sp.row0[2] = static_cast<float>(sg.a01.real());
+            sp.row0[3] = static_cast<float>(sg.a01.imag());
+            sp.row1[0] = static_cast<float>(sg.a10.real());
+            sp.row1[1] = static_cast<float>(sg.a10.imag());
+            sp.row1[2] = static_cast<float>(sg.a11.real());
+            sp.row1[3] = static_cast<float>(sg.a11.imag());
+            std::memcpy(ubos[static_cast<std::size_t>(gi)].mapped, &sp,
+                        sizeof(sp));
+        }
+        flush(ctx, ubos[static_cast<std::size_t>(gi)]);
+        sets[static_cast<std::size_t>(gi)] = s.arena.allocate(
+            ctx, g.bond ? bond_k.set_layout() : site_k.set_layout());
+        if (sets[static_cast<std::size_t>(gi)] == VK_NULL_HANDLE) {
+            return false;
+        }
+        s.arena.write_buffer(ctx, sets[static_cast<std::size_t>(gi)], 0,
+                             kStorage, data.buf);
+        s.arena.write_buffer(ctx, sets[static_cast<std::size_t>(gi)], 1,
+                             kUniform, ubos[static_cast<std::size_t>(gi)].buf,
+                             usz);
+    }
+
+    if (!s.shot.begin(ctx)) {
+        return false;
+    }
+    record_uploads(s.shot.cb(), staging, {{&data, 0, bytes}});
+    for (int gi = 0; gi < ng; ++gi) {
+        if (gi > 0) {
+            ses_vk::barrier_compute_to_compute(s.shot.cb());
+        }
+        const Gate& g = seq[static_cast<std::size_t>(gi)];
+        ses_vk::Kernel& k = g.bond ? bond_k : site_k;
+        k.bind(s.shot.cb(), sets[static_cast<std::size_t>(gi)]);
+        const std::uint32_t items = g.bond ? quarter_n : half_n;
+        vkCmdDispatch(s.shot.cb(), (items + 255u) / 256u, 1, 1);
+    }
+    record_readback(s.shot.cb(), data, staging, bytes);
+    if (!s.shot.submit_and_wait(ctx)) {
+        return false;
+    }
+    invalidate(ctx, staging);
+
+    const float* out = static_cast<const float*>(staging.mapped);
+    double max_err = 0.0;
+    for (std::size_t m = 0; m < dim; ++m) {
+        max_err = std::max(max_err,
+                           std::abs(out[2 * m] - cpu.c[m].real()));
+        max_err = std::max(max_err,
+                           std::abs(out[2 * m + 1] - cpu.c[m].imag()));
+    }
+    // fp32 unitary gates: per-amplitude error is round-off x gate count.
+    const double tol = 1e-5 * static_cast<double>(seq.size()) + 1e-6;
+    const bool pass = max_err < tol;
+    std::printf("spin gates x%zu (raw Vulkan, 2^16): max |gpu - cpu| = %.3e "
+                "(tol %.3e)  [%s]\n",
+                seq.size(), max_err, tol, pass ? "PASS" : "FAIL");
     return pass;
 }
 
@@ -2808,6 +3007,7 @@ int main() {
             ? 0
             : 1;
     failures += check_fft3(ctx) ? 0 : 1;
+    failures += check_spin_step(ctx) ? 0 : 1;
     failures += check_engine_step(ctx) ? 0 : 1;
     failures += check_engine_planar(ctx) ? 0 : 1;
     failures += check_engine_absorber(ctx) ? 0 : 1;

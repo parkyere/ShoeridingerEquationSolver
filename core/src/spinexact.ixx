@@ -89,17 +89,42 @@ inline void exact_site_bloch(const SpinState16& s, int site, double* x,
     *z = zz;
 }
 
+// The 2x2 single-site rotation matrix U = exp(-i angle/2 n.sigma), the
+// ONE source shared by the CPU evolution, the GPU kernel UBO, and the
+// vkcheck oracle.
+struct SiteGate {
+    std::complex<double> a00, a01, a10, a11;
+};
+inline SiteGate site_gate_matrix(double nx, double ny, double nz,
+                                 double angle) {
+    const double c = std::cos(0.5 * angle);
+    const double sn = std::sin(0.5 * angle);
+    const std::complex<double> i{0.0, 1.0};
+    return SiteGate{c - i * sn * nz, -i * sn * (nx - i * ny),
+                    -i * sn * (nx + i * ny), c + i * sn * nz};
+}
+
+// The bond-gate coefficients of exp(+i theta sigma_i.sigma_j): parallel
+// phase, and the antiparallel 2x2 (diag, off). Shared source.
+struct BondGate {
+    std::complex<double> phase, diag, off;
+};
+inline BondGate bond_gate_params(double theta) {
+    const std::complex<double> em{std::cos(theta), -std::sin(theta)};
+    return BondGate{std::complex<double>{std::cos(theta), std::sin(theta)},
+                    em * std::cos(2.0 * theta),
+                    em * std::complex<double>{0.0, std::sin(2.0 * theta)}};
+}
+
 // Single-site basis rotation U_i = exp(-i angle/2 n.sigma).
 inline void exact_site_rotate(SpinState16& s, int site, double nx,
                               double ny, double nz, double angle) {
     const std::size_t b = std::size_t{1} << site;
-    const double c = std::cos(0.5 * angle);
-    const double sn = std::sin(0.5 * angle);
-    const std::complex<double> i{0.0, 1.0};
-    const std::complex<double> a00 = c - i * sn * nz;
-    const std::complex<double> a01 = -i * sn * (nx - i * ny);
-    const std::complex<double> a10 = -i * sn * (nx + i * ny);
-    const std::complex<double> a11 = c + i * sn * nz;
+    const SiteGate g = site_gate_matrix(nx, ny, nz, angle);
+    const std::complex<double> a00 = g.a00;
+    const std::complex<double> a01 = g.a01;
+    const std::complex<double> a10 = g.a10;
+    const std::complex<double> a11 = g.a11;
     // Disjoint pairs (m, m|b): parallel over m with the bit-set skip.
     parallel_for(static_cast<int>(kExactDim), [&](int mi) {
         const std::size_t m = static_cast<std::size_t>(mi);
@@ -120,12 +145,10 @@ inline void exact_bond_gate(SpinState16& s, int si, int sj,
                             double theta) {
     const std::size_t bi = std::size_t{1} << si;
     const std::size_t bj = std::size_t{1} << sj;
-    const std::complex<double> ph_par =
-        std::complex<double>{std::cos(theta), std::sin(theta)};
-    const std::complex<double> em{std::cos(theta), -std::sin(theta)};
-    const std::complex<double> diag = em * std::cos(2.0 * theta);
-    const std::complex<double> off =
-        em * std::complex<double>{0.0, std::sin(2.0 * theta)};
+    const BondGate g = bond_gate_params(theta);
+    const std::complex<double> ph_par = g.phase;
+    const std::complex<double> diag = g.diag;
+    const std::complex<double> off = g.off;
     // Each m is touched by exactly one branch and the touched index
     // pairs are disjoint: parallel over m.
     parallel_for(static_cast<int>(kExactDim), [&](int mi) {
