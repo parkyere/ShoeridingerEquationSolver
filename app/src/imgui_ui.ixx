@@ -587,23 +587,25 @@ void draw_h2plus_panel(ShellT& shell, UiState& ui, ses_shell::MoleculeApi& ml) {
     draw_perf_readout(shell);
     // Known molecular orbitals: one button per exposed MO (keys 2..), each
     // labeled by its term symbol; the chain relaxes up to the requested one.
+    // Known molecular orbitals: a scrollable list (the analytic atlas can be
+    // dozens). Click a row to synthesize that orbital instantly.
     const int nmo = ml.state_count();
-    for (int k = 0; k < nmo; ++k) {
-        char lbl[64];
-        std::snprintf(lbl, sizeof(lbl), "%s (%d)", ml.orbital_label(k),
-                      k + 2);
-        if (ImGui::Button(lbl)) {
-            shell.press(static_cast<char>('2' + k));
+    ImGui::TextUnformatted("Known orbitals (exact prolate-spheroidal atlas):");
+    if (ImGui::BeginListBox("##h2p_orbitals", ImVec2(-1.0f, 160.0f))) {
+        for (int k = 0; k < nmo; ++k) {
+            char lbl[96];
+            std::snprintf(lbl, sizeof(lbl), "%2d  %-18s  E = %.4f Ha", k + 1,
+                          ml.orbital_label(k), ml.energy(k));
+            if (ImGui::Selectable(lbl)) {
+                shell.press(static_cast<char>('2' + k));
+            }
         }
-        // Wrap 3 per row so a wide atlas stays inside the panel.
-        if ((k + 1) % 3 != 0 && k + 1 < nmo) {
-            ImGui::SameLine();
-        }
+        ImGui::EndListBox();
     }
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("The known H2+ molecular orbitals, resolved by "
-                          "symmetry (deflated imaginary time).\nHigher ones "
-                          "relax the whole chain below them first.");
+        ImGui::SetTooltip("The known H2+ molecular orbitals, synthesized from "
+                          "the exact\nprolate-spheroidal solution (baked "
+                          "atlas). Click to show one.");
     }
     if (ImGui::Button("Random wavefunction (S)")) shell.press('S');
     if (ImGui::IsItemHovered()) {

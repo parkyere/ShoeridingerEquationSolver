@@ -394,12 +394,13 @@ protected:
 
 // ---- H2+ ------------------------------------------------------------------
 
-// Half-extent 30 bohr (256^3, h ~ 0.234): the atlas count is BOX-limited
-// (diffuse high orbitals must fit), not resolution-limited, and orbitals are
-// synthesized one at a time (not resident), so a wider box buys more of the
-// representable spectrum cheaply. The 1sigma_g is displayed a touch blockier,
-// but the reported energies are the EXACT atlas values, not the grid <H>.
-constexpr double kH2pBox = 30.0;
+// Half-extent 40 bohr (256^3, h ~ 0.31): the atlas count is BOX-limited (the
+// diffuse high orbitals must fit), not resolution-limited, and orbitals are
+// synthesized one at a time (not resident), so a wide box buys much more of
+// the representable spectrum cheaply -- as rich as 256^3 allows without the
+// two nuclei (2 bohr apart, ~6 cells) merging. Energies are the EXACT atlas
+// values (grid-independent); only the tight 1sigma_g display is a bit blocky.
+constexpr double kH2pBox = 40.0;
 constexpr int kH2pPoints = 256;
 constexpr double kH2pDt = 0.04;
 constexpr double kH2pRDefault = 2.0;  // H2+ equilibrium bond length ~ 2.0 bohr
@@ -415,7 +416,7 @@ public:
 
     double default_camera_azimuth() const override { return 0.35; }
     double default_camera_elevation() const override { return 0.28; }
-    double default_camera_distance() const override { return 78.0; }
+    double default_camera_distance() const override { return 95.0; }
 
     // The internuclear distance is a fixed physical constant (the H2+
     // equilibrium bond length ~2.0 bohr): nuclei are rigid in the
@@ -628,7 +629,7 @@ private:
         // sesolver_genatlas): the exact prolate-spheroidal orbitals for the
         // nearest snapped R -- zero runtime ODE solve.
         const std::vector<ses::H2plusOrbital> orbs = ses::h2plus_atlas_baked(R);
-        constexpr int kMaxExposed = 12;  // UI-sane; the box admits more
+        constexpr int kMaxExposed = 24;  // UI list scrolls; the box admits more
         for (const ses::H2plusOrbital& o : orbs) {
             if (!representable(o, R)) {
                 continue;

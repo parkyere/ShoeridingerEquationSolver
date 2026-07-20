@@ -43,9 +43,9 @@ struct H2plusOrbital {
 namespace spheroidal_detail {
 
 constexpr double kPi = 3.14159265358979323846;
-constexpr int kNeta = 400;      // angular grid
-constexpr int kNxi = 700;       // radial grid
-constexpr double kXiMaxA = 3.0; // xi_max ~ 1 + kXiMaxA*(box reach)/(R/2)-ish
+constexpr int kNeta = 400;       // angular grid
+constexpr int kNxi = 1200;       // radial grid (covers the wide box + high MOs)
+constexpr double kXiReach = 40.0;  // radial reach in bohr (xi_max = 1 + 2*reach/R)
 
 // Symmetric tridiagonal (diag d, off b[i] = T_{i,i+1}). Sturm count: number
 // of eigenvalues strictly below e (LDL^T pivot sign count, variable off).
@@ -220,8 +220,9 @@ inline double radial_p2(double A, int m, double R, int n_xi, double xi_max,
 inline H2plusOrbital h2plus_orbital(double R, int m, int n_eta, int n_xi) {
     using namespace spheroidal_detail;
     m = std::abs(m);
-    // xi_max: physical reach ~ (R/2) xi_max; cover the bound state generously.
-    const double xi_max = 1.0 + 2.0 * (12.0 + 6.0 * kXiMaxA) / R;
+    // xi_max: physical reach ~ (R/2)(xi_max-1) = kXiReach bohr, covering the
+    // display box so higher (diffuse) orbitals are represented, not truncated.
+    const double xi_max = 1.0 + 2.0 * kXiReach / R;
 
     // Couple E (via p^2) and A: root of g(p^2) = radial_p2(A(p^2)) - p^2.
     auto g = [&](double p2) {
@@ -305,8 +306,8 @@ inline H2plusOrbital h2plus_orbital(double R, int m, int n_eta, int n_xi) {
 // max_states. Sweeps small (m, n_eta, n_xi) and keeps the bound ones.
 inline std::vector<H2plusOrbital> h2plus_atlas(double R, int max_states) {
     std::vector<H2plusOrbital> out;
-    for (int shell = 0; shell <= 4 && static_cast<int>(out.size()) <
-                                          max_states + 8; ++shell) {
+    for (int shell = 0; shell <= 6 && static_cast<int>(out.size()) <
+                                          max_states + 12; ++shell) {
         for (int m = 0; m <= shell; ++m) {
             for (int n_eta = 0; n_eta + m <= shell; ++n_eta) {
                 const int n_xi = shell - m - n_eta;

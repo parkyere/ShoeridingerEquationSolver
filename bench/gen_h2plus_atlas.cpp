@@ -16,15 +16,11 @@ import ses.spheroidal;
 namespace {
 
 constexpr int kProf = 48;    // baked profile samples (linear-interp synthesis)
-constexpr int kMaxOrb = 16;  // exposed orbitals per R (representability caps it)
-// R grid = the scene's 2h SNAP grid (must match kH2pBox/kH2pPoints in
-// molecule_director), so every slider stop loads its EXACT baked atlas and
-// the synthesized orbital matches the nuclei-on-grid-point potential.
-constexpr double kH2pBox = 30.0;
-constexpr int kH2pPoints = 256;
-constexpr double kTwoH = 2.0 * kH2pBox / kH2pPoints;  // 0.234375
-constexpr int kMlo = 4;   // round(1.0 / 2h)
-constexpr int kMhi = 34;  // round(8.0 / 2h)
+constexpr int kMaxOrb = 60;  // candidate cap; representability filters at load
+// R is a FIXED physical constant (H2+ equilibrium ~2.0 bohr), snapped to the
+// scene's grid: snap_r(2.0) at kH2pBox=40/256^3 = 1.875 bohr. A single baked
+// R (the loader's nearest-match returns it for any query).
+constexpr double kFixedR = 1.875;
 
 // Linear resample of a uniform-grid profile to n_out points (endpoints kept).
 std::vector<double> resample(const std::vector<double>& y, int n_out) {
@@ -51,10 +47,7 @@ std::vector<double> resample(const std::vector<double>& y, int n_out) {
 int main(int argc, char** argv) {
     const std::string path =
         argc > 1 ? argv[1] : "core/src/h2plus_atlas_data.ixx";
-    std::vector<double> rs;
-    for (int m = kMlo; m <= kMhi; ++m) {
-        rs.push_back(kTwoH * m);
-    }
+    const std::vector<double> rs = {kFixedR};
     const int nR = static_cast<int>(rs.size());
 
     FILE* f = std::fopen(path.c_str(), "w");
