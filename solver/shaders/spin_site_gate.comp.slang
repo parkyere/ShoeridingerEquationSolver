@@ -24,12 +24,18 @@ void main(uint3 tid : SV_DispatchThreadID) {
     if (t >= params.half_n) {
         return;
     }
+    // Insert a 0 bit at position `site` to build lo (bit clear); hi = lo|bit.
     uint bit = 1u << params.site;
     uint low = t & (bit - 1u);
     uint high = (t & ~(bit - 1u)) << 1u;
     uint lo = high | low;
     uint hi = lo | bit;
-    // RED STUB: identity (gate not applied yet).
-    data[lo] = data[lo];
-    data[hi] = data[hi];
+    Complex up = data[lo];
+    Complex dn = data[hi];
+    Complex a00 = Complex(params.row0.xy);
+    Complex a01 = Complex(params.row0.zw);
+    Complex a10 = Complex(params.row1.xy);
+    Complex a11 = Complex(params.row1.zw);
+    data[lo] = a00 * up + a01 * dn;
+    data[hi] = a10 * up + a11 * dn;
 }
