@@ -108,7 +108,7 @@ public:
             if (e_next > 0.30 / (h * h)) {
                 return false;
             }
-        } else if (e_cur - e_next < 0.3 * b_) {
+        } else if (e_cur - e_next < 0.05 * b_) {
             // a removes no quantum here: the coherent orbit is an
             // a-EIGENSTATE (a|alpha> = alpha|alpha>), the honest floor.
             return false;
