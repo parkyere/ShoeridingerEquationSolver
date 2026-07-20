@@ -49,6 +49,7 @@ add_executable(sesolver_tests
     harmonics_test.cpp
     heightfield_test.cpp
     ho2d_test.cpp
+    ho_spectrum_test.cpp
     hydrogen3_test.cpp
     imaginary_tables_test.cpp
     imaginary_time_test.cpp

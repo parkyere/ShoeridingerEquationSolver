@@ -3,6 +3,7 @@ module;
 #include <cmath>
 #include <complex>
 #include <cstddef>
+#include <utility>
 #include <vector>
 export module ses.lattice2d;
 export import ses.field;
@@ -353,6 +354,19 @@ inline Field3D landau_ladder(const Field3D& psi, double b, bool up) {
 // (right-circular quantum: a_R-dag adds exactly omega to <H> and +1 to
 // <L_z>). Central differences; UNNORMALIZED like landau_ladder.
 // CONTRACT: tests/ho2d_test.cpp.
+// Fock-Darwin spectral decomposition of a LATTICE-GAUGE state: gauge-
+// rotate to the symmetric gauge (e^{-i B x y / 2}), project onto the
+// circular HO basis |n_R, n_L> at the hybrid frequency Omega =
+// sqrt(w0^2 + B^2/4), and ladder the energies E = Omega + n_R w_- +
+// n_L w_+ (w_-+ = Omega -+ B/2: the CCW cyclotron chirality is the slow
+// mode). Returns (E, |c|^2) pairs up to e_max, largest-E last.
+// CONTRACT: tests/ho_spectrum_test.cpp (delta lines + <H> reconstruction).
+inline std::vector<std::pair<double, double>> fock_darwin_spectrum(
+    const Field3D& /*psi*/, double /*omega0*/, double /*b*/,
+    double /*e_max*/) {
+    return {};  // RED stub
+}
+
 inline Field3D ho2d_ladder(const Field3D& psi, double omega, bool up) {
     const Grid3D& g = psi.grid();
     const double inv2h = 1.0 / (2.0 * g.x.spacing());
