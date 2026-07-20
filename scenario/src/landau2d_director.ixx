@@ -17,7 +17,6 @@ export import ses.field;
 export import ses.grid;
 export import ses.lattice2d;
 import ses.parallel;
-import ses.heightfield;
 import ses.potential;
 
 
@@ -48,9 +47,6 @@ constexpr double kLd2dK0Max = 2.5;
 constexpr double kLd2dSigma = 2.0;
 constexpr int kLd2dStepsPerTick = 32;
 constexpr int kLd2dTrailCap = 900;
-// IBM-style STM height surface (like the corral): z = |psi|^2 peak-tracked.
-constexpr double kLd2dSurfH = 6.0;
-constexpr int kLd2dMeshStride = 1;  // 512^2 physics = 512^2 display mesh
 
 class Landau2DDirector final : public ScenarioDirector, public LandauApi {
 public:
@@ -170,19 +166,7 @@ public:
         }
         if (staging_dirty_) {
             staging_dirty_ = false;
-            // Peak SNAP then 0.98-decay (the corral rule): first observed
-            // max sets the surface normalizer outright.
-            double cur = 0.0;
-            for (int j = 0; j < kLd2dN; ++j) {
-                for (int i = 0; i < kLd2dN; ++i) {
-                    cur = std::max(cur, std::norm(psi_(i, j, 0)));
-                }
-            }
-            disp_peak_ = disp_peak_ <= 0.0 ? cur
-                                           : std::max(cur, 0.98 * disp_peak_);
-            hf_ = ses::heightfield_surface(psi_, kLd2dSurfH, disp_peak_,
-                                           kLd2dMeshStride);
-            mesh_dirty_ = true;
+            rebuild_staging();  // phase-hued volume slab (face-on cloud)
         }
         if (++frames_ % 10 == 0) {
             title_dirty_ = true;
@@ -223,7 +207,7 @@ public:
     int steps_per_tick_x1() const override { return kLd2dStepsPerTick; }
 
     // ---- display ----
-    bool cloud() const override { return false; }  // STM height surface
+    bool cloud() const override { return true; }  // face-on phase-hued slab
     double peak() const override { return peak_; }
     VkImageView psi_volume_view() override { return VK_NULL_HANDLE; }
     float next_flash_intensity() override { return 0.0f; }
@@ -233,9 +217,7 @@ public:
     bool take_volume_dirty() override {
         return std::exchange(vol_dirty_, false);
     }
-    bool take_mesh_dirty() override {
-        return std::exchange(mesh_dirty_, false);
-    }
+    bool take_mesh_dirty() override { return false; }
     void mark_display_dirty() override {
         display_changed_ = true;
         vol_dirty_ = true;
@@ -246,9 +228,9 @@ public:
     const std::vector<float>& psi_staging() const override {
         return staging_;
     }
-    const ses::Mesh& mesh() const override { return hf_.mesh; }
+    const ses::Mesh& mesh() const override { return no_mesh_; }
     const std::vector<ses::Rgb>& colors() const override {
-        return hf_.colors;
+        return no_colors_;
     }
     std::string title_text() override {
         const double pi = 3.14159265358979323846;
@@ -276,8 +258,8 @@ public:
                 1.0f, 1.0f, 1.0f, 0.9f};
     }
 
-    double default_camera_azimuth() const override { return 0.35; }
-    double default_camera_elevation() const override { return 0.95; }
+    double default_camera_azimuth() const override { return 0.0; }
+    double default_camera_elevation() const override { return 0.0; }
     double default_camera_distance() const override { return 95.0; }
 
 private:
@@ -450,9 +432,6 @@ private:
     ses::Grid3D phys_grid_;
     ses::Grid3D disp_grid_;
     ses::Field3D psi_;
-    ses::Heightfield hf_;
-    bool mesh_dirty_ = false;
-    double disp_peak_ = 0.0;
     std::vector<double> mask_;  // open-plane absorber frame
     std::unique_ptr<ses::PeierlsLattice2D> prop_;
     std::vector<float> staging_;

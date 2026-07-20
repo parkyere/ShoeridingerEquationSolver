@@ -17,7 +17,6 @@ export import ses.field;
 export import ses.grid;
 export import ses.lattice2d;
 import ses.parallel;
-import ses.heightfield;
 
 
 // The REAL double-slit + Aharonov-Bohm experiment, in 2D, literally: ONE
@@ -33,9 +32,9 @@ import ses.heightfield;
 // phases, B = 0 in every plaquette the electron can reach -- pure AB
 // fringe shift, period 2 pi.
 //
-// The 2D plane is displayed through the volume path: physics lives on one
-// z-plane (nz = 1), the staging replicates it into a thin display slab, and
-// the standard phase-hued cloud + Z-snap gives the face-on view.
+// Display: the phase-hued volume slab, face-on (user call -- the STM
+// height surface read as visual noise here). Physics lives on one z-plane
+// (nz = 1); staging replicates it into a thin display slab.
 // volk.h textually first: VK_* macros never cross module boundaries.
 
 
@@ -70,9 +69,6 @@ constexpr double kDs2dAbsorb = 10.0;
 // CONTRACT: lattice2d_test SinglePacketDrainsThroughTheOpenBoundary.
 constexpr double kDs2dAbsorbW0 = 4.0;
 constexpr int kDs2dStepsPerTick = 16;  // ~9.6 au/s at 60 fps: ~9 s transit
-// IBM-style STM height surface (like the corral): z = |psi|^2 peak-tracked.
-constexpr double kDs2dSurfH = 6.0;
-constexpr int kDs2dMeshStride = 1;  // 512^2 physics = 512^2 display mesh
 
 class DoubleSlit2DDirector final : public ScenarioDirector, public SlitApi {
 public:
@@ -165,20 +161,7 @@ public:
         }
         if (staging_dirty_) {
             staging_dirty_ = false;
-            // Peak SNAP then 0.98-decay (the corral rule).
-            double cur = 0.0;
-            for (int j = 0; j < kDs2dNy; ++j) {
-                for (int i = 0; i < kDs2dNx; ++i) {
-                    cur = std::max(cur, std::norm(psi_(i, j, 0)));
-                }
-            }
-            disp_peak_ = disp_peak_ <= 0.0 ? cur
-                                           : std::max(cur, 0.98 * disp_peak_);
-            if (disp_peak_ > 0.0) {
-                hf_ = ses::heightfield_surface(psi_, kDs2dSurfH, disp_peak_,
-                                               kDs2dMeshStride);
-                mesh_dirty_ = true;
-            }
+            rebuild_staging();  // phase-hued volume slab (face-on cloud)
             rebuild_screen_curve();
         }
         if (++frames_ % 10 == 0) {
@@ -214,7 +197,7 @@ public:
     int steps_per_tick_x1() const override { return kDs2dStepsPerTick; }
 
     // ---- display ----
-    bool cloud() const override { return false; }  // STM height surface
+    bool cloud() const override { return true; }  // face-on phase-hued slab
     double peak() const override { return peak_; }
     VkImageView psi_volume_view() override { return VK_NULL_HANDLE; }
     float next_flash_intensity() override { return 0.0f; }
@@ -224,9 +207,7 @@ public:
     bool take_volume_dirty() override {
         return std::exchange(vol_dirty_, false);
     }
-    bool take_mesh_dirty() override {
-        return std::exchange(mesh_dirty_, false);
-    }
+    bool take_mesh_dirty() override { return false; }
     void mark_display_dirty() override {
         display_changed_ = true;
         vol_dirty_ = true;
@@ -237,9 +218,9 @@ public:
     const std::vector<float>& psi_staging() const override {
         return staging_;
     }
-    const ses::Mesh& mesh() const override { return hf_.mesh; }
+    const ses::Mesh& mesh() const override { return no_mesh_; }
     const std::vector<ses::Rgb>& colors() const override {
-        return hf_.colors;
+        return no_colors_;
     }
     std::string title_text() override {
         const double pi = 3.14159265358979323846;
@@ -279,8 +260,8 @@ public:
                 0.35f, 0.85f, 1.0f, 0.95f};
     }
 
-    double default_camera_azimuth() const override { return 0.35; }
-    double default_camera_elevation() const override { return 0.95; }
+    double default_camera_azimuth() const override { return 0.0; }
+    double default_camera_elevation() const override { return 0.0; }
     double default_camera_distance() const override { return 170.0; }
 
 private:
@@ -365,7 +346,6 @@ private:
             }
         }
         ++shots_;
-        disp_peak_ = 0.0;
         peak_ = 1.0;
         display_changed_ = true;
         vol_dirty_ = true;
@@ -568,9 +548,6 @@ private:
 
     ses::Mesh no_mesh_;
     int shots_ = 0;
-    ses::Heightfield hf_;
-    bool mesh_dirty_ = false;
-    double disp_peak_ = 0.0;
     std::vector<ses::Rgb> no_colors_;
 };
 
