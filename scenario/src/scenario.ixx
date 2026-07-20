@@ -372,6 +372,24 @@ struct BilliardApi {
     virtual double avg_center_fraction() const = 0;  // caustic metric
 };
 
+// Rutherford scattering: a Gaussian packet fired head-on at a REPULSIVE
+// Coulomb center (the 3D Coulomb generator with flipped sign). Sliders set
+// the incident kinetic energy E and the target nuclear charge Z (defaults:
+// gold Z=79 vs the helium/alpha projectile, charge 2 -> V = +2Z/r). The
+// packet turns around near the classical closest approach r_min = 2Z/E and
+// backscatters -- the barrier that revealed the nucleus.
+struct RutherfordApi {
+    virtual ~RutherfordApi() = default;
+    virtual void set_energy(double e) = 0;  // incident KE (Ha); refires
+    virtual double energy() const = 0;
+    virtual void set_z(double z) = 0;  // target nuclear charge; refires
+    virtual double z() const = 0;
+    virtual void refire() = 0;
+    virtual double turning_point() const = 0;      // classical r_min = 2Z/E
+    virtual double closest_approach() const = 0;    // min <r> seen (arc)
+    virtual double backscattered_fraction() const = 0;  // returned upstream
+};
+
 // A 1D-scene overlay primitive: packed (x, y, z) float triples drawn in
 // world space with a constant color -- a LINE_STRIP polyline, or with
 // `fill` a TRIANGLE_STRIP sheet (the faint xy reference plane). When
@@ -426,6 +444,7 @@ public:
     virtual BouncerApi* bouncer() { return nullptr; }
     virtual SpinApi* spin() { return nullptr; }
     virtual SpinsApi* spins() { return nullptr; }
+    virtual RutherfordApi* rutherford() { return nullptr; }
 
     // 1D-scene overlay polylines (phasor curve + potential profile); the 3D
     // scenes return 0 and the renderer draws nothing extra.

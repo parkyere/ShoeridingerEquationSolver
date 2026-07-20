@@ -67,6 +67,7 @@ import ses.scenario.corral2d_director;
 import ses.scenario.doubleslit2d_director;
 import ses.scenario.landau2d_director;
 import ses.scenario.qdot2d_director;
+import ses.scenario.rutherford3d_director;
 import ses.scenario.tunneling_director;
 
 import app.scheduler;
@@ -102,8 +103,8 @@ constexpr const char* kSceneNames[] = {
     "doublewell1d", "ptwell1d", "morse1d", "h2plus",   "benzene",
     "doubleslit2d", "landau2d", "bloch1d", "corral2d", "qdot2d",
     "billiard2d", "anderson1d", "carpet1d", "qpc2d", "bouncer1d",
-    "spin", "spins"};
-constexpr int kSceneCount = 22;
+    "spin", "spins", "rutherford3d"};
+constexpr int kSceneCount = 23;
 std::unique_ptr<ses_shell::ScenarioDirector> make_scene_director(int idx) {
     switch (idx) {
         case 1: return std::make_unique<ses_shell::HarmonicDirector>();
@@ -127,6 +128,7 @@ std::unique_ptr<ses_shell::ScenarioDirector> make_scene_director(int idx) {
         case 19: return std::make_unique<ses_shell::Bouncer1DDirector>();
         case 20: return std::make_unique<ses_shell::SpinDirector>();
         case 21: return std::make_unique<ses_shell::SpinsDirector>();
+        case 22: return std::make_unique<ses_shell::Rutherford3DDirector>();
         default: return std::make_unique<ses_shell::HydrogenDirector>();
     }
 }
@@ -172,6 +174,7 @@ constexpr ArcScene kArcScenes[] = {
     {"selftest-h2p", "h2plus"},
     {"selftest-h2p-orbitals", "h2plus"},
     {"selftest-benzene", "benzene"},
+    {"selftest-rutherford", "rutherford3d"},
 };
 
 // The shell: window + input + device + presentation + the main loop. The one
@@ -439,6 +442,8 @@ public:
                 app::draw_spin_panel(*this, ui_, *spn);
             } else if (auto* sns = director_->spins()) {
                 app::draw_spins_panel(*this, ui_, *sns);
+            } else if (auto* rf = director_->rutherford()) {
+                app::draw_rutherford_panel(*this, ui_, *rf);
             } else if (director_->tunnel() != nullptr) {
                 app::draw_generic_panel(*this, ui_, {});
             } else {
@@ -1012,8 +1017,8 @@ int main(int argc, char* argv[]) {
           "selftest-magnetic", "selftest-manifold", "selftest-morse1d",
           "selftest-partial", "selftest-pt1d", "selftest-qdot",
           "selftest-qpc2d",
-          "selftest-rabi", "selftest-scene", "selftest-spin",
-          "selftest-spins", "selftest-trapdecay",
+          "selftest-rabi", "selftest-rutherford", "selftest-scene",
+          "selftest-spin", "selftest-spins", "selftest-trapdecay",
           "selftest-tunnel", "selftest-tunnel1d"}) {
         add(flag, "physics verification arc (headless)");
     }

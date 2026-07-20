@@ -1642,6 +1642,39 @@ void register_verification_arcs(ShellT* shell) {
         });
     }
 
+    // Rutherford arc (main forces --scene=rutherford3d): a packet fired
+    // head-on at the repulsive Coulomb center turns around near the classical
+    // closest approach r_min = 2Z/E (never reaching the core) and backscatters
+    // -- the barrier that revealed the nucleus. Poll the director's probes.
+    if (shell->has_arg("--selftest-rutherford")) {
+        run_when_manifold_ready(shell, [shell] {
+            auto* rf = shell->director().rutherford();
+            if (rf == nullptr) {
+                std::fprintf(stderr, "selftest-rutherford: no api  [FAIL]\n");
+                shell->request_exit(1);
+                return;
+            }
+            shell->set_time_scale(16);
+            shell->sched().after(120000, [shell] {
+                auto* r = shell->director().rutherford();
+                const double rmin = r->turning_point();      // classical 2Z/E
+                const double closest = r->closest_approach();  // min <r> seen
+                const double back = r->backscattered_fraction();
+                // The packet turned around near r_min: it did NOT reach the
+                // core (closest > 0.5 r_min) and did approach (closest <
+                // launch distance), and a real fraction came back upstream.
+                const bool approached = closest > 0.4 * rmin && closest < 28.0;
+                const bool reflected = back > 0.1;
+                const bool pass = approached && reflected;
+                std::fprintf(stderr,
+                             "selftest-rutherford: r_min = %.1f, closest <r> "
+                             "= %.1f, backscatter = %.2f  [%s]\n",
+                             rmin, closest, back, pass ? "PASS" : "FAIL");
+                shell->request_exit(pass ? 0 : 1);
+            });
+        });
+    }
+
     // Tunneling arc (main forces --scene=tunnel): the packet launched at
     // x = -30 with v = 0.5 reaches the slab at ~60 au; the transmitted lobe
     // is fully past it well before ~150 au (~2.5 min at ~1 au/s). Assert a

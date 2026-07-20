@@ -55,6 +55,9 @@ struct UiState {
     // Bloch lattice: well depth and tilt force.
     float bl_v0 = 1.5f;
     float bl_f = 0.05f;
+    // Rutherford scattering: incident energy (Ha) and target charge Z.
+    float ru_e = 25.0f;
+    float ru_z = 79.0f;
 };
 
 // The x/y/z axis-cycle button shared by the cross-section controls.
@@ -1055,6 +1058,48 @@ void draw_qpc_panel(ShellT& shell, UiState& ui, ses_shell::QpcApi& qp) {
     }
     ImGui::Text("channels open: %d   transmitted: %.1f%%",
                 qp.open_channels(), 100.0 * qp.transmitted());
+    draw_time_scale(shell, ui);
+    ImGui::Separator();
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(shell.status_text().c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::End();
+}
+
+// Rutherford scattering panel: incident-energy + target-Z sliders, the
+// classical closest-approach readout, and refire.
+template <typename ShellT>
+void draw_rutherford_panel(ShellT& shell, UiState& ui,
+                           ses_shell::RutherfordApi& rf) {
+    ImGui::SetNextWindowPos(ImVec2(8, 8), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(430, 0), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_NoCollapse);
+    draw_scene_picker(shell);
+    draw_perf_readout(shell);
+    if (ImGui::Button("Fire alpha (2)")) rf.refire();
+    ImGui::SameLine();
+    if (ImGui::Button("Pause (Space)")) shell.toggle_pause();
+    ui.ru_e = static_cast<float>(rf.energy());
+    if (ImGui::SliderFloat("Incident E (Ha)", &ui.ru_e, 5.0f, 80.0f, "%.1f")) {
+        rf.set_energy(static_cast<double>(ui.ru_e));
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Kinetic energy of the incoming packet. Lower E "
+                          "turns around FARTHER out\n(r_min = 2Z/E) -- the "
+                          "closest approach grows as the alpha slows.");
+    }
+    ui.ru_z = static_cast<float>(rf.z());
+    if (ImGui::SliderFloat("Target Z (repulsion)", &ui.ru_z, 5.0f, 100.0f,
+                           "%.0f")) {
+        rf.set_z(static_cast<double>(ui.ru_z));
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Nuclear charge of the target (default 79 = gold). "
+                          "The repulsive\nCoulomb barrier V = +2Z/r; the "
+                          "alpha projectile carries charge 2.");
+    }
+    ImGui::Text("r_min = 2Z/E = %.1f bohr   backscattered: %.0f%%",
+                rf.turning_point(), 100.0 * rf.backscattered_fraction());
     draw_time_scale(shell, ui);
     ImGui::Separator();
     ImGui::PushTextWrapPos(0.0f);

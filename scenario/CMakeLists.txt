@@ -33,6 +33,7 @@ target_sources(ses_scenario
         src/bouncer1d_director.ixx
         src/spin_director.ixx
         src/spins_director.ixx
+        src/rutherford3d_director.ixx
         src/doubleslit2d_director.ixx
         src/landau2d_director.ixx
         src/bloch1d_director.ixx
