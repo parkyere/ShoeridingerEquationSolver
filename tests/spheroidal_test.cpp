@@ -16,6 +16,7 @@
 #include <vector>
 
 import ses.spheroidal;
+import ses.h2plus_atlas_data;
 import ses.field;
 import ses.grid;
 import ses.observables;
@@ -134,6 +135,38 @@ TEST(Spheroidal, PiUOrbitalHasAnAxisNode) {
         }
     }
     EXPECT_LT(node, 0.02 * bulk) << "1pi_u (cos phi) has the y = 0 nodal plane";
+}
+
+// The baked atlas (ses.h2plus_atlas_data, offline-generated) must reproduce
+// the live solve: same count, quantum numbers, and energies at R = 2.
+TEST(Spheroidal, BakedAtlasMatchesTheLiveSolve) {
+    const double R = 2.0;
+    const std::vector<ses::H2plusOrbital> baked = ses::h2plus_atlas_baked(R);
+    const std::vector<ses::H2plusOrbital> live = ses::h2plus_atlas(R, 10);
+    ASSERT_EQ(baked.size(), live.size());
+    ASSERT_FALSE(baked.empty());
+    for (std::size_t i = 0; i < baked.size(); ++i) {
+        EXPECT_EQ(baked[i].m, live[i].m);
+        EXPECT_EQ(baked[i].parity, live[i].parity);
+        EXPECT_NEAR(baked[i].energy, live[i].energy, 1e-6)
+            << "baked orbital " << i << " energy";
+    }
+    // The ground stays the known value through the bake.
+    EXPECT_NEAR(baked[0].energy, -1.1026342, 0.01);
+}
+
+// A baked orbital synthesizes the same shape as the live one (gerade ground,
+// piled on the nuclei) -- the downsampled profiles are faithful.
+TEST(Spheroidal, BakedGroundSynthesizesLikeTheLiveSolve) {
+    const double R = 2.0;
+    const Grid1D ax{-16.0, 16.0, 128};
+    const Grid3D g{ax, ax, ax};
+    const ses::H2plusOrbital b0 = ses::h2plus_atlas_baked(R).front();
+    const Field3D psi = ses::synthesize_h2plus(g, b0, 0);
+    const std::vector<double> v = ses::regularized_coulomb_potential(
+        g, 1.0, {{-R / 2, 0.0, 0.0}, {R / 2, 0.0, 0.0}});
+    const double e = ses::mean_energy(psi, v);
+    EXPECT_LT(e, -0.5) << "baked ground synthesizes a bound state";
 }
 
 }  // namespace
