@@ -10,6 +10,7 @@
 #include <cmath>
 #include <complex>
 #include <cstddef>
+#include <cstdio>
 #include <vector>
 
 import ses.scenario.billiard2d_director;
@@ -103,6 +104,8 @@ TEST(Billiard2D, CircleKeepsTheCausticHoleTheStadiumFillsIt) {
     };
     const double circle = run(0.0);
     const double stadium = run(6.0);
+    std::printf("billiard caustic center/interior: circle %.3f stadium %.3f\n",
+                circle, stadium);
     // Integrable: the caustic keeps the center DARK relative to the
     // orbit annulus; chaotic: L is broken and the center lights up.
     EXPECT_GT(circle, 0.0);

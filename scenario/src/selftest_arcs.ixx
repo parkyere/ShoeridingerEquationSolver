@@ -1046,6 +1046,46 @@ void register_verification_arcs(ShellT* shell) {
 
     // Corral arc (main forces --scene=corral2d): the boot relax must
     // capture the ground INSIDE the fence with the J0-mode energy scale.
+    // Billiard arc (main forces --scene=billiard2d): the caustic contract
+    // at scene scale -- circle keeps the center dark (|L| conserved),
+    // the stadium fills it (chaos). Mirrors billiard2d_test.
+    if (shell->has_arg("--selftest-billiard")) {
+        shell->sched().after(1000, [shell] {
+            selftest_scene_wait_running(shell, "billiard2d", 0, [shell](
+                                                                    bool
+                                                                        runs) {
+                auto* bd = shell->bd();
+                if (!runs || bd == nullptr) {
+                    std::fprintf(stderr, "selftest-billiard: scene not "
+                                         "running or no api  [FAIL]\n");
+                    shell->request_exit(1);
+                    return;
+                }
+                const double t_run = 90.0;
+                shell->set_time_scale(16);
+                selftest_wait_sim_time(shell, t_run, 0, [shell,
+                                                         t_run](bool ok1) {
+                    const double f_circle = shell->bd()->avg_center_fraction();
+                    shell->bd()->toggle_shape();  // stadium, avg + clock reset
+                    selftest_wait_sim_time(
+                        shell, t_run, 0, [shell, ok1, f_circle](bool ok2) {
+                            const double f_stad =
+                                shell->bd()->avg_center_fraction();
+                            const bool pass = ok1 && ok2 && f_circle >= 0.0 &&
+                                              f_circle < 0.30 &&
+                                              f_stad > 2.0 * f_circle;
+                            std::fprintf(
+                                stderr,
+                                "selftest-billiard: center/interior circle "
+                                "%.3f, stadium %.3f  [%s]\n",
+                                f_circle, f_stad, pass ? "PASS" : "FAIL");
+                            shell->request_exit(pass ? 0 : 1);
+                        });
+                });
+            });
+        });
+    }
+
     if (shell->has_arg("--selftest-corral")) {
         shell->sched().after(1000, [shell] {
             auto* cr = shell->cr();

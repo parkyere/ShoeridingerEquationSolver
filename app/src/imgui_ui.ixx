@@ -784,6 +784,45 @@ void draw_corral_panel(ShellT& shell, UiState& ui, ses_shell::CorralApi& cr) {
     ImGui::End();
 }
 
+// Quantum-billiard panel: shape toggle + the scar (time-average) lens.
+template <typename ShellT>
+void draw_billiard_panel(ShellT& shell, UiState& ui,
+                         ses_shell::BilliardApi& bl) {
+    ImGui::SetNextWindowPos(ImVec2(8, 8), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(430, 0), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_NoCollapse);
+    draw_scene_picker(shell);
+    draw_perf_readout(shell);
+    if (ImGui::Button("Fire packet (2)")) bl.fire();
+    ImGui::SameLine();
+    if (ImGui::Button(bl.stadium() ? "Circle (5)" : "Stadium (5)")) {
+        bl.toggle_shape();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Circle: integrable -- |L| is conserved, the\n"
+                          "orbit keeps a caustic hole. Stadium: chaotic --\n"
+                          "the flat walls break L and the orbit fills the\n"
+                          "table (Bunimovich).");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(bl.avg_view() ? "Live view (A)" : "Average view (A)")) {
+        bl.toggle_avg_view();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Time-averaged density: the caustic ring in the\n"
+                          "circle, ergodic fill (with scars) in the stadium.");
+    }
+    ImGui::Text("center/interior avg: %.2f", bl.avg_center_fraction());
+    ImGui::SameLine();
+    if (ImGui::Button("Pause (Space)")) shell.toggle_pause();
+    draw_time_scale(shell, ui);
+    ImGui::Separator();
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(shell.status_text().c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::End();
+}
+
 // Quantum-dot panel: stiffness and field knobs, Fock-Darwin readout.
 template <typename ShellT>
 void draw_qdot_panel(ShellT& shell, UiState& ui, ses_shell::QdotApi& qd) {

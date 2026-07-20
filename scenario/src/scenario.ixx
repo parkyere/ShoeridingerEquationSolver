@@ -247,6 +247,17 @@ struct QdotApi {
     virtual void fire_displaced() = 0;  // coherent orbit / rosette
 };
 
+// Quantum billiard: circle (integrable) vs Bunimovich stadium (chaotic).
+struct BilliardApi {
+    virtual ~BilliardApi() = default;
+    virtual void fire() = 0;          // relaunch the tangential packet
+    virtual void toggle_shape() = 0;  // circle <-> stadium (refires)
+    virtual bool stadium() const = 0;
+    virtual void toggle_avg_view() = 0;  // live |psi|^2 <-> time average
+    virtual bool avg_view() const = 0;
+    virtual double avg_center_fraction() const = 0;  // caustic metric
+};
+
 // A 1D-scene overlay primitive: packed (x, y, z) float triples drawn in
 // world space with a constant color -- a LINE_STRIP polyline, or with
 // `fill` a TRIANGLE_STRIP sheet (the faint xy reference plane). When
@@ -294,6 +305,7 @@ public:
     virtual BlochApi* bloch() { return nullptr; }
     virtual CorralApi* corral() { return nullptr; }
     virtual QdotApi* qdot() { return nullptr; }
+    virtual BilliardApi* billiard() { return nullptr; }
 
     // 1D-scene overlay polylines (phasor curve + potential profile); the 3D
     // scenes return 0 and the renderer draws nothing extra.
