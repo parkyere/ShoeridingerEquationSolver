@@ -183,7 +183,9 @@ public:
     ~Engine() { destroy(); }
 
     // half_v / kinetic are SplitOperator3D's phase tables; psi0 the initial
-    // field. Cubic grids only (one baked fft_line<n>).
+    // field. Grids: cubic n^3 or planar n x n x 1 (the 2D scenes) -- ONE
+    // baked fft_line<n> serves every transformed axis, so x/y share n and
+    // z is n or 1 (a length-1 axis is skipped: its DFT is the identity).
     // The propagator's phases are computed IN-SHADER from the scalar
     // potential (R32) and three 1D k^2 tables -- no complex phase tables.
     bool initialize(DeviceContext& ctx, const ses::Grid3D& grid,
@@ -196,8 +198,9 @@ public:
         n_ = grid.x.n;
         cells_ = static_cast<std::size_t>(grid.size());
         cell_volume_ = grid.cell_volume();
-        if (grid.y.n != n_ || grid.z.n != n_) {
-            std::fprintf(stderr, "ses_vk::Engine: only cubic grids supported\n");
+        if (grid.y.n != n_ || (grid.z.n != n_ && grid.z.n != 1)) {
+            std::fprintf(stderr, "ses_vk::Engine: only cubic or n x n x 1 "
+                                 "planar grids supported\n");
             return false;
         }
         mul_groups_ = static_cast<std::uint32_t>((cells_ + 255) / 256);
@@ -420,12 +423,24 @@ public:
                                0.0f};
         const ConjParams conjN{static_cast<std::uint32_t>(cells_),
                                1.0f / static_cast<float>(cells_), 0.0f, 0.0f};
-        const std::int32_t nn = n_ * n_;
+        // Per-axis line enumeration (base = (l % mod_a)*mul_b +
+        // (l / mod_a)*mul_c, element step = stride); n_lines doubles as the
+        // dispatch count and a length-1 axis dispatches ZERO lines (fft3 /
+        // record_shear skip it: identity). Cubic grids reproduce the old
+        // n^2 tables bitwise.
+        const std::int32_t nx = grid.x.n;
+        const std::int32_t ny = grid.y.n;
+        const std::int32_t nz = grid.z.n;
         const FftParams fftp[3] = {
-            {nn, n_, 0, 1, nn, 0, 0, 0},   // x-lines (contiguous)
-            {n_, 1, nn, n_, nn, 0, 0, 0},  // y-lines
-            {nn, 1, 0, nn, nn, 0, 0, 0},   // z-lines
+            {ny * nz, nx, 0, 1, ny * nz, 0, 0, 0},       // x-lines (contiguous)
+            {nx, 1, nx * ny, nx, nx * nz, 0, 0, 0},      // y-lines
+            {nx * ny, 1, 0, nx * ny, nx * ny, 0, 0, 0},  // z-lines
         };
+        for (int a = 0; a < 3; ++a) {
+            const std::int32_t len = a == 0 ? nx : a == 1 ? ny : nz;
+            fft_lines_[a] =
+                len > 1 ? static_cast<std::uint32_t>(fftp[a].n_lines) : 0;
+        }
         // conjA: the per-axis inverse-FFT scale (1/n, the single transformed
         // axis) used by the shear path.
         const ConjParams conjA{static_cast<std::uint32_t>(cells_),
@@ -3143,8 +3158,7 @@ private:
     // One staged shear: FFT along freq_axis, phase-shift (shear_set_[which]),
     // then the inverse FFT along that axis (conj -> FFT -> conj/n).
     void record_shear(Recorder& r, int which, int freq_axis) {
-        const std::uint32_t nn = static_cast<std::uint32_t>(n_) *
-                                 static_cast<std::uint32_t>(n_);
+        const std::uint32_t nn = fft_lines_[freq_axis];
         r.dispatch(fft_, fft_set_[freq_axis], nn);
         r.dispatch(shear_, shear_set_[which], mul_groups_);
         r.dispatch(conj_, conj1_set_, mul_groups_);
@@ -3329,10 +3343,11 @@ private:
 #endif  // SES_HAVE_VKFFT
 
     void fft3(Recorder& r) {
-        const std::uint32_t nn = static_cast<std::uint32_t>(n_) *
-                                 static_cast<std::uint32_t>(n_);
         for (int a = 0; a < 3; ++a) {
-            r.dispatch(fft_, fft_set_[a], nn);
+            if (fft_lines_[a] == 0) {
+                continue;  // length-1 axis: DFT = identity
+            }
+            r.dispatch(fft_, fft_set_[a], fft_lines_[a]);
         }
     }
 
@@ -3448,6 +3463,9 @@ private:
     Buffer conj1_ubo_{};
     Buffer conjN_ubo_{};
     Buffer fft_ubo_[3]{};
+    // Per-axis fallback-FFT dispatch counts (= FftParams.n_lines); 0 marks
+    // a length-1 axis whose pass is skipped (planar grids).
+    std::uint32_t fft_lines_[3] = {};
     Buffer scale_ubo_{};
     Buffer renorm_{};      // SSBO holding the GPU-computed inv (1 float)
     Buffer renorm_ubo_{};  // finalize params {ngroups, cell_volume}
