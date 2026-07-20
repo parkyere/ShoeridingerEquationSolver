@@ -234,4 +234,4 @@ repository's source (they enter as git submodules or build-time downloads):
 | Vulkan headers / loader | vcpkg | Apache-2.0 / MIT |
 | GoogleTest | vcpkg | BSD 3-Clause |
 | Boost.Program_options | vcpkg | BSL-1.0 |
-| Slang compiler (`slangc`) | build-time tool download | MIT |
+| Slang compiler (`slangc`) | build-time tool download | Apache-2.0 WITH LLVM-exception |

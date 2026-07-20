@@ -73,3 +73,26 @@ target_compile_features(sesolver_app PRIVATE cxx_std_20)
 if(MSVC)
     target_compile_definitions(sesolver_app PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
+
+# ---------------------------------------------------------------------------
+# Quantitative selftest arcs as OPT-IN ctest entries (review finding: the 23
+# arcs verified real physics but lived outside ctest entirely). Default OFF:
+# a full arc sweep is a multi-minute GPU battery (manifold alone ~3.5 min),
+# far too heavy for the red/green TDD loop. Enable with -DSES_ARC_TESTS=ON,
+# then run `ctest -L arc` (serialized: RESOURCE_LOCK gpu -- the project rule
+# keeps the GPU exclusive during batteries).
+# ---------------------------------------------------------------------------
+option(SES_ARC_TESTS "Register the --selftest-* arcs as ctest entries (slow, GPU)" OFF)
+if(SES_ARC_TESTS)
+    foreach(_arc IN ITEMS benzene bloch cascade corral decay doubleslit2d
+            dw1d efield energy h2p ladder1d landau magnetic manifold morse1d
+            partial pt1d qdot rabi scene trapdecay tunnel tunnel1d)
+        add_test(NAME Arc.${_arc}
+                 COMMAND sesolver_app --selftest-${_arc})
+        set_tests_properties(Arc.${_arc} PROPERTIES
+            LABELS "gpu;arc"
+            RESOURCE_LOCK gpu
+            TIMEOUT 600)
+    endforeach()
+    message(STATUS "Selftest arcs registered as ctest entries (ctest -L arc).")
+endif()
