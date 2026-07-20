@@ -23,6 +23,7 @@ add_executable(sesolver_tests
     anderson1d_test.cpp
     billiard2d_test.cpp
     bloch_test.cpp
+    bouncer1d_test.cpp
     camera_test.cpp
     carpet1d_test.cpp
     colormap_test.cpp
