@@ -44,7 +44,7 @@ constexpr int kCr2dN = 512;
 constexpr int kCr2dNz = 4;
 constexpr double kCr2dZHalf = 2.0;
 constexpr double kCr2dSurfH = 6.0;   // peak |psi|^2 -> 6 Bohr of height
-constexpr int kCr2dMeshStride = 2;   // 512^2 physics -> 256^2 display mesh
+constexpr int kCr2dMeshStride = 1;   // 512^2 physics = 512^2 display mesh
 constexpr double kCr2dDt = 0.02;
 // Annealed relax: the coarse dtau settles fast (spectral kinetic decay is
 // exact, no stability limit), the fine dtau then polishes the Strang
