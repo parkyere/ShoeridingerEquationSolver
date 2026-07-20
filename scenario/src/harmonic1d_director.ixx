@@ -203,6 +203,22 @@ public:
     bool loss_on() const override { return kappa_ > 0.0; }
     long long jump_count() const override { return jumps_; }
 
+    // Lazy eigen-decomposition strip (0..100 eV = 3.675 Ha): recomputed
+    // only when a MUTATION touched the weights (unitary evolution never
+    // does). CONTRACT: tests/ho_spectrum_test.cpp (the core helper).
+    int spectrum_count() override {
+        ensure_spectrum();
+        return static_cast<int>(spec_.size());
+    }
+    double spectrum_ev(int i) override {
+        ensure_spectrum();
+        return spec_[static_cast<std::size_t>(i)].first * 27.211386;
+    }
+    double spectrum_weight(int i) override {
+        ensure_spectrum();
+        return spec_[static_cast<std::size_t>(i)].second;
+    }
+
     bool handle_key(char key) override {
         if (key == 'C') {
             cat();
@@ -297,6 +313,14 @@ private:
                                         1.0 / std::sqrt(2.0 * omega_), 0.0);
     }
 
+    void ensure_spectrum() {
+        if (!spec_dirty_) {
+            return;
+        }
+        spec_dirty_ = false;
+        spec_ = ses::ho1d_spectrum(psi_, omega_, 100.0 / 27.211386);
+    }
+
     // The no-jump damping ITP rides omega and kappa; rebuild on change
     // (quench-safe: potential_ always matches omega_).
     void ensure_damp() {
@@ -310,8 +334,10 @@ private:
     }
 
     // Honest state classification via Var(H): eigenstates name their n,
-    // everything else is a superposition (level -1).
+    // everything else is a superposition (level -1). Every mutation path
+    // routes through here, so it doubles as the spectrum invalidation.
     void classify() {
+        spec_dirty_ = true;
         if (ses::energy_variance(psi_, potential_) < kHo1dVarEigenTol) {
             const double e = ses::mean_energy(psi_, potential_);
             level_ = static_cast<int>(std::lround(e / omega_ - 0.5));
@@ -346,6 +372,9 @@ private:
     int level_ = 0;
     std::string note_;
     std::mt19937 rng_;
+    // Lazy spectrum cache (dirty on every state mutation).
+    std::vector<std::pair<double, double>> spec_;
+    bool spec_dirty_ = true;
     // Photon-loss MCWF state (the cat decoherence lens).
     double kappa_ = 0.0;
     std::unique_ptr<ses::ImaginaryTimePropagator1D> damp_;

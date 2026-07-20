@@ -228,15 +228,6 @@ inline double ladder_raise(Field1D& psi, double omega) {
 // never leaves double range: deep levels keep their outer lobes past the
 // plain exp's underflow wall (|x| ~ 38.6/sqrt(omega)), and the ceiling
 // becomes the honest grid physics (box vs Nyquist), not the FP floor.
-// Eigenbasis decomposition of psi up to e_max: (E_n, |<n|psi>|^2) pairs,
-// E_n = (n + 1/2) omega -- the LINEAR-COMBINATION spectrum the HUD
-// strip stacks (not emitted photons: what the cloud IS made of).
-// CONTRACT: tests/ho_spectrum_test.cpp.
-inline std::vector<std::pair<double, double>> ho1d_spectrum(
-    const Field1D& /*psi*/, double /*omega*/, double /*e_max*/) {
-    return {};  // RED stub
-}
-
 inline Field1D ho_eigenstate(const Grid1D& g, double omega, int n) {
     ladder_detail::ScaledChain chain{g, omega};
     chain.advance_to(n);
@@ -244,6 +235,30 @@ inline Field1D ho_eigenstate(const Grid1D& g, double omega, int n) {
     parallel_for(g.n, [&](int i) { cur[i] = chain.value(i); });
     normalize(cur);
     return cur;
+}
+
+// Eigenbasis decomposition of psi up to e_max: (E_n, |<n|psi>|^2) pairs,
+// E_n = (n + 1/2) omega -- the LINEAR-COMBINATION spectrum the HUD
+// strip stacks (not emitted photons: what the cloud IS made of).
+// CONTRACT: tests/ho_spectrum_test.cpp.
+inline std::vector<std::pair<double, double>> ho1d_spectrum(
+    const Field1D& psi, double omega, double e_max) {
+    std::vector<std::pair<double, double>> lines;
+    const double h = psi.grid().spacing();
+    for (int n = 0;; ++n) {
+        const double e = (n + 0.5) * omega;
+        if (e > e_max) {
+            break;
+        }
+        const Field1D basis = ho_eigenstate(psi.grid(), omega, n);
+        std::complex<double> ov{};
+        for (int i = 0; i < psi.size(); ++i) {
+            ov += std::conj(basis[i]) * psi[i];
+        }
+        ov *= h;
+        lines.emplace_back(e, std::norm(ov));
+    }
+    return lines;
 }
 
 // The REPRESENTABILITY ceiling: the largest level whose direct Hermite

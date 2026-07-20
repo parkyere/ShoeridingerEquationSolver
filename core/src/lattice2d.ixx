@@ -361,13 +361,76 @@ inline Field3D landau_ladder(const Field3D& psi, double b, bool up) {
 // n_L w_+ (w_-+ = Omega -+ B/2: the CCW cyclotron chirality is the slow
 // mode). Returns (E, |c|^2) pairs up to e_max, largest-E last.
 // CONTRACT: tests/ho_spectrum_test.cpp (delta lines + <H> reconstruction).
+inline Field3D ho2d_ladder(const Field3D& psi, double omega, bool up,
+                           bool left = false);
+
 inline std::vector<std::pair<double, double>> fock_darwin_spectrum(
-    const Field3D& /*psi*/, double /*omega0*/, double /*b*/,
-    double /*e_max*/) {
-    return {};  // RED stub
+    const Field3D& psi, double omega0, double b, double e_max) {
+    const Grid3D& g = psi.grid();
+    const double om = std::sqrt(omega0 * omega0 + 0.25 * b * b);
+    const double w_r = om - 0.5 * b;  // right-circular = CCW cyclotron
+    const double w_l = om + 0.5 * b;
+    const double cell = g.x.spacing() * g.y.spacing() * g.z.spacing();
+    // Gauge-rotate the lattice state (A_x = +B y) into the symmetric
+    // gauge the circular basis lives in: chi = -B x y / 2.
+    Field3D rot{g};
+    for (int j = 0; j < g.y.n; ++j) {
+        const double y = g.y.coord(j);
+        for (int i = 0; i < g.x.n; ++i) {
+            const double th = -0.5 * b * g.x.coord(i) * y;
+            rot(i, j, 0) = psi(i, j, 0) *
+                           std::complex<double>{std::cos(th), std::sin(th)};
+        }
+    }
+    // Circular basis at Omega, built by the two ladder chains from the
+    // analytic ground; each column normalized before the overlap.
+    Field3D ground{g};
+    for (int j = 0; j < g.y.n; ++j) {
+        const double y = g.y.coord(j);
+        for (int i = 0; i < g.x.n; ++i) {
+            const double x = g.x.coord(i);
+            ground(i, j, 0) = std::exp(-0.5 * om * (x * x + y * y));
+        }
+    }
+    normalize(ground);
+    std::vector<std::pair<double, double>> lines;
+    Field3D right = ground;
+    for (int nr = 0;; ++nr) {
+        const double e_r = om + nr * w_r;
+        if (e_r > e_max) {
+            break;
+        }
+        Field3D cur = right;
+        for (int nl = 0;; ++nl) {
+            const double e = e_r + nl * w_l;
+            if (e > e_max) {
+                break;
+            }
+            std::complex<double> ov{};
+            for (std::size_t c = 0; c < cur.data().size(); ++c) {
+                ov += std::conj(cur.data()[c]) * rot.data()[c];
+            }
+            ov *= cell;
+            lines.emplace_back(e, std::norm(ov));
+            Field3D next = ho2d_ladder(cur, om, true, true);
+            if (norm_sq(next) < 1e-12) {
+                break;
+            }
+            normalize(next);
+            cur = std::move(next);
+        }
+        Field3D nxt = ho2d_ladder(right, om, true, false);
+        if (norm_sq(nxt) < 1e-12) {
+            break;
+        }
+        normalize(nxt);
+        right = std::move(nxt);
+    }
+    return lines;
 }
 
-inline Field3D ho2d_ladder(const Field3D& psi, double omega, bool up) {
+inline Field3D ho2d_ladder(const Field3D& psi, double omega, bool up,
+                           bool left) {
     const Grid3D& g = psi.grid();
     const double inv2h = 1.0 / (2.0 * g.x.spacing());
     const double cx = std::sqrt(omega / 2.0);   // sqrt(w/2) x term
@@ -390,12 +453,14 @@ inline Field3D ho2d_ladder(const Field3D& psi, double omega, bool up) {
             const std::complex<double> ddy =
                 (psi(i, jp, 0) - psi(i, jm, 0)) * inv2h;
             // a_x = sqrt(w/2) x + d_x / sqrt(2w) (and the dagger flips
-            // the derivative sign); a_R = (a_x - i a_y)/sqrt(2).
+            // the derivative sign); a_R = (a_x - i a_y)/sqrt(2), and the
+            // LEFT chirality (a_x + i a_y)/sqrt(2) flips q.
+            const std::complex<double> qI = left ? -kI : kI;
             out(i, j, 0) =
-                up ? s * (cx * (x + kI * y) * psi(i, j, 0) -
-                          cd * (ddx + kI * ddy))
-                   : s * (cx * (x - kI * y) * psi(i, j, 0) +
-                          cd * (ddx - kI * ddy));
+                up ? s * (cx * (x + qI * y) * psi(i, j, 0) -
+                          cd * (ddx + qI * ddy))
+                   : s * (cx * (x - qI * y) * psi(i, j, 0) +
+                          cd * (ddx - qI * ddy));
         }
     });
     return out;

@@ -115,6 +115,7 @@ public:
         psi_ = std::move(shifted);
         trail_.clear();
         track_peak();
+        spec_dirty_ = true;
         mark_fired();
     }
 
@@ -145,6 +146,7 @@ public:
         staging_dirty_ = true;
         display_changed_ = true;
         title_dirty_ = true;
+        spec_dirty_ = true;
         return true;
     }
 
@@ -181,6 +183,7 @@ public:
         trail_.clear();
         disp_peak_ = 0.0;
         track_peak();
+        spec_dirty_ = true;
         mark_fired();
     }
 
@@ -229,8 +232,25 @@ public:
         note_.clear();
         trail_.clear();
         title_dirty_ = true;
+        spec_dirty_ = true;
     }
     bool grabbing() const override { return grabbing_; }
+
+    // Lazy Fock-Darwin decomposition strip (0..100 eV): dirty on every
+    // mutation; unitary evolution leaves the weights alone.
+    // CONTRACT: tests/ho_spectrum_test.cpp (the core helper).
+    int spectrum_count() override {
+        ensure_spectrum();
+        return static_cast<int>(spec_.size());
+    }
+    double spectrum_ev(int i) override {
+        ensure_spectrum();
+        return spec_[static_cast<std::size_t>(i)].first * 27.211386;
+    }
+    double spectrum_weight(int i) override {
+        ensure_spectrum();
+        return spec_[static_cast<std::size_t>(i)].second;
+    }
 
     void reset_simulation() override { relax_ground(); }
 
@@ -335,6 +355,7 @@ protected:
                 if (++conv_streak_ >= 3) {
                     relaxing_ = false;
                     title_dirty_ = true;
+                    spec_dirty_ = true;
                 }
             } else {
                 conv_streak_ = 0;
@@ -355,6 +376,15 @@ protected:
     }
 
 private:
+    void ensure_spectrum() {
+        if (!spec_dirty_ || relaxing_ || grabbing_) {
+            return;  // settle first: mid-relax/grab weights are noise
+        }
+        spec_dirty_ = false;
+        spec_ = ses::fock_darwin_spectrum(psi_, w0_, b_,
+                                          100.0 / 27.211386);
+    }
+
     void rebuild_prop() {
         std::vector<double> v(
             static_cast<std::size_t>(phys_grid_.size()));
@@ -438,6 +468,8 @@ private:
     std::string note_;
     std::mt19937 rng_{20260720u};
     std::vector<float> para_;
+    std::vector<std::pair<double, double>> spec_;
+    bool spec_dirty_ = true;
     // Grab state: held base + pick point (the pick-and-gather toy).
     bool grabbing_ = false;
     double grab_x_ = 0.0;

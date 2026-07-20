@@ -1,5 +1,7 @@
 module;
 #include <imgui.h>
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <initializer_list>
 #include <string>
@@ -425,6 +427,44 @@ void draw_generic_panel(ShellT& shell, UiState& ui,
     ImGui::End();
 }
 
+// 0..100 eV linear-combination spectrum strip: one vertical line per
+// eigenstate the cloud is MADE of, brightness = weight (sqrt-compressed
+// so faint components still read). The lines slide as the well retunes.
+template <typename ApiT>
+void draw_ho_spectrum_strip(ApiT& api) {
+    ImGui::TextUnformatted("State spectrum 0-100 eV (linear combination)");
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float w = ImGui::GetContentRegionAvail().x;
+    const float h = 34.0f;
+    dl->AddRectFilled(ImVec2(p.x, p.y), ImVec2(p.x + w, p.y + h),
+                      IM_COL32(12, 12, 18, 255));
+    const int n = api.spectrum_count();
+    double wmax = 1e-12;
+    for (int i = 0; i < n; ++i) {
+        wmax = std::max(wmax, api.spectrum_weight(i));
+    }
+    for (int i = 0; i < n; ++i) {
+        const double ev = api.spectrum_ev(i);
+        if (ev > 100.0) {
+            continue;
+        }
+        const float b =
+            static_cast<float>(std::sqrt(api.spectrum_weight(i) / wmax));
+        if (b < 0.02f) {
+            continue;
+        }
+        const float x = p.x + w * static_cast<float>(ev / 100.0);
+        dl->AddLine(ImVec2(x, p.y + 2.0f), ImVec2(x, p.y + h - 2.0f),
+                    IM_COL32(90 + static_cast<int>(160.0f * b),
+                             220, 255, 40 + static_cast<int>(215.0f * b)),
+                    2.0f);
+    }
+    dl->AddRect(ImVec2(p.x, p.y), ImVec2(p.x + w, p.y + h),
+                IM_COL32(70, 70, 90, 255));
+    ImGui::Dummy(ImVec2(w, h + 4.0f));
+}
+
 // The 1D harmonic-ladder panel: ladder/superposition controls + the live
 // well-stiffness slider (a sudden quench -- psi is kept; the director
 // re-derives the spectral-band ladder cap).
@@ -493,6 +533,7 @@ void draw_ladder1d_panel(ShellT& shell, UiState& ui, ses_shell::Ladder1dApi& ld)
                           "n <= %d.",
                           ld.max_level());
     }
+    draw_ho_spectrum_strip(ld);
     draw_time_scale(shell, ui);
     ImGui::Separator();
     ImGui::PushTextWrapPos(0.0f);
@@ -952,6 +993,7 @@ void draw_qdot_panel(ShellT& shell, UiState& ui, ses_shell::QdotApi& qd) {
     }
     ImGui::Text("E = %.4f vs Omega = %.4f%s", qd.energy_meas(),
                 qd.energy_pred(), qd.relaxing() ? " (relaxing...)" : "");
+    draw_ho_spectrum_strip(qd);
     draw_time_scale(shell, ui);
     ImGui::Separator();
     ImGui::PushTextWrapPos(0.0f);

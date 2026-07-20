@@ -112,6 +112,12 @@ struct Ladder1dApi {
     virtual void toggle_loss() = 0;
     virtual bool loss_on() const = 0;
     virtual long long jump_count() const = 0;
+    // The linear-combination spectrum strip (0..100 eV): what the cloud
+    // IS made of. Weights only change on MUTATIONS (unitary evolution
+    // leaves |c_n|^2 alone), so implementations recompute lazily.
+    virtual int spectrum_count() = 0;
+    virtual double spectrum_ev(int i) = 0;
+    virtual double spectrum_weight(int i) = 0;
 };
 
 // The double-well tunneling-oscillation scene.
@@ -260,6 +266,11 @@ struct QdotApi {
     virtual void update_grab(double strength) = 0;
     virtual void end_grab() = 0;
     virtual bool grabbing() const = 0;
+    // Fock-Darwin linear-combination spectrum (0..100 eV), lazy like the
+    // 1D trap's.
+    virtual int spectrum_count() = 0;
+    virtual double spectrum_ev(int i) = 0;
+    virtual double spectrum_weight(int i) = 0;
 };
 
 // Quantum bouncer: gravity + mirror, the Airy ladder.
