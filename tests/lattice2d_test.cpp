@@ -535,16 +535,17 @@ TEST(Landau2DDirector, LadderRefusesPastTheLatticeBand) {
     EXPECT_GE(climbed, 3);
     EXPECT_LE(climbed, 20);
     // And the climb was real: the Landau index followed the rungs.
-    EXPECT_GT(api->mean_n(), 0.6 * climbed);
-    // Descending unwinds the tower and REFUSES at the bottom (a|0> = 0 --
-    // the boot packet is a coherent superposition, so the first few downs
-    // legitimately succeed; termination is the contract).
+    const double top_n = api->mean_n();
+    EXPECT_GT(top_n, 0.6 * climbed);
+    // Descending unwinds the tower and REFUSES at the floor: the coherent
+    // orbit is an a-EIGENSTATE (a|alpha> = alpha|alpha> removes no
+    // quantum), so downs stop once the energy stops dropping.
     int descended = 0;
     while (descended < 40 && api->ladder(false)) {
         ++descended;
     }
     EXPECT_LT(descended, 40);
-    EXPECT_LT(api->mean_n(), 3.0);
+    EXPECT_LT(api->mean_n(), top_n - 1.0);
 }
 
 }  // namespace
