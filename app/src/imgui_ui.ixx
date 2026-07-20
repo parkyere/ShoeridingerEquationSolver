@@ -447,6 +447,26 @@ void draw_ladder1d_panel(ShellT& shell, UiState& ui, ses_shell::Ladder1dApi& ld)
     }
     ImGui::SameLine();
     if (ImGui::Button("Ground (2)")) shell.press('2');
+    if (ImGui::Button("Cat (C)")) shell.press('C');
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Schrodinger cat |a> + |-a>: two coherent lobes.\n"
+                          "Interference fringes appear when they cross the\n"
+                          "trap center.");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(ld.loss_on() ? "Loss off (X)" : "Photon loss (X)")) {
+        shell.press('X');
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Cavity decay as an MCWF unraveling: each lost\n"
+                          "photon FLIPS the cat's fringe parity while <n>\n"
+                          "bleeds at kappa -- decoherence, one quantum\n"
+                          "trajectory at a time.");
+    }
+    if (ld.loss_on()) {
+        ImGui::SameLine();
+        ImGui::Text("photons lost: %lld", ld.jump_count());
+    }
     if (ImGui::Button("Reset (R)")) shell.reset_simulation();
     ImGui::SameLine();
     if (ImGui::Button("Pause (Space)")) shell.toggle_pause();

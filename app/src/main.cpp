@@ -151,6 +151,7 @@ constexpr ArcScene kArcScenes[] = {
     {"selftest-qdot", "qdot2d"},
     {"selftest-billiard", "billiard2d"},
     {"selftest-anderson", "anderson1d"},
+    {"selftest-cat", "harmonic1d"},
     {"selftest-h2p", "h2plus"},
     {"selftest-benzene", "benzene"},
 };
@@ -914,7 +915,7 @@ int main(int argc, char* argv[]) {
     }
     for (const char* flag :
          {"selftest-anderson", "selftest-benzene", "selftest-billiard",
-          "selftest-bloch", "selftest-cascade",
+          "selftest-bloch", "selftest-cascade", "selftest-cat",
           "selftest-corral", "selftest-decay", "selftest-doubleslit2d",
           "selftest-dw1d", "selftest-efield", "selftest-energy",
           "selftest-h2p", "selftest-kepler", "selftest-ladder1d",

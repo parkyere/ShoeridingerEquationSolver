@@ -106,6 +106,12 @@ struct Ladder1dApi {
     // PURE state -- a density-matrix mixture is not representable in a
     // wavefunction solver).
     virtual void random_superposition() = 0;
+    // Schrodinger-cat decoherence lens: the two-lobe cat |a> + |-a> and
+    // the cavity photon-loss MCWF (each lost photon flips the parity).
+    virtual void cat() = 0;
+    virtual void toggle_loss() = 0;
+    virtual bool loss_on() const = 0;
+    virtual long long jump_count() const = 0;
 };
 
 // The double-well tunneling-oscillation scene.

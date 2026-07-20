@@ -662,6 +662,45 @@ void register_verification_arcs(ShellT* shell) {
     // operator itself (a|0> = 0) with the level untouched. Condition-polled
     // (the CPU scene ticks immediately, but the poll keeps the boot-order
     // contract explicit).
+    // Cat + photon-loss arc (harmonic1d): the cat's <n> bleeds at kappa
+    // and photons actually click (jumps fire); the parity-flip contract
+    // itself is pinned grid-exactly in tests/mcwf1d_test.cpp.
+    if (shell->has_arg("--selftest-cat")) {
+        shell->sched().after(1000, [shell] {
+            selftest_scene_wait_running(shell, "harmonic1d", 0, [shell](
+                                                                    bool
+                                                                        runs) {
+                auto* ln = shell->ln();
+                if (!runs || ln == nullptr) {
+                    std::fprintf(stderr, "selftest-cat: scene not running "
+                                         "or no api  [FAIL]\n");
+                    shell->request_exit(1);
+                    return;
+                }
+                ln->cat();
+                const double w = ln->omega();
+                const double n0 = ln->level_energy() / w - 0.5;
+                ln->toggle_loss();
+                const double t_mark = shell->director().sim_time();
+                shell->set_time_scale(16);
+                selftest_wait_sim_time(
+                    shell, t_mark + 80.0, 0, [shell, w, n0](bool ok1) {
+                        auto* l2 = shell->ln();
+                        const double n1 = l2->level_energy() / w - 0.5;
+                        const long long jumps = l2->jump_count();
+                        const bool pass = ok1 && n0 > 4.0 &&
+                                          n1 < 0.35 * n0 && jumps >= 3;
+                        std::fprintf(stderr,
+                                     "selftest-cat: <n> %.2f -> %.2f over "
+                                     "80 au (kappa 0.05), photons %lld  "
+                                     "[%s]\n",
+                                     n0, n1, jumps, pass ? "PASS" : "FAIL");
+                        shell->request_exit(pass ? 0 : 1);
+                    });
+            });
+        });
+    }
+
     if (shell->has_arg("--selftest-ladder1d")) {
         shell->sched().after(1000, [shell] {
             selftest_scene_wait_running(shell, "harmonic1d", 0, [shell](

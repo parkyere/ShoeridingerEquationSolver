@@ -2,6 +2,7 @@ module;
 #include <algorithm>
 #include <cmath>
 #include <complex>
+#include <memory>
 #include <random>
 #include <string>
 #include <utility>
@@ -9,6 +10,7 @@ module;
 export module ses.scenario.harmonic1d_director;
 export import ses.scenario.line1d_director;
 import ses.ladder;
+import ses.mcwf1d;
 import ses.wavepacket;
 
 
@@ -61,6 +63,11 @@ constexpr double kHo1dYClamp = 1e30;
 // Var ~ eps^2 w^2) crosses it only below display relevance.
 constexpr double kHo1dVarEigenTol = 1e-8;
 constexpr int kHo1dRandomTop = 5;     // random superposition spans n = 0..5
+// Schrodinger cat |a> + |-a>: lobe offset (alpha = x0 sqrt(w/2), <n> ~ 8
+// at the boot omega) and the cavity photon-loss rate for the MCWF
+// decoherence lens (each lost photon flips the cat parity).
+constexpr double kHo1dCatX0 = 8.0;
+constexpr double kHo1dKappa = 0.05;
 
 class Harmonic1DDirector final : public Line1DDirector, public Ladder1dApi {
 public:
@@ -170,7 +177,41 @@ public:
         classify();
     }
 
+    // ---- cat + photon-loss MCWF (the decoherence lens) ----
+    // CONTRACT: tests/mcwf1d_test.cpp (parity flip, kappa bleed) +
+    // --selftest-cat (scene-scale energy decay and jump count).
+    void cat() override {
+        const double sig = 1.0 / std::sqrt(2.0 * omega_);
+        ses::Field1D a =
+            ses::gaussian_wavepacket(grid1d_, kHo1dCatX0, sig, 0.0);
+        const ses::Field1D b =
+            ses::gaussian_wavepacket(grid1d_, -kHo1dCatX0, sig, 0.0);
+        for (int i = 0; i < a.size(); ++i) {
+            a[i] += b[i];
+        }
+        ses::normalize(a);
+        replace_state(std::move(a));
+        jumps_ = 0;
+        note_ = "cat |a> + |-a>";
+        classify();
+    }
+    void toggle_loss() override {
+        kappa_ = kappa_ > 0.0 ? 0.0 : kHo1dKappa;
+        note_ = kappa_ > 0.0 ? "photon loss ON" : "photon loss off";
+        title_dirty_ = true;
+    }
+    bool loss_on() const override { return kappa_ > 0.0; }
+    long long jump_count() const override { return jumps_; }
+
     bool handle_key(char key) override {
+        if (key == 'C') {
+            cat();
+            return true;
+        }
+        if (key == 'X') {
+            toggle_loss();
+            return true;
+        }
         if (key == 'U') {
             ladder(true);
             return true;
@@ -210,11 +251,38 @@ protected:
                      omega_, e / omega_ - 0.5, e,
                      ses::energy_variance(psi_, potential_));
         }
+        if (kappa_ > 0.0) {
+            s += strf("  kappa = %.2f  photons lost %lld", kappa_, jumps_);
+        }
         if (!note_.empty()) {
             s += "  [" + note_ + "]";
         }
-        s += "  keys: U up / D down / S random / 2 ground";
+        s += "  keys: U up / D down / S random / C cat / X loss / 2 ground";
         return s;
+    }
+
+    // Loss on: interleave the MCWF photon-loss step (jump = parity flip,
+    // no-jump = conditional kappa damping) with the unitary stride.
+    void step_batch(int n) override {
+        if (kappa_ <= 0.0) {
+            Line1DDirector::step_batch(n);
+            return;
+        }
+        ensure_damp();
+        std::uniform_real_distribution<double> uni(0.0, 1.0);
+        bool flipped = false;
+        for (int s = 0; s < n; ++s) {
+            prop_->step(psi_);
+            if (ses::photon_loss_step(psi_, omega_, potential_, kappa_,
+                                      dt_, uni(rng_), *damp_)) {
+                ++jumps_;
+                flipped = true;
+            }
+        }
+        if (flipped) {
+            note_ = strf("photon #%lld: parity flip", jumps_);
+            classify();
+        }
     }
 
     void after_reset() override {
@@ -227,6 +295,18 @@ private:
         // sigma = 1/sqrt(2 omega): the exact HO ground state.
         return ses::gaussian_wavepacket(grid1d_, 0.0,
                                         1.0 / std::sqrt(2.0 * omega_), 0.0);
+    }
+
+    // The no-jump damping ITP rides omega and kappa; rebuild on change
+    // (quench-safe: potential_ always matches omega_).
+    void ensure_damp() {
+        if (damp_ && damp_w_ == omega_ && damp_k_ == kappa_) {
+            return;
+        }
+        damp_ = std::make_unique<ses::ImaginaryTimePropagator1D>(
+            grid1d_, potential_, kappa_ * dt_ / (2.0 * omega_));
+        damp_w_ = omega_;
+        damp_k_ = kappa_;
     }
 
     // Honest state classification via Var(H): eigenstates name their n,
@@ -266,6 +346,12 @@ private:
     int level_ = 0;
     std::string note_;
     std::mt19937 rng_;
+    // Photon-loss MCWF state (the cat decoherence lens).
+    double kappa_ = 0.0;
+    std::unique_ptr<ses::ImaginaryTimePropagator1D> damp_;
+    double damp_w_ = -1.0;
+    double damp_k_ = -1.0;
+    long long jumps_ = 0;
 };
 
 }  // namespace ses_shell
