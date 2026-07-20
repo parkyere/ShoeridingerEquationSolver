@@ -234,26 +234,47 @@ public:
         return s;
     }
 
-    // 0 sphere, 1 ensemble arrows, 2 mean arrow, 3 E flux, 4 B flux.
-    int overlay_curve_count() const override { return 5; }
+    // SEPARATE curves (a line strip DRAWS its bridges, so chained rings
+    // would smear chords across the sphere): 0-2 the three thin great
+    // circles about X/Y/Z, 3-5 the XYZ axis lines (muted RGB), 6 the
+    // ensemble fan, 7 the mean arrow, then one 2-point curve per field
+    // tracer streak (E red, B green).
+    int overlay_curve_count() const override {
+        return 8 + static_cast<int>(e_flux_.size() / 6) +
+               static_cast<int>(b_flux_.size() / 6);
+    }
     OverlayCurve overlay_curve(int i) const override {
-        if (i == 0) {
-            return {sphere_.data(), static_cast<int>(sphere_.size() / 3),
-                    0.75f, 0.80f, 0.95f, 0.18f};
+        if (i < 3) {
+            return {&circle_[static_cast<std::size_t>(i)][0],
+                    static_cast<int>(circle_[static_cast<std::size_t>(i)]
+                                         .size() /
+                                     3),
+                    0.75f, 0.80f, 0.95f, 0.30f};
         }
-        if (i == 1) {
+        if (i < 6) {
+            const int a = i - 3;
+            static constexpr float kAxisRgb[3][3] = {
+                {0.95f, 0.40f, 0.40f},
+                {0.40f, 0.95f, 0.40f},
+                {0.45f, 0.60f, 1.00f}};
+            return {&axis_[static_cast<std::size_t>(a)][0], 2,
+                    kAxisRgb[a][0], kAxisRgb[a][1], kAxisRgb[a][2], 0.6f};
+        }
+        if (i == 6) {
             return {fan_.data(), static_cast<int>(fan_.size() / 3),
                     0.75f, 0.95f, 0.85f, 0.22f};
         }
-        if (i == 2) {
+        if (i == 7) {
             return {arrow_.data(), static_cast<int>(arrow_.size() / 3),
                     1.0f, 0.75f, 0.20f, 1.0f};
         }
-        if (i == 3) {
-            return {e_flux_.data(), static_cast<int>(e_flux_.size() / 3),
+        const int k = i - 8;
+        const int ne = static_cast<int>(e_flux_.size() / 6);
+        if (k < ne) {
+            return {&e_flux_[static_cast<std::size_t>(6 * k)], 2,
                     1.0f, 0.25f, 0.20f, 0.8f};
         }
-        return {b_flux_.data(), static_cast<int>(b_flux_.size() / 3),
+        return {&b_flux_[static_cast<std::size_t>(6 * (k - ne))], 2,
                 0.25f, 1.0f, 0.35f, 0.8f};
     }
 
@@ -337,33 +358,32 @@ private:
     }
 
     void rebuild_sphere() {
-        sphere_.clear();
-        auto circle = [&](int axis) {
+        // The three great circles, each ABOUT one axis (the circle about
+        // X spans the y-z plane, etc.) -- one curve apiece, no bridges.
+        for (int axis = 0; axis < 3; ++axis) {
+            std::vector<float>& c = circle_[static_cast<std::size_t>(axis)];
+            c.clear();
             for (int t = 0; t <= 48; ++t) {
                 const double th = 2.0 * kPi * t / 48.0;
-                const double a = kSpR * std::cos(th);
-                const double c = kSpR * std::sin(th);
                 float p[3] = {0.0f, 0.0f, 0.0f};
-                p[(axis + 1) % 3] = static_cast<float>(a);
-                p[(axis + 2) % 3] = static_cast<float>(c);
-                if (t == 0 && !sphere_.empty()) {
-                    // degenerate bridge between circles
-                    const std::size_t nn = sphere_.size();
-                    sphere_.push_back(sphere_[nn - 3]);
-                    sphere_.push_back(sphere_[nn - 2]);
-                    sphere_.push_back(sphere_[nn - 1]);
-                    sphere_.push_back(p[0]);
-                    sphere_.push_back(p[1]);
-                    sphere_.push_back(p[2]);
-                }
-                sphere_.push_back(p[0]);
-                sphere_.push_back(p[1]);
-                sphere_.push_back(p[2]);
+                p[(axis + 1) % 3] =
+                    static_cast<float>(kSpR * std::cos(th));
+                p[(axis + 2) % 3] =
+                    static_cast<float>(kSpR * std::sin(th));
+                c.push_back(p[0]);
+                c.push_back(p[1]);
+                c.push_back(p[2]);
             }
-        };
-        circle(0);
-        circle(1);
-        circle(2);
+        }
+        // The XYZ axis lines, poking a little past the sphere.
+        for (int a = 0; a < 3; ++a) {
+            std::vector<float>& ax = axis_[static_cast<std::size_t>(a)];
+            ax.assign(6, 0.0f);
+            ax[static_cast<std::size_t>(a)] =
+                static_cast<float>(-1.15 * kSpR);
+            ax[static_cast<std::size_t>(3 + a)] =
+                static_cast<float>(1.15 * kSpR);
+        }
     }
 
     void rebuild_arrows() {
@@ -470,16 +490,9 @@ private:
                 y = uni(rng_) * 0.8 - dy * kSpFluxR;
                 z = uni(rng_) * 0.8 - dz * kSpFluxR;
             }
+            // One 2-point streak per tracer (separate overlay curve: line
+            // strips draw their bridges, so chaining would smear).
             const double tl = 1.6 * std::min(1.0, f);
-            if (!out.empty()) {
-                const std::size_t nn = out.size();
-                out.push_back(out[nn - 3]);
-                out.push_back(out[nn - 2]);
-                out.push_back(out[nn - 1]);
-                out.push_back(static_cast<float>(x));
-                out.push_back(static_cast<float>(y));
-                out.push_back(static_cast<float>(z));
-            }
             out.push_back(static_cast<float>(x));
             out.push_back(static_cast<float>(y));
             out.push_back(static_cast<float>(z));
@@ -522,7 +535,8 @@ private:
     bool compute_attempted_ = false;
     std::string note_;
     std::mt19937 rng_{20260721u};
-    std::vector<float> sphere_;
+    std::vector<float> circle_[3];
+    std::vector<float> axis_[3];
     std::vector<float> fan_;
     std::vector<float> arrow_;
     std::vector<float> e_flux_;
