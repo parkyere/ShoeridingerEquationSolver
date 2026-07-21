@@ -132,6 +132,63 @@ TEST(Heightfield, StrideDecimatesTheLattice) {
     EXPECT_TRUE(has_stride_point);
 }
 
+TEST(Heightfield, AmpThresholdCropsToBoundingBox) {
+    // 8x8 plane, single spike at (4,4). A positive amp_threshold meshes only
+    // the spike's bounding box (+1-cell skirt), skipping the negligible rest.
+    const Grid3D g{Grid1D{-2.0, 2.0, 8}, Grid1D{-2.0, 2.0, 8},
+                   Grid1D{-1.0, 1.0, 1}};
+    Field3D psi{g};
+    psi(4, 4, 0) = 1.0;
+    const double z_scale = 3.0;
+    const double norm = 1.0;
+    const ses::Heightfield hf =
+        ses::heightfield_surface(psi, z_scale, norm, 1, 0.5);
+    // cell (4,4) + 1-cell skirt -> samples [3..5]x[3..5] = 2x2 cells x 6.
+    EXPECT_EQ(hf.mesh.vertices.size(), 24u);
+    EXPECT_EQ(hf.mesh.normals.size(), 24u);
+    EXPECT_EQ(hf.colors.size(), 24u);
+    bool peak = false;
+    for (const ses::Vec3d& v : hf.mesh.vertices) {
+        EXPECT_GE(v.x, g.x.coord(3) - 1e-12);
+        EXPECT_LE(v.x, g.x.coord(5) + 1e-12);
+        EXPECT_GE(v.y, g.y.coord(3) - 1e-12);
+        EXPECT_LE(v.y, g.y.coord(5) + 1e-12);
+        if (std::abs(v.x - g.x.coord(4)) < 1e-12 &&
+            std::abs(v.y - g.y.coord(4)) < 1e-12) {
+            EXPECT_NEAR(v.z, z_scale * 1.0 / norm, 1e-12);
+            peak = true;
+        }
+    }
+    EXPECT_TRUE(peak);  // the spike survives at full height
+}
+
+TEST(Heightfield, ZeroAmpThresholdMeshesFullGrid) {
+    // amp_threshold = 0 is the backward-compatible default: whole grid.
+    const Grid3D g{Grid1D{-2.0, 2.0, 8}, Grid1D{-2.0, 2.0, 8},
+                   Grid1D{-1.0, 1.0, 1}};
+    Field3D psi{g};
+    psi(4, 4, 0) = 1.0;
+    const ses::Heightfield full = ses::heightfield_surface(psi, 3.0, 1.0, 1);
+    const ses::Heightfield same =
+        ses::heightfield_surface(psi, 3.0, 1.0, 1, 0.0);
+    EXPECT_EQ(full.mesh.vertices.size(), 294u);  // 7x7 cells x 6
+    EXPECT_EQ(same.mesh.vertices.size(), full.mesh.vertices.size());
+}
+
+TEST(Heightfield, FullyNegligibleFieldUnderThresholdIsEmpty) {
+    const Grid3D g{Grid1D{-2.0, 2.0, 8}, Grid1D{-2.0, 2.0, 8},
+                   Grid1D{-1.0, 1.0, 1}};
+    Field3D psi{g};
+    for (int j = 0; j < 8; ++j) {
+        for (int i = 0; i < 8; ++i) {
+            psi(i, j, 0) = 1e-3;
+        }
+    }
+    const ses::Heightfield hf =
+        ses::heightfield_surface(psi, 3.0, 1.0, 1, 0.5);
+    EXPECT_EQ(hf.mesh.vertices.size(), 0u);
+}
+
 TEST(Heightfield, NonPositiveNormMeansFlatZero) {
     const Grid3D g = small_grid();
     Field3D psi{g};
