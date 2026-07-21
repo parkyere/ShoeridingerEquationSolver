@@ -1789,6 +1789,55 @@ bool check_spin_hamiltonian(ses_vk::DeviceContext& ctx) {
     return pass;
 }
 
+// GPU Chebyshev exp(-iH*dt) (SpinEngine::chebyshev_step) vs CPU chebyshev_evolve
+// on an entangled state -- the full recurrence + coefficient orchestration.
+bool check_spin_chebyshev(ses_vk::DeviceContext& ctx) {
+    const double bx = 0.1, by = -0.05, bz = 0.2, jj = 0.5, dt = 0.2;
+    ses::SpinLattice lat;
+    lat.nx = ses::kExactSide;
+    lat.ny = ses::kExactSide;
+    lat.s.resize(ses::kExactSites);
+    for (int y = 0; y < ses::kExactSide; ++y) {
+        for (int x = 0; x < ses::kExactSide; ++x) {
+            const double sgn = ((x + y) & 1) != 0 ? -1.0 : 1.0;
+            lat.s[static_cast<std::size_t>(y * ses::kExactSide + x)] =
+                ses::spinor_from_bloch(0.6, 0.0, sgn * 0.8);
+        }
+    }
+    ses::SpinState16 st = ses::exact_from_product(lat);
+    for (int k = 0; k < 6; ++k) {
+        ses::exact_step(st, bx, by, bz, jj, 0.05);  // entangle
+    }
+    ses::SpinState16 ref = st;
+    ses::chebyshev_evolve(ref, bx, by, bz, jj, dt);
+
+    ses_vk::SpinEngine eng;
+    if (!eng.initialize(ctx)) {
+        std::printf("spin chebyshev: init FAIL\n");
+        return false;
+    }
+    eng.set_params(bx, by, bz, jj, dt);
+    eng.upload(st.c);
+    eng.chebyshev_step(dt);
+    eng.download_state();
+    const float* out = eng.state();
+    double max_err = 0.0;
+    double norm = 0.0;
+    for (std::size_t m = 0; m < eng.dim(); ++m) {
+        max_err = std::max(max_err, std::abs(out[2 * m] - ref.c[m].real()));
+        max_err =
+            std::max(max_err, std::abs(out[2 * m + 1] - ref.c[m].imag()));
+        norm += static_cast<double>(out[2 * m]) * out[2 * m] +
+                static_cast<double>(out[2 * m + 1]) * out[2 * m + 1];
+    }
+    eng.destroy();
+    const bool pass = max_err < 2e-3 && std::abs(norm - 1.0) < 1e-3;
+    std::printf("spin chebyshev exp(-iHt) (raw Vulkan, 2^16): max |gpu - cpu| = "
+                "%.3e, norm %.6f  [%s]\n",
+                max_err, norm, pass ? "PASS" : "FAIL");
+    return pass;
+}
+
 // 3-D forward FFT of an 8x8x8 cube: the line FFT once per axis, three
 // dispatches aliasing ONE buffer with compute-to-compute barriers between
 // axes -- the multi-axis orchestration at the heart of the engine's Strang
@@ -3571,6 +3620,7 @@ int main() {
     failures += check_spin_mf_measure(ctx) ? 0 : 1;
     failures += check_spin_measure_exact(ctx) ? 0 : 1;
     failures += check_spin_hamiltonian(ctx) ? 0 : 1;
+    failures += check_spin_chebyshev(ctx) ? 0 : 1;
     failures += check_engine_step(ctx) ? 0 : 1;
     failures += check_engine_planar(ctx) ? 0 : 1;
     failures += check_engine_absorber(ctx) ? 0 : 1;

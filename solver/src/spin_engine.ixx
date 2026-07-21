@@ -14,6 +14,10 @@ module;
 #include <spin_site_bloch_spv.h>
 #include <spin_born_sample_spv.h>
 #include <spin_collapse_basis_spv.h>
+#include <spin_hamiltonian_spv.h>
+#include <spin_cheb_first_spv.h>
+#include <spin_cheb_next_spv.h>
+#include <cmath>
 #include <spin_mf_snapshot_spv.h>
 #include <spin_mf_sweep_spv.h>
 #include <spin_mf_measure_spv.h>
@@ -76,11 +80,12 @@ public:
             return false;
         }
         const int n_sites = ses::kExactSites;
-        // 2*sites (half+full field) + bonds; +3 sets: reduce, born-sample, collapse.
+        // 2*sites (half+full field) + bonds; +3 reduce/sample/collapse
+        // +4 Chebyshev (2 matvec + first + next; next uses a dynamic UBO).
         const int n_sets = 2 * n_sites + nbonds_;
-        if (!arena_.create(ctx, static_cast<std::uint32_t>(n_sets + 3),
-                           static_cast<std::uint32_t>(n_sets + 6),
-                           static_cast<std::uint32_t>(n_sets + 3))) {
+        if (!arena_.create(ctx, static_cast<std::uint32_t>(n_sets + 7),
+                           static_cast<std::uint32_t>(n_sets + 20),
+                           static_cast<std::uint32_t>(n_sets + 6), 1)) {
             return false;
         }
         site_ubo_.resize(static_cast<std::size_t>(n_sites));
@@ -199,6 +204,79 @@ public:
         arena_.write_buffer(ctx, collapse_set_, 2,
                             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, collapse_ubo_.buf,
                             sizeof(CollapseParams));
+        // Chebyshev propagator: H*psi matvec + recurrence (T_k = 2 H/R T_{k-1}
+        // - T_{k-2}) accumulating exp(-iHt)psi. Five work buffers + a dynamic
+        // UBO carrying one c_k coefficient per recurrence step.
+        if (!ham_k_.create(ctx, k_spin_hamiltonian_spv,
+                           k_spin_hamiltonian_spv_size,
+                           {{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+                            {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+                            {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+                            {3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER}}) ||
+            !first_k_.create(ctx, k_spin_cheb_first_spv,
+                             k_spin_cheb_first_spv_size,
+                             {{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+                              {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+                              {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+                              {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+                              {4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER}}) ||
+            !next_k_.create(ctx, k_spin_cheb_next_spv, k_spin_cheb_next_spv_size,
+                            {{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+                             {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+                             {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+                             {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+                             {4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC}})) {
+            return false;
+        }
+        const VkDeviceSize sbytes = dim_ * 2 * sizeof(float);
+        if (!ctx.create_device_buffer(sbytes, &t_prev_) ||
+            !ctx.create_device_buffer(sbytes, &t_cur_) ||
+            !ctx.create_device_buffer(sbytes, &t_next_) ||
+            !ctx.create_device_buffer(sbytes, &hbuf_) ||
+            !ctx.create_device_buffer(sbytes, &result_) ||
+            !ctx.create_host_buffer(
+                static_cast<VkDeviceSize>(2 * nbonds_) * sizeof(std::uint32_t),
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bonds_buf_) ||
+            !ctx.create_host_buffer(sizeof(HParams),
+                                    VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                    &matvec_ubo_) ||
+            !ctx.create_host_buffer(sizeof(ChebFirst),
+                                    VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                    &first_ubo_) ||
+            !ctx.create_host_buffer(
+                static_cast<VkDeviceSize>(kMaxCheb) * kChebSlot,
+                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &cheb_dyn_ubo_)) {
+            return false;
+        }
+        {
+            std::uint32_t* bd = static_cast<std::uint32_t*>(bonds_buf_.mapped);
+            for (int k = 0; k < nbonds_; ++k) {
+                bd[2 * k] = static_cast<std::uint32_t>(bonds_[k][0]);
+                bd[2 * k + 1] = static_cast<std::uint32_t>(bonds_[k][1]);
+            }
+            vmaFlushAllocation(ctx.allocator, bonds_buf_.alloc, 0,
+                               VK_WHOLE_SIZE);
+        }
+        mv_state_set_ = arena_.allocate(ctx, ham_k_.set_layout());
+        mv_cur_set_ = arena_.allocate(ctx, ham_k_.set_layout());
+        first_set_ = arena_.allocate(ctx, first_k_.set_layout());
+        next_set_ = arena_.allocate(ctx, next_k_.set_layout());
+        if (mv_state_set_ == VK_NULL_HANDLE || mv_cur_set_ == VK_NULL_HANDLE ||
+            first_set_ == VK_NULL_HANDLE || next_set_ == VK_NULL_HANDLE) {
+            return false;
+        }
+        write_matvec_set(ctx, mv_state_set_, state_.buf);
+        write_matvec_set(ctx, mv_cur_set_, t_cur_.buf);
+        arena_.write_buffer(ctx, first_set_, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, state_.buf);
+        arena_.write_buffer(ctx, first_set_, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, hbuf_.buf);
+        arena_.write_buffer(ctx, first_set_, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, t_cur_.buf);
+        arena_.write_buffer(ctx, first_set_, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, result_.buf);
+        arena_.write_buffer(ctx, first_set_, 4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, first_ubo_.buf, sizeof(ChebFirst));
+        arena_.write_buffer(ctx, next_set_, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, hbuf_.buf);
+        arena_.write_buffer(ctx, next_set_, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, t_prev_.buf);
+        arena_.write_buffer(ctx, next_set_, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, t_next_.buf);
+        arena_.write_buffer(ctx, next_set_, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, result_.buf);
+        arena_.write_buffer(ctx, next_set_, 4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, cheb_dyn_ubo_.buf, kChebSlot);
         ready_ = true;
         return true;
     }
@@ -219,6 +297,9 @@ public:
         reduce_k_.destroy(*ctx_);
         sample_k_.destroy(*ctx_);
         collapse_k_.destroy(*ctx_);
+        ham_k_.destroy(*ctx_);
+        first_k_.destroy(*ctx_);
+        next_k_.destroy(*ctx_);
         ctx_->destroy_buffer(&state_);
         ctx_->destroy_buffer(&staging_);
         ctx_->destroy_buffer(&bloch_dev_);
@@ -228,6 +309,15 @@ public:
         ctx_->destroy_buffer(&m_host_);
         ctx_->destroy_buffer(&sample_ubo_);
         ctx_->destroy_buffer(&collapse_ubo_);
+        ctx_->destroy_buffer(&t_prev_);
+        ctx_->destroy_buffer(&t_cur_);
+        ctx_->destroy_buffer(&t_next_);
+        ctx_->destroy_buffer(&hbuf_);
+        ctx_->destroy_buffer(&result_);
+        ctx_->destroy_buffer(&bonds_buf_);
+        ctx_->destroy_buffer(&matvec_ubo_);
+        ctx_->destroy_buffer(&first_ubo_);
+        ctx_->destroy_buffer(&cheb_dyn_ubo_);
         ctx_ = nullptr;
         ready_ = false;
     }
@@ -237,6 +327,18 @@ public:
 
     // Host UBO writes only, no GPU dispatch.
     void set_params(double bx, double by, double bz, double j, double dt) {
+        f_bx_ = bx;
+        f_by_ = by;
+        f_bz_ = bz;
+        f_j_ = j;
+        HParams hp{};
+        hp.bx = static_cast<float>(bx);
+        hp.by = static_cast<float>(by);
+        hp.bz = static_cast<float>(bz);
+        hp.j = static_cast<float>(j);
+        hp.nb = static_cast<std::uint32_t>(nbonds_);
+        hp.n = static_cast<std::uint32_t>(dim_);
+        write_ubo(matvec_ubo_, &hp, sizeof(hp));
         const double bmag = std::sqrt(bx * bx + by * by + bz * bz);
         has_field_ = bmag > 0.0;
         if (has_field_) {
@@ -336,6 +438,97 @@ public:
             }
         }
         barrier_compute_to_compute(cb);  // last gate -> reduce reads state_
+        record_reduce_and_copy(cb);
+        shot.submit_and_wait(*ctx_);
+        vmaInvalidateAllocation(ctx_->allocator, bloch_host_.alloc, 0,
+                                VK_WHOLE_SIZE);
+    }
+
+    // Exact propagator exp(-iH*dt) via Chebyshev: T_0=state, T_1=(H/R)state,
+    // T_k=2(H/R)T_{k-1}-T_{k-2}, result=sum_k c_k T_k with c_k=(2-d0)(-i)^k
+    // J_k(R*dt). Spectrally accurate; one submit + a Bloch reduce. Replaces the
+    // Trotter step() for exact-mode runtime.
+    void chebyshev_step(double dt) {
+        const double R = 8.0 * std::sqrt(f_bx_ * f_bx_ + f_by_ * f_by_ +
+                                         f_bz_ * f_bz_) +
+                         72.0 * std::abs(f_j_) + 1e-12;
+        const double alpha = R * dt;
+        int K = static_cast<int>(std::ceil(alpha)) + 24;
+        if (K < 2) K = 2;
+        if (K > kMaxCheb - 1) K = kMaxCheb - 1;
+        auto pow_minus_i = [](int k) -> std::complex<double> {
+            switch (k & 3) {
+                case 0: return {1.0, 0.0};
+                case 1: return {0.0, -1.0};
+                case 2: return {-1.0, 0.0};
+                default: return {0.0, 1.0};
+            }
+        };
+        auto coeff = [&](int k) {
+            return (k == 0 ? 1.0 : 2.0) * pow_minus_i(k) *
+                   std::cyl_bessel_j(static_cast<double>(k), alpha);
+        };
+        const std::complex<double> c0 = coeff(0);
+        const std::complex<double> c1 = coeff(1);
+        ChebFirst fp{};
+        fp.c0re = static_cast<float>(c0.real());
+        fp.c0im = static_cast<float>(c0.imag());
+        fp.c1re = static_cast<float>(c1.real());
+        fp.c1im = static_cast<float>(c1.imag());
+        fp.R = static_cast<float>(R);
+        write_ubo(first_ubo_, &fp, sizeof(fp));
+        char* base = static_cast<char*>(cheb_dyn_ubo_.mapped);
+        for (int k = 2; k <= K; ++k) {
+            const std::complex<double> c = coeff(k);
+            float* s = reinterpret_cast<float*>(
+                base + static_cast<std::size_t>(k) * kChebSlot);
+            s[0] = static_cast<float>(c.real());
+            s[1] = static_cast<float>(c.imag());
+            s[2] = static_cast<float>(R);
+            s[3] = 2.0f;
+        }
+        vmaFlushAllocation(ctx_->allocator, cheb_dyn_ubo_.alloc, 0,
+                           VK_WHOLE_SIZE);
+
+        OneShot shot;
+        if (!shot.begin_compute(*ctx_)) {
+            return;
+        }
+        VkCommandBuffer cb = shot.cb();
+        const std::uint32_t groups =
+            static_cast<std::uint32_t>((dim_ + 255) / 256);
+        const VkDeviceSize bytes = dim_ * 2 * sizeof(float);
+        const VkBufferCopy full{0, 0, bytes};
+        vkCmdCopyBuffer(cb, state_.buf, t_prev_.buf, 1, &full);  // T_0
+        barrier_transfer_to_compute(cb);
+        ham_k_.bind(cb, mv_state_set_);  // hbuf = H*T_0
+        vkCmdDispatch(cb, groups, 1, 1);
+        barrier_compute_to_compute(cb);
+        first_k_.bind(cb, first_set_);  // T_1 -> t_cur, result = c0 T0 + c1 T1
+        vkCmdDispatch(cb, groups, 1, 1);
+        barrier_compute_to_compute(cb);
+        for (int k = 2; k <= K; ++k) {
+            ham_k_.bind(cb, mv_cur_set_);  // hbuf = H*T_{k-1}
+            vkCmdDispatch(cb, groups, 1, 1);
+            barrier_compute_to_compute(cb);
+            next_k_.bind(cb, next_set_,
+                         static_cast<std::uint32_t>(k) * kChebSlot);
+            vkCmdDispatch(cb, groups, 1, 1);  // T_k -> t_next, result += c_k T_k
+            barrier_compute_to_transfer(cb);
+            vkCmdCopyBuffer(cb, t_cur_.buf, t_prev_.buf, 1, &full);
+            memory_barrier(cb, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                           VK_ACCESS_2_TRANSFER_READ_BIT,
+                           VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                           VK_ACCESS_2_TRANSFER_WRITE_BIT);
+            vkCmdCopyBuffer(cb, t_next_.buf, t_cur_.buf, 1, &full);
+            barrier_transfer_to_compute(cb);
+        }
+        memory_barrier(cb, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                       VK_ACCESS_2_SHADER_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                       VK_ACCESS_2_TRANSFER_READ_BIT);
+        vkCmdCopyBuffer(cb, result_.buf, state_.buf, 1, &full);
+        barrier_transfer_to_compute(cb);
         record_reduce_and_copy(cb);
         shot.submit_and_wait(*ctx_);
         vmaInvalidateAllocation(ctx_->allocator, bloch_host_.alloc, 0,
@@ -499,6 +692,26 @@ private:
     struct alignas(16) CollapseParams {
         std::uint32_t n, pad0, pad1, pad2;
     };
+    struct alignas(16) HParams {
+        float bx, by, bz, j;
+        std::uint32_t nb, n, pad0, pad1;
+    };
+    struct alignas(16) ChebFirst {
+        float c0re, c0im, c1re, c1im;
+        float R, pad0, pad1, pad2;
+    };
+    static constexpr int kMaxCheb = 600;
+    static constexpr std::size_t kChebSlot = 256;  // dynamic-UBO offset stride
+    void write_matvec_set(DeviceContext& ctx, VkDescriptorSet set,
+                          VkBuffer in) {
+        arena_.write_buffer(ctx, set, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, in);
+        arena_.write_buffer(ctx, set, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            hbuf_.buf);
+        arena_.write_buffer(ctx, set, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            bonds_buf_.buf);
+        arena_.write_buffer(ctx, set, 3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                            matvec_ubo_.buf, sizeof(HParams));
+    }
 
     DeviceContext* ctx_ = nullptr;
     std::size_t dim_ = 0;
@@ -530,6 +743,16 @@ private:
     VkDescriptorSet reduce_set_ = VK_NULL_HANDLE;
     VkDescriptorSet sample_set_ = VK_NULL_HANDLE;
     VkDescriptorSet collapse_set_ = VK_NULL_HANDLE;
+    Kernel ham_k_;
+    Kernel first_k_;
+    Kernel next_k_;
+    Buffer t_prev_{}, t_cur_{}, t_next_{}, hbuf_{}, result_{};
+    Buffer bonds_buf_{}, matvec_ubo_{}, first_ubo_{}, cheb_dyn_ubo_{};
+    VkDescriptorSet mv_state_set_ = VK_NULL_HANDLE;
+    VkDescriptorSet mv_cur_set_ = VK_NULL_HANDLE;
+    VkDescriptorSet first_set_ = VK_NULL_HANDLE;
+    VkDescriptorSet next_set_ = VK_NULL_HANDLE;
+    double f_bx_ = 0.0, f_by_ = 0.0, f_bz_ = 0.0, f_j_ = 0.0;
     bool has_field_ = false;
     bool ready_ = false;
 };

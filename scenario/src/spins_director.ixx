@@ -205,9 +205,10 @@ public:
             pending_steps_ = 0;
             if (gpu_ready_) {
                 // Evolve + Bloch-reduce on device; only 48 floats read back.
-                // The full state (exact_ / lat_) is materialized on demand.
+                // Exact mode uses the spectrally-exact Chebyshev propagator
+                // (whole frame's dt in one expansion); mean-field uses Strang.
                 if (exact_mode_) {
-                    gpu_.step(n);
+                    gpu_.chebyshev_step(n * kSlDt);
                 } else {
                     gpu_mf_.step(n);
                 }
