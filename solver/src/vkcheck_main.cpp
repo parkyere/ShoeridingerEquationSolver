@@ -2319,6 +2319,73 @@ bool check_engine_planar(ses_vk::DeviceContext& ctx) {
     return all_pass;
 }
 
+// Effective-mass real-time step: corral's Cu(111) surface state runs at
+// m* = 0.38, so the GPU kinetic scales k^2 by 1/m. Same 512x512x1 planar
+// harness as check_engine_planar, mass != 1 in both the CPU oracle and engine.
+bool check_engine_planar_mass(ses_vk::DeviceContext& ctx) {
+    const double mass = 0.38;
+    const ses::Grid1D axis{-16.0, 16.0, 512};
+    const ses::Grid3D g{axis, axis, ses::Grid1D{0.0, 2.0, 1}};
+    std::vector<double> v(static_cast<std::size_t>(g.size()));
+    for (int j = 0; j < g.y.n; ++j) {
+        for (int i = 0; i < g.x.n; ++i) {
+            const double x = g.x.coord(i);
+            const double y = g.y.coord(j);
+            v[static_cast<std::size_t>(g.flat(i, j, 0))] =
+                0.125 * (x * x + y * y);
+        }
+    }
+    const double dt = 0.02;
+    const ses::SplitOperator3D cpu_prop{g, v, dt, mass};
+    ses::Field3D psi0 = ses::gaussian_wavepacket(g, ses::Vec3d{2.0, 0.0, 1.0},
+                                                 ses::Vec3d{1.5, 1.5, 1.0},
+                                                 ses::Vec3d{0.5, 0.0, 0.0});
+    ses_vk::EngineKernels blobs = engine_blobs_8();
+    blobs.fft = k_fft_line512_spv;
+    blobs.fft_size = k_fft_line512_spv_size;
+    ses_vk::Engine engine;
+    if (!engine.initialize(ctx, g, blobs, v, dt, psi0.data(), mass)) {
+        std::printf("engine 20 steps 512x512x1 planar m*=0.38: init FAIL\n");
+        return false;
+    }
+    ses::Field3D cpu = psi0;
+    cpu_prop.step(cpu, 20);
+    bool all_pass = true;
+    for (int mode = 0; mode < 2; ++mode) {
+        const bool want_vkfft = (mode == 0);
+        engine.set_use_vkfft(want_vkfft);
+        if (want_vkfft && !engine.vkfft_active()) {
+            continue;
+        }
+        engine.upload_state(psi0.data());
+        engine.step(20);
+        std::vector<float> gpu_out;
+        if (!engine.readback(gpu_out)) {
+            std::printf("engine planar m*=0.38: readback FAIL\n");
+            return false;
+        }
+        double max_err = 0.0;
+        double max_mag = 0.0;
+        for (std::size_t i = 0; i < cpu.data().size(); ++i) {
+            max_err = std::max(max_err,
+                               std::abs(gpu_out[2 * i] - cpu.data()[i].real()));
+            max_err = std::max(
+                max_err, std::abs(gpu_out[2 * i + 1] - cpu.data()[i].imag()));
+            max_mag = std::max(max_mag, std::abs(cpu.data()[i].real()));
+            max_mag = std::max(max_mag, std::abs(cpu.data()[i].imag()));
+        }
+        const double tol = 1e-4 + 1e-5 * max_mag;
+        const bool pass = max_err < tol;
+        std::printf("engine 20 steps 512x512x1 planar m*=0.38 (%s): "
+                    "max |gpu - cpu| = %.3e (tol %.3e)  [%s]\n",
+                    engine.vkfft_active() ? "native VkFFT" : "line FFT",
+                    max_err, tol, pass ? "PASS" : "FAIL");
+        all_pass = all_pass && pass;
+    }
+    engine.set_use_vkfft(true);
+    return all_pass;
+}
+
 // step_async: identical recorded content submitted WITHOUT waiting on the
 // compute queue (the app overlaps it with rendering). Two chained batches
 // with the display bridge exercise the internal wait + the volume ping-pong;
@@ -3802,6 +3869,7 @@ int main() {
     failures += check_lattice2d_absorb_solenoid(ctx) ? 0 : 1;
     failures += check_engine_step(ctx) ? 0 : 1;
     failures += check_engine_planar(ctx) ? 0 : 1;
+    failures += check_engine_planar_mass(ctx) ? 0 : 1;
     failures += check_engine_absorber(ctx) ? 0 : 1;
     failures += check_engine_relax(ctx) ? 0 : 1;
     failures += check_engine_driven(ctx) ? 0 : 1;

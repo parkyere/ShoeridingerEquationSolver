@@ -173,8 +173,10 @@ public:
     bool initialize(DeviceContext& ctx, const ses::Grid3D& grid,
                     const EngineKernels& blobs,
                     const std::vector<double>& potential, double dt,
-                    const std::vector<std::complex<double>>& psi0) {
+                    const std::vector<std::complex<double>>& psi0,
+                    double mass = 1.0) {
         dt_step_ = dt;
+        inv_mass_ = 1.0 / mass;  // real-time kinetic k^2/(2m): scale the k^2 table
         ctx_ = &ctx;
         grid_ = grid;
         n_ = grid.x.n;
@@ -3203,7 +3205,7 @@ private:
             const std::vector<double> k = ses::wavenumbers(axis);
             std::vector<float> t(k.size());
             for (std::size_t i = 0; i < k.size(); ++i) {
-                t[i] = static_cast<float>(k[i] * k[i]);
+                t[i] = static_cast<float>(k[i] * k[i] * inv_mass_);
             }
             return upload_raw(buf, t.data(), t.size() * sizeof(float));
         };
@@ -3422,6 +3424,7 @@ private:
     Buffer kinp_ubo_{};
     Buffer damp_buf_{};  // real absorber mask, R32
     double dt_step_ = 0.0;
+    double inv_mass_ = 1.0;  // 1/m for the real-time kinetic (k^2 table scale)
     Buffer partials_{};
     Buffer staging_{};
     Buffer muln_ubo_{};
