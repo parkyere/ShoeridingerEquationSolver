@@ -219,6 +219,94 @@ inline double exact_energy(const SpinState16& s, double bx, double by,
     return e;
 }
 
+// Sparse matvec out = H psi for H = 1/2 sum_i B.sigma_i - J sum_bonds
+// sigma_i.sigma_j: each amplitude gathers 16 single-flip (field) + 24
+// double-flip (bond off-diagonal) + diagonal terms. <psi|H psi> == exact_energy.
+inline void hamiltonian_apply(SpinState16& out, const SpinState16& in,
+                              double bx, double by, double bz, double j) {
+    out.c.resize(kExactDim);
+    int bonds[2 * kExactSites][2];
+    const int nb = exact_bonds(bonds);
+    const std::complex<double> I{0.0, 1.0};
+    parallel_for(static_cast<int>(kExactDim), [&](int mi) {
+        const std::size_t m = static_cast<std::size_t>(mi);
+        std::complex<double> acc{0.0, 0.0};
+        for (int i = 0; i < kExactSites; ++i) {
+            const std::size_t bi = std::size_t{1} << i;
+            const bool up = (m & bi) == 0;
+            const std::complex<double> flip = in.c[m ^ bi];
+            acc += 0.5 * (bx * flip + by * (up ? -I : I) * flip +
+                          bz * (up ? 1.0 : -1.0) * in.c[m]);
+        }
+        for (int k = 0; k < nb; ++k) {
+            const std::size_t bi = std::size_t{1} << bonds[k][0];
+            const std::size_t bj = std::size_t{1} << bonds[k][1];
+            const bool si = (m & bi) != 0;
+            const bool sj = (m & bj) != 0;
+            acc += -j * ((si == sj ? 1.0 : -1.0) * in.c[m] +
+                         (si == sj ? std::complex<double>{0.0, 0.0}
+                                   : 2.0 * in.c[(m ^ bi) ^ bj]));
+        }
+        out.c[m] = acc;
+    });
+}
+
+// Spectral half-width bound |H| <= 8|B| + 72|J| (field 1/2*16*|B|, bonds
+// |sigma.sigma|=3 over 24 bonds), so H/R has spectrum in [-1,1].
+inline double hamiltonian_spectral_bound(double bx, double by, double bz,
+                                         double j) {
+    return 8.0 * std::sqrt(bx * bx + by * by + bz * bz) +
+           72.0 * std::abs(j) + 1e-12;
+}
+
+// Exact time-independent propagator exp(-i H dt) via Chebyshev expansion:
+// exp(-i alpha x) = sum_k (2-d_k0)(-i)^k J_k(alpha) T_k(x), x = H/R, alpha = R dt,
+// T_{k+1} = 2 x T_k - T_{k-1}. Spectrally accurate; the canonical propagator for
+// fixed H (and a high-accuracy oracle for the Trotter engine).
+inline void chebyshev_evolve(SpinState16& psi, double bx, double by,
+                             double bz, double j, double dt) {
+    const double R = hamiltonian_spectral_bound(bx, by, bz, j);
+    const double alpha = R * dt;
+    const int K = static_cast<int>(std::ceil(alpha)) + 24;
+    auto pow_minus_i = [](int k) -> std::complex<double> {
+        switch (k & 3) {
+            case 0: return {1.0, 0.0};
+            case 1: return {0.0, -1.0};
+            case 2: return {-1.0, 0.0};
+            default: return {0.0, 1.0};
+        }
+    };
+    auto coeff = [&](int k) {
+        return (k == 0 ? 1.0 : 2.0) * pow_minus_i(k) *
+               std::cyl_bessel_j(static_cast<double>(k), alpha);
+    };
+    SpinState16 t0 = psi;  // T_0 = psi
+    SpinState16 t1;
+    hamiltonian_apply(t1, psi, bx, by, bz, j);  // T_1 = (H/R) psi
+    for (auto& z : t1.c) {
+        z /= R;
+    }
+    SpinState16 res;
+    res.c.resize(kExactDim);
+    const std::complex<double> c0 = coeff(0);
+    const std::complex<double> c1 = coeff(1);
+    for (std::size_t m = 0; m < kExactDim; ++m) {
+        res.c[m] = c0 * t0.c[m] + c1 * t1.c[m];
+    }
+    SpinState16 tn;
+    for (int k = 2; k <= K; ++k) {
+        hamiltonian_apply(tn, t1, bx, by, bz, j);  // tn = (H/R) T_{k-1}
+        const std::complex<double> ck = coeff(k);
+        for (std::size_t m = 0; m < kExactDim; ++m) {
+            tn.c[m] = 2.0 * tn.c[m] / R - t0.c[m];  // T_k
+            res.c[m] += ck * tn.c[m];
+        }
+        t0.c.swap(t1.c);
+        t1.c.swap(tn.c);
+    }
+    psi.c.swap(res.c);
+}
+
 // Born-measure site i along z; u = uniform draw. Returns +-1.
 inline int exact_measure_z(SpinState16& s, int site, double u) {
     const std::size_t b = std::size_t{1} << site;

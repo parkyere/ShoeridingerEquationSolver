@@ -139,6 +139,38 @@ TEST(SpinReorder, TransposeLocalizesVerticalBond) {
     EXPECT_LT(max_amp_diff(ref, back), 1e-12);
 }
 
+// Stage 4: H*psi and the Chebyshev exp(-iHt) propagator.
+TEST(SpinCheby, HamiltonianExpectationMatchesEnergy) {
+    const double bx = 0.2, by = -0.1, bz = 0.3, jj = 0.4;
+    const ses::SpinState16 psi = seed_tilted();
+    ses::SpinState16 hpsi;
+    ses::hamiltonian_apply(hpsi, psi, bx, by, bz, jj);
+    std::complex<double> ip{0.0, 0.0};
+    for (std::size_t i = 0; i < psi.c.size(); ++i) {
+        ip += std::conj(psi.c[i]) * hpsi.c[i];
+    }
+    EXPECT_NEAR(ip.real(), ses::exact_energy(psi, bx, by, bz, jj), 1e-9);
+    EXPECT_NEAR(ip.imag(), 0.0, 1e-9);  // H hermitian -> real expectation
+}
+
+TEST(SpinCheby, ChebyshevConservesNormAndEnergy) {
+    const double bx = 0.2, by = -0.1, bz = 0.3, jj = 0.4, dt = 0.3;
+    ses::SpinState16 psi = seed_tilted();
+    const double e0 = ses::exact_energy(psi, bx, by, bz, jj);
+    ses::chebyshev_evolve(psi, bx, by, bz, jj, dt);
+    EXPECT_NEAR(norm2(psi), 1.0, 1e-9);  // unitary
+    EXPECT_NEAR(ses::exact_energy(psi, bx, by, bz, jj), e0, 1e-8);
+}
+
+TEST(SpinCheby, ChebyshevMatchesExactStepSmallDt) {
+    const double bx = 0.2, by = -0.1, bz = 0.3, jj = 0.4, dt = 0.01;
+    ses::SpinState16 a = seed_tilted();
+    ses::SpinState16 b = a;
+    ses::exact_step(a, bx, by, bz, jj, dt);       // 2nd-order Trotter
+    ses::chebyshev_evolve(b, bx, by, bz, jj, dt);  // exact propagator
+    EXPECT_LT(max_amp_diff(a, b), 1e-4);           // agree to Trotter O(dt^3)
+}
+
 TEST(SpinExact, ProductBootRoundTripsTheArrows) {
     ses::SpinLattice l;
     l.nx = ses::kExactSide;
