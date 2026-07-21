@@ -91,6 +91,8 @@ import ses.wavepacket;
 import ses.potential;
 import ses.spinexact;
 import ses.vk.spin_engine;
+import ses.lattice2d;
+import ses.vk.lattice2d_engine;
 
 namespace {
 
@@ -2013,6 +2015,67 @@ ses_vk::EngineKernels engine_blobs_8() {
 // The production Strang step through ses_vk::Engine, 20 steps on an 8x8x8
 // soft-Coulomb grid vs SplitOperator3D::step (CPU double oracle), covering
 // both the native-VkFFT and hand-rolled line-FFT paths.
+// GPU ses_vk::Lattice2DEngine vs CPU ses::PeierlsLattice2D (the oracle): the
+// Strang-split exact-2x2 Peierls bond sweep must match on a parabolic dot,
+// both B = 0 and B != 0 (Peierls link phases exercised). fp32.
+bool check_lattice2d_step(ses_vk::DeviceContext& ctx) {
+    const ses::Grid1D axis{-10.0, 10.0, 64};
+    const ses::Grid3D g{axis, axis, ses::Grid1D{0.0, 2.0, 1}};
+    const double w0 = 0.5;
+    std::vector<double> v(static_cast<std::size_t>(g.size()));
+    for (int j = 0; j < g.y.n; ++j) {
+        for (int i = 0; i < g.x.n; ++i) {
+            const double x = g.x.coord(i);
+            const double y = g.y.coord(j);
+            v[static_cast<std::size_t>(g.flat(i, j, 0))] =
+                0.5 * w0 * w0 * (x * x + y * y);
+        }
+    }
+    const double dt = 0.01;
+    ses::Field3D psi0 = ses::gaussian_wavepacket(
+        g, ses::Vec3d{1.5, 0.0, 0.0}, ses::Vec3d{2.0, 2.0, 2.0},
+        ses::Vec3d{0.0, 0.3, 0.0});
+
+    ses_vk::Lattice2DEngine eng;
+    if (!eng.initialize(ctx)) {
+        std::printf("lattice2d step: engine init FAIL\n");
+        return false;
+    }
+    bool all_pass = true;
+    for (double b : {0.0, 0.6}) {
+        ses::PeierlsLattice2D cpu_prop{g, v, dt};
+        cpu_prop.set_uniform_field(b);
+        ses::Field3D cpu = psi0;
+        cpu_prop.step(cpu, 20);
+
+        eng.set_lattice(g, v, dt);
+        eng.set_uniform_field(b);
+        eng.upload(psi0.data());
+        eng.step(20);
+        eng.download();
+        const float* out = eng.state();
+
+        double max_err = 0.0;
+        double max_mag = 0.0;
+        for (std::size_t i = 0; i < cpu.data().size(); ++i) {
+            max_err = std::max(max_err,
+                               std::abs(out[2 * i] - cpu.data()[i].real()));
+            max_err = std::max(max_err,
+                               std::abs(out[2 * i + 1] - cpu.data()[i].imag()));
+            max_mag = std::max(max_mag, std::abs(cpu.data()[i].real()));
+            max_mag = std::max(max_mag, std::abs(cpu.data()[i].imag()));
+        }
+        const double tol = 3e-4 + 5e-5 * max_mag;
+        const bool pass = max_err < tol;
+        std::printf(
+            "lattice2d 20 steps (B=%.1f): max |gpu - cpu| = %.3e (tol %.3e)  "
+            "[%s]\n",
+            b, max_err, tol, pass ? "PASS" : "FAIL");
+        all_pass = all_pass && pass;
+    }
+    return all_pass;
+}
+
 bool check_engine_step(ses_vk::DeviceContext& ctx) {
     const ses::Grid1D axis{-4.0, 4.0, 8};
     const ses::Grid3D g{axis, axis, axis};
@@ -3621,6 +3684,7 @@ int main() {
     failures += check_spin_measure_exact(ctx) ? 0 : 1;
     failures += check_spin_hamiltonian(ctx) ? 0 : 1;
     failures += check_spin_chebyshev(ctx) ? 0 : 1;
+    failures += check_lattice2d_step(ctx) ? 0 : 1;
     failures += check_engine_step(ctx) ? 0 : 1;
     failures += check_engine_planar(ctx) ? 0 : 1;
     failures += check_engine_absorber(ctx) ? 0 : 1;
