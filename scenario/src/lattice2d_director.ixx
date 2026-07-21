@@ -16,10 +16,14 @@ export import ses.scenario;
 export import ses.field;
 export import ses.grid;
 export import ses.lattice2d;
+import ses.vk.lattice2d_engine;
 
 
-// CPU 2D lattice base for corral/qdot. Physics on one z-plane (nz=1),
-// replicated into the display slab; gpu_ok()=false by design.
+// 2D lattice base for corral/qdot. Physics on one z-plane (nz=1), replicated
+// into the display slab. Time evolution runs on the GPU (ses_vk::Lattice2DEngine,
+// a port of the CPU PeierlsLattice2D) when a device is present, else on the CPU
+// prop_. gpu_ok()=false stays: the RENDER path is the CPU-built heightfield/slab,
+// not the 3D volume; only the propagator moved to the GPU.
 // volk.h textually first: VK_* macros never cross module boundaries.
 
 
@@ -29,11 +33,17 @@ class Lattice2DDirectorBase : public ScenarioDirector {
 public:
     // ---- lifecycle ----
     const ses::Grid3D& grid() const override { return disp_grid_; }
-    void init_compute(ses_vk::DeviceContext& /*ctx*/, bool /*device_ok*/,
+    void init_compute(ses_vk::DeviceContext& ctx, bool device_ok,
                       std::int64_t /*free_vram*/) override {
         compute_attempted_ = true;
+        gpu_lattice_ok_ = device_ok && gpu_.initialize(ctx);
+        on_gpu_ready();  // derived pushes its potential + field
     }
-    void release_gpu() override {}
+    void release_gpu() override {
+        gpu_.destroy();
+        gpu_lattice_ok_ = false;
+        gpu_psi_dirty_ = true;
+    }
     bool compute_attempted() const override { return compute_attempted_; }
     bool gpu_ok() const override { return false; }
 
@@ -119,6 +129,33 @@ protected:
     int steps_per_tick_x1() const override { return steps_per_tick(); }
     virtual void rebuild_display() { rebuild_staging(); }
 
+    // ---- GPU propagator seam (derived route do_steps here when active) ----
+    bool gpu_active() const { return gpu_lattice_ok_; }
+    virtual void on_gpu_ready() {}  // push potential + field once the device is up
+    void gpu_set_lattice(const std::vector<double>& v, double dt) {
+        if (gpu_lattice_ok_) {
+            gpu_.set_lattice(phys_grid_, v, dt);
+            gpu_psi_dirty_ = true;
+        }
+    }
+    void gpu_set_field(double b) {
+        if (gpu_lattice_ok_) {
+            gpu_.set_uniform_field(b);
+        }
+    }
+    // Call after any CPU-side edit of psi_ so the next step re-uploads it.
+    void gpu_mark_dirty() { gpu_psi_dirty_ = true; }
+    void gpu_step(int n) {
+        gpu_sync_up();
+        gpu_.step(n);
+        gpu_sync_down();
+    }
+    void gpu_relax(int n) {
+        gpu_sync_up();
+        gpu_.relax(n);
+        gpu_sync_down();
+    }
+
     void mark_fired() {
         sim_time_ = 0.0;
         pending_steps_ = 0;
@@ -192,8 +229,29 @@ protected:
     bool staging_dirty_ = true;
     bool title_dirty_ = true;
     bool compute_attempted_ = false;
+    ses_vk::Lattice2DEngine gpu_;
+    bool gpu_lattice_ok_ = false;
+    bool gpu_psi_dirty_ = true;
 
 private:
+    // psi_ is GPU-resident during evolution; upload only after a CPU edit,
+    // download every step for the CPU-built heightfield display + energy.
+    void gpu_sync_up() {
+        if (gpu_psi_dirty_) {
+            gpu_.upload(psi_.data());
+            gpu_psi_dirty_ = false;
+        }
+    }
+    void gpu_sync_down() {
+        gpu_.download();
+        const float* s = gpu_.state();
+        std::vector<std::complex<double>>& d = psi_.data();
+        for (std::size_t i = 0; i < d.size(); ++i) {
+            d[i] = std::complex<double>{static_cast<double>(s[2 * i]),
+                                        static_cast<double>(s[2 * i + 1])};
+        }
+    }
+
     ses::Mesh no_mesh_;
     std::vector<ses::Rgb> no_colors_;
 };

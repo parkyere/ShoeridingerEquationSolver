@@ -64,6 +64,7 @@ public:
     void set_field(double b) override {
         b_ = std::clamp(b, 0.0, kQd2dBMax);
         prop_->set_uniform_field(b_);
+        gpu_set_field(b_);
         relax_ground();
     }
     double field() const override { return b_; }
@@ -77,6 +78,7 @@ public:
             }
         });
         ses::normalize(psi_);
+        gpu_mark_dirty();
         relaxing_ = true;
         conv_streak_ = 0;
         last_e_ = 1e30;
@@ -104,6 +106,7 @@ public:
         }
         ses::normalize(shifted);
         psi_ = std::move(shifted);
+        gpu_mark_dirty();
         trail_.clear();
         track_peak();
         spec_dirty_ = true;
@@ -129,6 +132,7 @@ public:
         }
         ses::normalize(next);
         psi_ = std::move(next);
+        gpu_mark_dirty();
         note_.clear();
         trail_.clear();
         track_peak();
@@ -166,6 +170,7 @@ public:
             }
         });
         ses::normalize(psi_);
+        gpu_mark_dirty();
         note_.clear();
         trail_.clear();
         disp_peak_ = 0.0;
@@ -214,6 +219,7 @@ public:
             return;
         }
         grabbing_ = false;
+        gpu_mark_dirty();  // grab blended into psi_ on the CPU; re-upload
         note_.clear();
         trail_.clear();
         title_dirty_ = true;
@@ -329,7 +335,11 @@ protected:
             return;
         }
         if (relaxing_) {
-            prop_->relax(psi_, 4 * n);
+            if (gpu_active()) {
+                gpu_relax(4 * n);
+            } else {
+                prop_->relax(psi_, 4 * n);
+            }
             const double e = prop_->energy(psi_);
             if (std::abs(e - last_e_) < kQd2dConvTol * std::max(1.0, e)) {
                 if (++conv_streak_ >= 3) {
@@ -347,7 +357,11 @@ protected:
         int left = n;
         while (left > 0) {
             const int chunk = std::min(left, 8);
-            prop_->step(psi_, chunk);
+            if (gpu_active()) {
+                gpu_step(chunk);
+            } else {
+                prop_->step(psi_, chunk);
+            }
             sim_time_ += chunk * kQd2dDt;
             left -= chunk;
             push_trail();
@@ -366,20 +380,28 @@ private:
     }
 
     void rebuild_prop() {
-        std::vector<double> v(
-            static_cast<std::size_t>(phys_grid_.size()));
+        v_.assign(static_cast<std::size_t>(phys_grid_.size()), 0.0);
         for (int j = 0; j < kQd2dN; ++j) {
             const double y = phys_grid_.y.coord(j);
             for (int i = 0; i < kQd2dN; ++i) {
                 const double x = phys_grid_.x.coord(i);
-                v[static_cast<std::size_t>(phys_grid_.flat(i, j, 0))] =
+                v_[static_cast<std::size_t>(phys_grid_.flat(i, j, 0))] =
                     0.5 * w0_ * w0_ * (x * x + y * y);
             }
         }
-        prop_ = std::make_unique<ses::PeierlsLattice2D>(phys_grid_, v,
+        prop_ = std::make_unique<ses::PeierlsLattice2D>(phys_grid_, v_,
                                                         kQd2dDt);
         prop_->set_uniform_field(b_);
+        gpu_set_lattice(v_, kQd2dDt);
+        gpu_set_field(b_);
         rebuild_paraboloid();
+    }
+
+    // Device came up after construction: push the current potential + field.
+    void on_gpu_ready() override {
+        gpu_set_lattice(v_, kQd2dDt);
+        gpu_set_field(b_);
+        gpu_mark_dirty();
     }
 
     // Triangle-strip rings; z uses the well's e-scale so stiffer w0 visibly narrows it.
@@ -435,6 +457,7 @@ private:
     }
 
     std::unique_ptr<ses::PeierlsLattice2D> prop_;
+    std::vector<double> v_;  // on-site potential, mirrored to prop_ and the GPU
     ses::Heightfield hf_;
     bool mesh_dirty_ = false;
     double disp_peak_ = 0.0;
