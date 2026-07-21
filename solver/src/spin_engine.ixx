@@ -12,6 +12,8 @@ module;
 #include <spin_site_gate_spv.h>
 #include <spin_bond_gate_spv.h>
 #include <spin_site_bloch_spv.h>
+#include <spin_mf_snapshot_spv.h>
+#include <spin_mf_sweep_spv.h>
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -386,6 +388,229 @@ private:
     Buffer bloch_ubo_{};
     VkDescriptorSet reduce_set_ = VK_NULL_HANDLE;
     bool has_field_ = false;
+    bool ready_ = false;
+};
+
+// GPU mean-field Heisenberg: 16 unit spinors, checkerboard Strang (snapshot +
+// parity sweeps 0/1/0). fp32 mirror of ses::spinlattice_step; only 48 Bloch
+// floats read back per tick. CONTRACT: vkcheck check_spin_mf.
+class SpinMeanFieldEngine {
+public:
+    SpinMeanFieldEngine() = default;
+    SpinMeanFieldEngine(const SpinMeanFieldEngine&) = delete;
+    SpinMeanFieldEngine& operator=(const SpinMeanFieldEngine&) = delete;
+    ~SpinMeanFieldEngine() { destroy(); }
+
+    static constexpr int kSites = 16;
+    static constexpr int kBlochFloats = 3 * kSites;
+
+    bool initialize(DeviceContext& ctx) {
+        ctx_ = &ctx;
+        if (!snap_k_.create(ctx, k_spin_mf_snapshot_spv,
+                            k_spin_mf_snapshot_spv_size,
+                            {{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+                             {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}) ||
+            !sweep_k_.create(ctx, k_spin_mf_sweep_spv, k_spin_mf_sweep_spv_size,
+                             {{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+                              {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+                              {2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER}})) {
+            return false;
+        }
+        const VkDeviceSize sp_bytes = kSites * 4 * sizeof(float);
+        const VkDeviceSize bl_bytes = kBlochFloats * sizeof(float);
+        if (!ctx.create_device_buffer(sp_bytes, &spinors_) ||
+            !ctx.create_host_buffer(sp_bytes,
+                                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                        VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                    &sp_staging_) ||
+            !ctx.create_device_buffer(bl_bytes, &bloch_dev_) ||
+            !ctx.create_host_buffer(bl_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                    &bloch_host_) ||
+            !ctx.create_host_buffer(sizeof(MfParams),
+                                    VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &ubo0_) ||
+            !ctx.create_host_buffer(sizeof(MfParams),
+                                    VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &ubo1_)) {
+            return false;
+        }
+        if (!arena_.create(ctx, 3, 6, 2)) {
+            return false;
+        }
+        snap_set_ = arena_.allocate(ctx, snap_k_.set_layout());
+        sweep0_set_ = arena_.allocate(ctx, sweep_k_.set_layout());
+        sweep1_set_ = arena_.allocate(ctx, sweep_k_.set_layout());
+        if (snap_set_ == VK_NULL_HANDLE || sweep0_set_ == VK_NULL_HANDLE ||
+            sweep1_set_ == VK_NULL_HANDLE) {
+            return false;
+        }
+        arena_.write_buffer(ctx, snap_set_, 0,
+                            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, spinors_.buf);
+        arena_.write_buffer(ctx, snap_set_, 1,
+                            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, bloch_dev_.buf);
+        for (VkDescriptorSet set : {sweep0_set_, sweep1_set_}) {
+            arena_.write_buffer(ctx, set, 0,
+                                VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, spinors_.buf);
+            arena_.write_buffer(ctx, set, 1,
+                                VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                bloch_dev_.buf);
+        }
+        arena_.write_buffer(ctx, sweep0_set_, 2,
+                            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, ubo0_.buf,
+                            sizeof(MfParams));
+        arena_.write_buffer(ctx, sweep1_set_, 2,
+                            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, ubo1_.buf,
+                            sizeof(MfParams));
+        ready_ = true;
+        return true;
+    }
+
+    void destroy() {
+        if (ctx_ == nullptr) {
+            return;
+        }
+        arena_.destroy(*ctx_);
+        snap_k_.destroy(*ctx_);
+        sweep_k_.destroy(*ctx_);
+        ctx_->destroy_buffer(&spinors_);
+        ctx_->destroy_buffer(&sp_staging_);
+        ctx_->destroy_buffer(&bloch_dev_);
+        ctx_->destroy_buffer(&bloch_host_);
+        ctx_->destroy_buffer(&ubo0_);
+        ctx_->destroy_buffer(&ubo1_);
+        ctx_ = nullptr;
+        ready_ = false;
+    }
+
+    bool ready() const { return ready_; }
+
+    void set_params(double bx, double by, double bz, double j, double alpha,
+                    double dt) {
+        MfParams p{};
+        p.bx = static_cast<float>(bx);
+        p.by = static_cast<float>(by);
+        p.bz = static_cast<float>(bz);
+        p.j = static_cast<float>(j);
+        p.alpha = static_cast<float>(alpha);
+        p.nx = 4;
+        p.ny = 4;
+        p.h = static_cast<float>(0.5 * dt);
+        p.parity = 0;
+        write_ubo(ubo0_, &p, sizeof(p));
+        p.h = static_cast<float>(dt);
+        p.parity = 1;
+        write_ubo(ubo1_, &p, sizeof(p));
+    }
+
+    void upload(const std::vector<std::complex<double>>& up,
+                const std::vector<std::complex<double>>& dn) {
+        float* d = static_cast<float*>(sp_staging_.mapped);
+        for (int i = 0; i < kSites; ++i) {
+            const std::size_t si = static_cast<std::size_t>(i);
+            d[4 * i + 0] = static_cast<float>(up[si].real());
+            d[4 * i + 1] = static_cast<float>(up[si].imag());
+            d[4 * i + 2] = static_cast<float>(dn[si].real());
+            d[4 * i + 3] = static_cast<float>(dn[si].imag());
+        }
+        vmaFlushAllocation(ctx_->allocator, sp_staging_.alloc, 0,
+                           VK_WHOLE_SIZE);
+        OneShot shot;
+        if (!shot.begin_compute(*ctx_)) {
+            return;
+        }
+        VkCommandBuffer cb = shot.cb();
+        const VkBufferCopy r{0, 0, kSites * 4 * sizeof(float)};
+        vkCmdCopyBuffer(cb, sp_staging_.buf, spinors_.buf, 1, &r);
+        barrier_transfer_to_compute(cb);
+        snap_k_.bind(cb, snap_set_);
+        vkCmdDispatch(cb, 1, 1, 1);
+        copy_bloch_to_host(cb);
+        shot.submit_and_wait(*ctx_);
+        vmaInvalidateAllocation(ctx_->allocator, bloch_host_.alloc, 0,
+                                VK_WHOLE_SIZE);
+    }
+
+    // n steps; each = snapshot + parity sweeps 0,1,0. Reads back 48 Bloch floats.
+    void step(int n) {
+        OneShot shot;
+        if (!shot.begin_compute(*ctx_)) {
+            return;
+        }
+        VkCommandBuffer cb = shot.cb();
+        for (int k = 0; k < n; ++k) {
+            if (k > 0) {
+                barrier_compute_to_compute(cb);
+            }
+            snap_k_.bind(cb, snap_set_);
+            vkCmdDispatch(cb, 1, 1, 1);
+            barrier_compute_to_compute(cb);
+            sweep_k_.bind(cb, sweep0_set_);
+            vkCmdDispatch(cb, 1, 1, 1);
+            barrier_compute_to_compute(cb);
+            sweep_k_.bind(cb, sweep1_set_);
+            vkCmdDispatch(cb, 1, 1, 1);
+            barrier_compute_to_compute(cb);
+            sweep_k_.bind(cb, sweep0_set_);
+            vkCmdDispatch(cb, 1, 1, 1);
+        }
+        copy_bloch_to_host(cb);
+        shot.submit_and_wait(*ctx_);
+        vmaInvalidateAllocation(ctx_->allocator, bloch_host_.alloc, 0,
+                                VK_WHOLE_SIZE);
+    }
+
+    // 48 floats: [3*site+0..2] = <sigma_site>; valid after step()/upload.
+    const float* bloch() const {
+        return static_cast<const float*>(bloch_host_.mapped);
+    }
+
+    // 16 spinors (interleaved up.re,up.im,dn.re,dn.im); valid after download().
+    void download() {
+        OneShot shot;
+        if (!shot.begin_compute(*ctx_)) {
+            return;
+        }
+        VkCommandBuffer cb = shot.cb();
+        barrier_compute_to_transfer(cb);
+        const VkBufferCopy r{0, 0, kSites * 4 * sizeof(float)};
+        vkCmdCopyBuffer(cb, spinors_.buf, sp_staging_.buf, 1, &r);
+        barrier_transfer_to_host(cb);
+        shot.submit_and_wait(*ctx_);
+        vmaInvalidateAllocation(ctx_->allocator, sp_staging_.alloc, 0,
+                                VK_WHOLE_SIZE);
+    }
+    const float* spinors_host() const {
+        return static_cast<const float*>(sp_staging_.mapped);
+    }
+
+private:
+    struct alignas(16) MfParams {
+        float bx, by, bz, j;
+        float alpha, h, pad0, pad1;
+        std::uint32_t parity, nx, ny, pad2;
+    };
+    void write_ubo(Buffer& b, const void* src, std::size_t sz) {
+        std::memcpy(b.mapped, src, sz);
+        vmaFlushAllocation(ctx_->allocator, b.alloc, 0, VK_WHOLE_SIZE);
+    }
+    void copy_bloch_to_host(VkCommandBuffer cb) {
+        barrier_compute_to_transfer(cb);
+        const VkBufferCopy r{0, 0, kBlochFloats * sizeof(float)};
+        vkCmdCopyBuffer(cb, bloch_dev_.buf, bloch_host_.buf, 1, &r);
+        barrier_transfer_to_host(cb);
+    }
+
+    DeviceContext* ctx_ = nullptr;
+    Kernel snap_k_;
+    Kernel sweep_k_;
+    DescriptorArena arena_;
+    Buffer spinors_{};
+    Buffer sp_staging_{};
+    Buffer bloch_dev_{};
+    Buffer bloch_host_{};
+    Buffer ubo0_{};
+    Buffer ubo1_{};
+    VkDescriptorSet snap_set_ = VK_NULL_HANDLE;
+    VkDescriptorSet sweep0_set_ = VK_NULL_HANDLE;
+    VkDescriptorSet sweep1_set_ = VK_NULL_HANDLE;
     bool ready_ = false;
 };
 

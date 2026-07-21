@@ -55,7 +55,8 @@ public:
     double j() const override { return j_; }
     void set_alpha(double a) override {
         alpha_ = std::clamp(a, 0.0, 0.3);
-        title_dirty_ = true;  // no sync_gpu_params: closed exact GPU has no alpha
+        sync_gpu_params();  // mean-field GPU engine uses alpha (Gilbert)
+        title_dirty_ = true;
     }
     double alpha() const override { return alpha_; }
     void set_b(int axis, double v) override {
@@ -150,6 +151,7 @@ public:
                 lat_.s[static_cast<std::size_t>(i)] =
                     ses::spinor_from_bloch(x, y, z);
             }
+            upload_mf_to_gpu();  // product state -> mean-field GPU engine
         }
         exact_mode_ = on;
         note_ = on ? "EXACT 2^16 Hamiltonian" : "mean-field (product)";
@@ -174,26 +176,41 @@ public:
                       std::int64_t) override {
         compute_attempted_ = true;
         if (device_ok && gpu_.initialize(ctx)) {
-            gpu_.set_params(b_[0], b_[1], b_[2], j_, kSlDt);
-            gpu_ready_ = true;
+            if (gpu_mf_.initialize(ctx)) {
+                gpu_ready_ = true;
+                sync_gpu_params();
+                if (exact_mode_) {
+                    push_exact_to_gpu();
+                } else {
+                    upload_mf_to_gpu();
+                }
+            } else {
+                gpu_.destroy();  // both engines or neither
+            }
         }
     }
     void release_gpu() override {
         gpu_.destroy();
+        gpu_mf_.destroy();
         gpu_ready_ = false;
     }
     bool compute_attempted() const override { return compute_attempted_; }
-    // GPU accelerates only the exact step; scene runs on CPU without it, so this stays false.
+    // Both modes run on their GPU engine; the CPU fallback still carries the
+    // scene when there is no device, so this stays false (GPU not required).
     bool gpu_ok() const override { return false; }
 
     void run_frame() override {
         if (pending_steps_ > 0) {
             const int n = pending_steps_;
             pending_steps_ = 0;
-            if (exact_mode_ && gpu_ready_) {
+            if (gpu_ready_) {
                 // Evolve + Bloch-reduce on device; only 48 floats read back.
-                // exact_ is materialized on demand (measure_now).
-                gpu_.step(n);
+                // The full state (exact_ / lat_) is materialized on demand.
+                if (exact_mode_) {
+                    gpu_.step(n);
+                } else {
+                    gpu_mf_.step(n);
+                }
             } else {
                 for (int k = 0; k < n; ++k) {
                     if (exact_mode_) {
@@ -268,11 +285,15 @@ public:
             }
             push_exact_to_gpu();  // collapse must reach the GPU state
         } else {
+            // lat_ is GPU-resident; pull it, Born-collapse, push it back.
+            // (the collapse itself moves to GPU in runtime-pure-GPU part B.)
+            download_mf_from_gpu();
             for (auto& s : lat_.s) {
                 plus += ses::spin_measure(s, nx, ny, nz, uni(rng_)) > 0
                             ? 1
                             : 0;
             }
+            upload_mf_to_gpu();
         }
         note_ = strf("measured: %d/%d aligned", plus, kSlN * kSlN);
         display_changed_ = true;
@@ -397,6 +418,8 @@ private:
         if (exact_mode_) {
             exact_ = ses::exact_from_product(lat_);
             push_exact_to_gpu();
+        } else {
+            upload_mf_to_gpu();
         }
         refresh_bloch();
         sim_time_ = 0.0;
@@ -411,16 +434,41 @@ private:
             gpu_.upload(exact_.c);
         }
     }
-    void sync_gpu_params() {
-        if (gpu_ready_) {
-            gpu_.set_params(b_[0], b_[1], b_[2], j_, kSlDt);
+    void upload_mf_to_gpu() {
+        if (!gpu_ready_) {
+            return;
         }
+        std::vector<std::complex<double>> up(kSlN * kSlN), dn(kSlN * kSlN);
+        for (int i = 0; i < kSlN * kSlN; ++i) {
+            up[static_cast<std::size_t>(i)] = lat_.s[static_cast<std::size_t>(i)].up;
+            dn[static_cast<std::size_t>(i)] = lat_.s[static_cast<std::size_t>(i)].dn;
+        }
+        gpu_mf_.upload(up, dn);
+    }
+    void download_mf_from_gpu() {
+        if (!gpu_ready_) {
+            return;
+        }
+        gpu_mf_.download();
+        const float* sp = gpu_mf_.spinors_host();
+        for (int i = 0; i < kSlN * kSlN; ++i) {
+            const std::size_t si = static_cast<std::size_t>(i);
+            lat_.s[si].up = std::complex<double>{sp[4 * i], sp[4 * i + 1]};
+            lat_.s[si].dn = std::complex<double>{sp[4 * i + 2], sp[4 * i + 3]};
+        }
+    }
+    void sync_gpu_params() {
+        if (!gpu_ready_) {
+            return;
+        }
+        gpu_.set_params(b_[0], b_[1], b_[2], j_, kSlDt);
+        gpu_mf_.set_params(b_[0], b_[1], b_[2], j_, alpha_, kSlDt);
     }
 
     void refresh_bloch() {
-        if (exact_mode_ && gpu_ready_) {
+        if (gpu_ready_) {
             // GPU-resident: <sigma> reduced on device, only 48 floats read back.
-            const float* g = gpu_.bloch();
+            const float* g = exact_mode_ ? gpu_.bloch() : gpu_mf_.bloch();
             for (int i = 0; i < 3 * kSlN * kSlN; ++i) {
                 bloch_[static_cast<std::size_t>(i)] = static_cast<double>(g[i]);
             }
@@ -508,6 +556,7 @@ private:
     ses::SpinState16 exact_;
     bool exact_mode_ = false;
     ses_vk::SpinEngine gpu_;
+    ses_vk::SpinMeanFieldEngine gpu_mf_;
     bool gpu_ready_ = false;
     // per-site Bloch vectors [3/site], refreshed each frame from the live engine.
     std::vector<double> bloch_ =

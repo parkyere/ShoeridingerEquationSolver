@@ -1518,6 +1518,64 @@ bool check_spin_permute(ses_vk::DeviceContext& ctx) {
     return pass;
 }
 
+// GPU mean-field Heisenberg (SpinMeanFieldEngine) vs CPU ses::spinlattice_step
+// over several steps, with Gilbert damping on -- checkerboard sweeps + the
+// spinor<->Bloch round-trips exercised.
+bool check_spin_mf(ses_vk::DeviceContext& ctx) {
+    const int nx = 4, ny = 4, nsteps = 20;
+    const double bx = 0.15, by = -0.1, bz = 0.2, jj = 0.4, alpha = 0.05,
+                 dt = 0.05;
+    ses::SpinLattice lat;
+    lat.nx = nx;
+    lat.ny = ny;
+    lat.s.resize(static_cast<std::size_t>(nx * ny));
+    for (int y = 0; y < ny; ++y) {
+        for (int x = 0; x < nx; ++x) {
+            const double sgn = ((x + y) & 1) != 0 ? -1.0 : 1.0;
+            const double a = 0.4 + 0.13 * (x + 2 * y);
+            lat.s[static_cast<std::size_t>(y * nx + x)] =
+                ses::spinor_from_bloch(0.6 * std::cos(a), 0.6 * std::sin(a),
+                                       sgn * 0.8);
+        }
+    }
+
+    ses::SpinLattice cpu = lat;
+    for (int k = 0; k < nsteps; ++k) {
+        ses::spinlattice_step(cpu, bx, by, bz, jj, alpha, dt);
+    }
+    double cb[3 * 16];
+    for (int i = 0; i < 16; ++i) {
+        ses::bloch_vector(cpu.s[static_cast<std::size_t>(i)], &cb[3 * i],
+                          &cb[3 * i + 1], &cb[3 * i + 2]);
+    }
+
+    ses_vk::SpinMeanFieldEngine eng;
+    if (!eng.initialize(ctx)) {
+        std::printf("spin mean-field: init FAIL\n");
+        return false;
+    }
+    eng.set_params(bx, by, bz, jj, alpha, dt);
+    std::vector<std::complex<double>> up(16), dn(16);
+    for (int i = 0; i < 16; ++i) {
+        up[static_cast<std::size_t>(i)] = lat.s[static_cast<std::size_t>(i)].up;
+        dn[static_cast<std::size_t>(i)] = lat.s[static_cast<std::size_t>(i)].dn;
+    }
+    eng.upload(up, dn);
+    eng.step(nsteps);
+    const float* gb = eng.bloch();
+    double max_err = 0.0;
+    for (int i = 0; i < 3 * 16; ++i) {
+        max_err = std::max(max_err, std::abs(gb[i] - cb[i]));
+    }
+    eng.destroy();
+    // fp32 mean-field (trig + normalize per step): per-component error ~1e-4.
+    const bool pass = max_err < 3e-3;
+    std::printf("spin mean-field %d steps (raw Vulkan, 16 sites): max |gpu - "
+                "cpu| = %.3e  [%s]\n",
+                nsteps, max_err, pass ? "PASS" : "FAIL");
+    return pass;
+}
+
 // 3-D forward FFT of an 8x8x8 cube: the line FFT once per axis, three
 // dispatches aliasing ONE buffer with compute-to-compute barriers between
 // axes -- the multi-axis orchestration at the heart of the engine's Strang
@@ -3296,6 +3354,7 @@ int main() {
     failures += check_spin_bloch(ctx) ? 0 : 1;
     failures += check_spin_fused_gate(ctx) ? 0 : 1;
     failures += check_spin_permute(ctx) ? 0 : 1;
+    failures += check_spin_mf(ctx) ? 0 : 1;
     failures += check_engine_step(ctx) ? 0 : 1;
     failures += check_engine_planar(ctx) ? 0 : 1;
     failures += check_engine_absorber(ctx) ? 0 : 1;
