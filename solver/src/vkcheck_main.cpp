@@ -61,6 +61,7 @@
 #include <spin_bond_gate_spv.h>
 #include <spin_fused_gate_spv.h>
 #include <spin_permute_spv.h>
+#include <spin_hamiltonian_spv.h>
 
 #include <algorithm>
 #include <array>
@@ -1670,6 +1671,121 @@ bool check_spin_measure_exact(ses_vk::DeviceContext& ctx) {
     std::printf("spin measure exact (raw Vulkan, 2^16): m=%u (want %u), "
                 "idempotent |amp| err = %.3e  [%s]\n",
                 m, m_expect, max_err, pass ? "PASS" : "FAIL");
+    return pass;
+}
+
+// GPU sparse H*psi (spin_hamiltonian.comp) vs CPU ses::hamiltonian_apply --
+// the matvec at the heart of the Chebyshev propagator.
+bool check_spin_hamiltonian(ses_vk::DeviceContext& ctx) {
+    struct alignas(16) HParams {
+        float bx, by, bz, j;
+        std::uint32_t nb, n, pad0, pad1;
+    };
+    const std::size_t dim = ses::kExactDim;
+    const double bx = 0.2, by = -0.1, bz = 0.3, jj = 0.4;
+    ses::SpinState16 in;
+    in.c.resize(dim);
+    double nrm = 0.0;
+    for (std::size_t m = 0; m < dim; ++m) {
+        in.c[m] = std::complex<double>{std::sin(0.3 * m + 1.0),
+                                       std::cos(0.17 * m) - 0.2};
+        nrm += std::norm(in.c[m]);
+    }
+    const double iv = 1.0 / std::sqrt(nrm);
+    for (auto& z : in.c) {
+        z *= iv;
+    }
+    ses::SpinState16 cpu;
+    ses::hamiltonian_apply(cpu, in, bx, by, bz, jj);
+
+    int bonds[2 * ses::kExactSites][2];
+    const int nb = ses::exact_bonds(bonds);
+    std::vector<std::uint32_t> bflat(static_cast<std::size_t>(2 * nb));
+    for (int k = 0; k < nb; ++k) {
+        bflat[static_cast<std::size_t>(2 * k)] =
+            static_cast<std::uint32_t>(bonds[k][0]);
+        bflat[static_cast<std::size_t>(2 * k + 1)] =
+            static_cast<std::uint32_t>(bonds[k][1]);
+    }
+    std::vector<float> fin(dim * 2);
+    for (std::size_t m = 0; m < dim; ++m) {
+        fin[2 * m] = static_cast<float>(in.c[m].real());
+        fin[2 * m + 1] = static_cast<float>(in.c[m].imag());
+    }
+    HParams hp{};
+    hp.bx = static_cast<float>(bx);
+    hp.by = static_cast<float>(by);
+    hp.bz = static_cast<float>(bz);
+    hp.j = static_cast<float>(jj);
+    hp.nb = static_cast<std::uint32_t>(nb);
+    hp.n = static_cast<std::uint32_t>(dim);
+
+    const VkDeviceSize bytes = dim * 2 * sizeof(float);
+    ses_vk::Kernel hk;
+    ses_vk::Buffer inbuf{}, outbuf{}, staging{}, bondbuf{}, ubo{};
+    Scope s(ctx);
+    s.kernels = {&hk};
+    s.buffers = {&inbuf, &outbuf, &staging, &bondbuf, &ubo};
+    if (!hk.create(ctx, k_spin_hamiltonian_spv, k_spin_hamiltonian_spv_size,
+                   {{0, kStorage}, {1, kStorage}, {2, kStorage},
+                    {3, kUniform}})) {
+        return false;
+    }
+    if (!ctx.create_device_buffer(bytes, &inbuf) ||
+        !ctx.create_device_buffer(bytes, &outbuf) ||
+        !ctx.create_host_buffer(bytes,
+                                VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                &staging) ||
+        !ctx.create_host_buffer(bflat.size() * sizeof(std::uint32_t),
+                                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bondbuf) ||
+        !ctx.create_host_buffer(sizeof(HParams),
+                                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &ubo)) {
+        return false;
+    }
+    std::memcpy(staging.mapped, fin.data(), bytes);
+    flush(ctx, staging);
+    std::memcpy(bondbuf.mapped, bflat.data(),
+                bflat.size() * sizeof(std::uint32_t));
+    flush(ctx, bondbuf);
+    std::memcpy(ubo.mapped, &hp, sizeof(hp));
+    flush(ctx, ubo);
+    if (!s.arena.create(ctx, 1, 3, 1)) {
+        return false;
+    }
+    VkDescriptorSet set = s.arena.allocate(ctx, hk.set_layout());
+    if (set == VK_NULL_HANDLE) {
+        return false;
+    }
+    s.arena.write_buffer(ctx, set, 0, kStorage, inbuf.buf);
+    s.arena.write_buffer(ctx, set, 1, kStorage, outbuf.buf);
+    s.arena.write_buffer(ctx, set, 2, kStorage, bondbuf.buf);
+    s.arena.write_buffer(ctx, set, 3, kUniform, ubo.buf, sizeof(HParams));
+
+    if (!s.shot.begin(ctx)) {
+        return false;
+    }
+    record_uploads(s.shot.cb(), staging, {{&inbuf, 0, bytes}});
+    hk.bind(s.shot.cb(), set);
+    vkCmdDispatch(s.shot.cb(), static_cast<std::uint32_t>((dim + 255) / 256), 1,
+                  1);
+    record_readback(s.shot.cb(), outbuf, staging, bytes);
+    if (!s.shot.submit_and_wait(ctx)) {
+        return false;
+    }
+    invalidate(ctx, staging);
+
+    const float* out = static_cast<const float*>(staging.mapped);
+    double max_err = 0.0;
+    for (std::size_t m = 0; m < dim; ++m) {
+        max_err = std::max(max_err, std::abs(out[2 * m] - cpu.c[m].real()));
+        max_err =
+            std::max(max_err, std::abs(out[2 * m + 1] - cpu.c[m].imag()));
+    }
+    const bool pass = max_err < 1e-5;
+    std::printf("spin hamiltonian H*psi (raw Vulkan, 2^16): max |gpu - cpu| = "
+                "%.3e  [%s]\n",
+                max_err, pass ? "PASS" : "FAIL");
     return pass;
 }
 
@@ -3454,6 +3570,7 @@ int main() {
     failures += check_spin_mf(ctx) ? 0 : 1;
     failures += check_spin_mf_measure(ctx) ? 0 : 1;
     failures += check_spin_measure_exact(ctx) ? 0 : 1;
+    failures += check_spin_hamiltonian(ctx) ? 0 : 1;
     failures += check_engine_step(ctx) ? 0 : 1;
     failures += check_engine_planar(ctx) ? 0 : 1;
     failures += check_engine_absorber(ctx) ? 0 : 1;

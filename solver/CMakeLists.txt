@@ -16,7 +16,7 @@ foreach(_k IN ITEMS phase_multiply scale norm_peak norm_finalize scale_buf
         mc_density mc_classify mc_scan mc_emit
         spin_site_gate spin_bond_gate spin_site_bloch spin_fused_gate
         spin_permute spin_mf_snapshot spin_mf_sweep spin_mf_measure
-        spin_born_sample spin_collapse_basis
+        spin_born_sample spin_collapse_basis spin_hamiltonian
         fft_line8 fft_line64 fft_line256 fft_line512)
     ses_bake_shader(_ses_solver_hdrs "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
                     "${_ses_solver_spv_dir}" "${_k}.comp" compute "${_k}")
