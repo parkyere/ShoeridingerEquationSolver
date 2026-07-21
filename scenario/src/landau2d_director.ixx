@@ -18,6 +18,7 @@ export import ses.grid;
 export import ses.lattice2d;
 import ses.parallel;
 import ses.potential;
+import ses.vk.lattice2d_engine;
 
 
 // Landau/cyclotron: 2D electron, uniform B||z. Peierls lattice,
@@ -63,6 +64,9 @@ public:
     void set_field(double b) override {
         b_ = std::clamp(b, kLd2dBMin, kLd2dBMax);
         prop_->set_uniform_field(b_);
+        if (eng_ok_) {
+            eng_.set_uniform_field(b_);
+        }
         fire();
     }
     double field() const override { return b_; }
@@ -103,6 +107,7 @@ public:
             return false;
         }
         psi_ = std::move(next);
+        eng_dirty_ = true;  // psi_ replaced on the CPU: re-upload before stepping
         measure();
         trail_.clear();
         push_trail();
@@ -117,11 +122,30 @@ public:
 
     // ---- lifecycle ----
     const ses::Grid3D& grid() const override { return disp_grid_; }
-    void init_compute(ses_vk::DeviceContext& /*ctx*/, bool /*device_ok*/,
+    // Peierls scene (uniform B): the GPU port is ses_vk::Lattice2DEngine
+    // (vkcheck-certified). The CPU prop_ stays for the link-resolved energy in
+    // measure() and as the fallback; only the propagation moves to the GPU.
+    void init_compute(ses_vk::DeviceContext& ctx, bool device_ok,
                       std::int64_t /*free_vram*/) override {
         compute_attempted_ = true;
+        if (device_ok && eng_.initialize(ctx)) {
+            eng_.set_lattice(
+                phys_grid_,
+                std::vector<double>(
+                    static_cast<std::size_t>(phys_grid_.size()), 0.0),
+                kLd2dDt);
+            eng_.set_uniform_field(b_);
+            eng_.set_absorber(mask_);
+            eng_.upload(psi_.data());
+            eng_ok_ = true;
+            eng_dirty_ = false;
+        }
     }
-    void release_gpu() override {}
+    void release_gpu() override {
+        eng_.destroy();
+        eng_ok_ = false;
+        eng_dirty_ = true;
+    }
     bool compute_attempted() const override { return compute_attempted_; }
     bool gpu_ok() const override { return false; }
 
@@ -132,14 +156,29 @@ public:
             pending_steps_ = 0;
             // Chunk so trail + antipode/closure records get finer
             // granularity than one time-scaled batch.
+            if (eng_ok_ && eng_dirty_) {
+                eng_.upload(psi_.data());
+                eng_dirty_ = false;
+            }
             while (n > 0) {
                 const int chunk = std::min(n, 8);
-                prop_->step(psi_, chunk);
-                ses::parallel_for(static_cast<int>(mask_.size()), [&](int c) {
-                    psi_.data()[static_cast<std::size_t>(c)] *=
-                        mask_[static_cast<std::size_t>(c)];
-                });
-                ses::normalize(psi_);
+                if (eng_ok_) {
+                    eng_.step(chunk);  // GPU applies the edge absorber per step
+                    eng_.download();
+                    store_engine_state();
+                    // contained orbit never reaches the frame absorber, so the
+                    // GPU norm stays ~1; normalize the display/measure copy only.
+                    ses::normalize(psi_);
+                } else {
+                    prop_->step(psi_, chunk);
+                    ses::parallel_for(static_cast<int>(mask_.size()),
+                                      [&](int c) {
+                                          psi_.data()[static_cast<std::size_t>(
+                                              c)] *=
+                                              mask_[static_cast<std::size_t>(c)];
+                                      });
+                    ses::normalize(psi_);
+                }
                 sim_time_ += chunk * kLd2dDt;
                 n -= chunk;
                 measure();
@@ -293,6 +332,7 @@ private:
             }
         }
         peak_ = pk;
+        eng_dirty_ = true;  // psi_ rebuilt on the CPU: re-upload before stepping
         display_changed_ = true;
         vol_dirty_ = true;
         staging_dirty_ = true;
@@ -403,6 +443,15 @@ private:
         }
     }
 
+    void store_engine_state() {
+        const float* s = eng_.state();
+        std::vector<std::complex<double>>& d = psi_.data();
+        for (std::size_t i = 0; i < d.size(); ++i) {
+            d[i] = std::complex<double>{static_cast<double>(s[2 * i]),
+                                        static_cast<double>(s[2 * i + 1])};
+        }
+    }
+
     static std::string strf(const char* fmt, ...) {
         char buf[512];
         va_list args;
@@ -416,7 +465,10 @@ private:
     ses::Grid3D disp_grid_;
     ses::Field3D psi_;
     std::vector<double> mask_;  // open-plane absorber frame
-    std::unique_ptr<ses::PeierlsLattice2D> prop_;
+    std::unique_ptr<ses::PeierlsLattice2D> prop_;  // CPU: links/energy + fallback
+    ses_vk::Lattice2DEngine eng_;                  // GPU Peierls propagator
+    bool eng_ok_ = false;
+    bool eng_dirty_ = true;
     std::vector<float> staging_;
     std::vector<float> orbit_curve_;
     std::vector<float> trail_;

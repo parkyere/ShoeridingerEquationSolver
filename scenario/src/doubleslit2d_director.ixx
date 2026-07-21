@@ -17,6 +17,7 @@ export import ses.field;
 export import ses.grid;
 export import ses.lattice2d;
 import ses.parallel;
+import ses.vk.lattice2d_engine;
 
 
 // 2D double-slit + Aharonov-Bohm: one normalized packet per shot into a
@@ -90,6 +91,9 @@ public:
     void set_flux(double phi) override {
         flux_ = phi;
         prop_->set_solenoid(flux_, solenoid_x(), 0.0);
+        if (eng_ok_) {
+            eng_.set_solenoid(flux_, solenoid_x(), 0.0);
+        }
         fire();
         rebuild_props_overlays();  // arrow length encodes Phi
     }
@@ -122,11 +126,27 @@ public:
 
     // ---- lifecycle ----
     const ses::Grid3D& grid() const override { return disp_grid_; }
-    void init_compute(ses_vk::DeviceContext& /*ctx*/, bool /*device_ok*/,
+    // Peierls + solenoid scene: GPU port is ses_vk::Lattice2DEngine (exact link
+    // phases, vkcheck-certified). The edge CAP runs on the GPU too (no renorm:
+    // the surviving norm IS the transmitted fraction), so each step only reads
+    // back for the per-step screen integral -- no re-upload.
+    void init_compute(ses_vk::DeviceContext& ctx, bool device_ok,
                       std::int64_t /*free_vram*/) override {
-        compute_attempted_ = true;  // CPU lattice: display via staging
+        compute_attempted_ = true;
+        if (device_ok && eng_.initialize(ctx)) {
+            eng_.set_lattice(phys_grid_, wallv_, kDs2dDt);
+            eng_.set_solenoid(flux_, solenoid_x(), 0.0);
+            eng_.set_absorber(mask_);
+            eng_.upload(psi_.data());
+            eng_ok_ = true;
+            eng_dirty_ = false;
+        }
     }
-    void release_gpu() override {}
+    void release_gpu() override {
+        eng_.destroy();
+        eng_ok_ = false;
+        eng_dirty_ = true;
+    }
     bool compute_attempted() const override { return compute_attempted_; }
     bool gpu_ok() const override { return false; }
 
@@ -295,6 +315,12 @@ private:
         prop_ = std::make_unique<ses::PeierlsLattice2D>(phys_grid_, v,
                                                         kDs2dDt);
         prop_->set_solenoid(flux_, solenoid_x(), 0.0);
+        wallv_ = std::move(v);  // kept for the GPU engine
+        if (eng_ok_) {
+            eng_.set_lattice(phys_grid_, wallv_, kDs2dDt);
+            eng_.set_solenoid(flux_, solenoid_x(), 0.0);
+            eng_.set_absorber(mask_);  // set_lattice resets links/absorber
+        }
         rebuild_props_overlays();
     }
 
@@ -321,6 +347,7 @@ private:
         }
         ++shots_;
         peak_ = 1.0;
+        eng_dirty_ = true;  // new packet on the CPU: re-upload before stepping
         display_changed_ = true;
         vol_dirty_ = true;
         staging_dirty_ = true;
@@ -344,19 +371,30 @@ private:
                 i_scr = i;
             }
         }
+        if (eng_ok_ && eng_dirty_) {
+            eng_.upload(psi_.data());
+            eng_dirty_ = false;
+        }
         for (int s = 0; s < n; ++s) {
-            prop_->step(psi_);
-            // Edge CAP: leaked flux vanishes, no renorm -- norm = electron on stage.
-            ses::parallel_for(kDs2dNy, [&](int j) {
-                const std::size_t row =
-                    static_cast<std::size_t>(j) *
-                    static_cast<std::size_t>(kDs2dNx);
-                for (int i = 0; i < kDs2dNx; ++i) {
-                    const std::size_t c = row + static_cast<std::size_t>(i);
-                    psi_.data()[c] *=
-                        mask_[static_cast<std::size_t>(j * kDs2dNx + i)];
-                }
-            });
+            if (eng_ok_) {
+                // GPU step + edge CAP (no renorm: norm = electron on stage).
+                // Read back every step for the screen integral; the CAP is on
+                // the GPU so the state stays in sync -- no re-upload.
+                eng_.step(1);
+                eng_.download();
+                store_engine_state();
+            } else {
+                prop_->step(psi_);
+                ses::parallel_for(kDs2dNy, [&](int j) {
+                    const std::size_t row = static_cast<std::size_t>(j) *
+                                            static_cast<std::size_t>(kDs2dNx);
+                    for (int i = 0; i < kDs2dNx; ++i) {
+                        const std::size_t c = row + static_cast<std::size_t>(i);
+                        psi_.data()[c] *=
+                            mask_[static_cast<std::size_t>(j * kDs2dNx + i)];
+                    }
+                });
+            }
             for (int j = 0; j < kDs2dNy; ++j) {
                 screen_[static_cast<std::size_t>(j)] +=
                     std::norm(psi_(i_scr, j, 0)) * kDs2dDt;
@@ -475,6 +513,15 @@ private:
         }
     }
 
+    void store_engine_state() {
+        const float* s = eng_.state();
+        std::vector<std::complex<double>>& d = psi_.data();
+        for (std::size_t i = 0; i < d.size(); ++i) {
+            d[i] = std::complex<double>{static_cast<double>(s[2 * i]),
+                                        static_cast<double>(s[2 * i + 1])};
+        }
+    }
+
     static std::string strf(const char* fmt, ...) {
         char buf[512];
         va_list args;
@@ -487,7 +534,11 @@ private:
     ses::Grid3D phys_grid_;
     ses::Grid3D disp_grid_;
     ses::Field3D psi_;
-    std::unique_ptr<ses::PeierlsLattice2D> prop_;
+    std::unique_ptr<ses::PeierlsLattice2D> prop_;  // CPU fallback
+    ses_vk::Lattice2DEngine eng_;                  // GPU Peierls propagator
+    bool eng_ok_ = false;
+    bool eng_dirty_ = true;
+    std::vector<double> wallv_;                    // wall potential (for engine)
     std::vector<double> mask_;
     std::vector<double> screen_;
     std::vector<float> staging_;
