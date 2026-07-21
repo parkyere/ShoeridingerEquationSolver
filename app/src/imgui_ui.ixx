@@ -6,6 +6,7 @@ module;
 #include <initializer_list>
 #include <string>
 #include <utility>
+#include <vector>
 export module app.imgui_ui;
 export import ses.scenario;
 
@@ -100,20 +101,15 @@ template <typename ShellT>
 void draw_scene_picker(ShellT& shell) {
     int cur = shell.scene_index();
     ImGui::SetNextItemWidth(200.0f);
-    if (ImGui::Combo("Scene", &cur,
-                     "Hydrogen atom\0Harmonic trap\0Tunneling barrier\0"
-                     "1D harmonic oscillator\0"
-                     "1D tunneling barrier\0"
-                     "1D double well\0"
-                     "1D reflectionless well\0"
-                     "1D Morse well\0"
-                     "H2+ molecular ion\0"
-                     "Stripped benzene (1e)\0"
-                     "2D double slit + AB\0"
-                     "2D Landau / cyclotron\0"
-                     "1D crystal lattice (Bloch)\0"
-                     "2D quantum corral\0"
-                     "2D quantum dot\0")) {
+    // Labels come from the shell's scene table so the combo can never drift
+    // out of sync with the registered scenes.
+    std::vector<const char*> labels;
+    labels.reserve(static_cast<std::size_t>(shell.scene_count()));
+    for (int i = 0; i < shell.scene_count(); ++i) {
+        labels.push_back(shell.scene_label(i));
+    }
+    if (ImGui::Combo("Scene", &cur, labels.data(),
+                     static_cast<int>(labels.size()))) {
         shell.request_scene(cur);
     }
     if (ImGui::IsItemHovered()) {

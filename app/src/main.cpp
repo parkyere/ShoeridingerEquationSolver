@@ -92,6 +92,21 @@ constexpr const char* kSceneNames[] = {
     "billiard2d", "anderson1d", "carpet1d", "qpc2d", "bouncer1d",
     "spin", "spins", "rutherford3d"};
 constexpr int kSceneCount = 23;
+// Combo display labels; SAME order and length as kSceneNames (static_assert
+// below turns any drift into a compile error).
+constexpr const char* kSceneLabels[] = {
+    "Hydrogen atom", "Harmonic trap", "Tunneling barrier",
+    "1D harmonic oscillator", "1D tunneling barrier", "1D double well",
+    "1D reflectionless well", "1D Morse well", "H2+ molecular ion",
+    "Stripped benzene (1e)", "2D double slit + AB", "2D Landau / cyclotron",
+    "1D crystal lattice (Bloch)", "2D quantum corral", "2D quantum dot",
+    "2D quantum billiard", "1D Anderson localization", "1D quantum carpet",
+    "2D quantum point contact", "1D quantum bouncer", "Electron spin (Bloch)",
+    "16 interacting spins", "Rutherford scattering"};
+static_assert(sizeof(kSceneNames) / sizeof(kSceneNames[0]) == kSceneCount,
+              "kSceneNames length != kSceneCount");
+static_assert(sizeof(kSceneLabels) / sizeof(kSceneLabels[0]) == kSceneCount,
+              "kSceneLabels length != kSceneCount (combo out of sync)");
 std::unique_ptr<ses_shell::ScenarioDirector> make_scene_director(int idx) {
     switch (idx) {
         case 1: return std::make_unique<ses_shell::HarmonicDirector>();
@@ -493,6 +508,8 @@ public:
     }
 
     int scene_index() const { return scene_index_; }
+    static int scene_count() { return kSceneCount; }
+    static const char* scene_label(int i) { return kSceneLabels[i]; }
     void request_scene(int idx) {
         if (idx >= 0 && idx < kSceneCount) {
             pending_scene_ = idx;
