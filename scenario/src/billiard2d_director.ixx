@@ -1,6 +1,7 @@
 module;
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <cmath>
 #include <complex>
 #include <memory>
@@ -13,6 +14,7 @@ import ses.heightfield;
 import ses.observables;
 import ses.propagator;
 import ses.parallel;
+import ses.vk.engine_blobs;
 
 
 // Quantum billiard: circle (integrable) vs Bunimovich stadium (chaotic).
@@ -52,6 +54,24 @@ public:
         fire();
     }
 
+    // B = 0 spectral scene: the GPU path is the 3D split-operator Engine at
+    // nz = 1 (VkFFT 2D), NOT the base Peierls lattice engine (a B=0 Peierls
+    // tight-binding band would misdefine the dispersion). Planar step/CPU
+    // parity is certified by vkcheck check_engine_planar.
+    void init_compute(ses_vk::DeviceContext& ctx, bool device_ok,
+                      std::int64_t /*free_vram*/) override {
+        compute_attempted_ = true;
+        eng_ok_ = device_ok &&
+                  eng_.initialize(ctx, phys_grid_, ses_vk::engine_blobs(kBl2dN),
+                                  v_, kBl2dDt, psi_.data());
+        eng_dirty_ = false;  // initialize() uploaded the current psi_
+    }
+    void release_gpu() override {
+        eng_.destroy();
+        eng_ok_ = false;
+        eng_dirty_ = true;
+    }
+
     BilliardApi* billiard() override { return this; }
 
     // ---- BilliardApi ----
@@ -71,6 +91,7 @@ public:
         avg_.assign(static_cast<std::size_t>(phys_grid_.size()), 0.0);
         avg_steps_ = 0;
         disp_peak_ = 0.0;
+        eng_dirty_ = true;  // psi_ edited on the CPU: re-upload before stepping
         track_peak();
         mark_fired();
     }
@@ -210,23 +231,50 @@ protected:
     }
 
     void do_steps(int n) override {
-        for (int s = 0; s < n; ++s) {
-            prop_->step(psi_, 1);
-            ses::parallel_for(kBl2dN, [&](int j) {
-                const std::size_t row =
-                    static_cast<std::size_t>(j) * kBl2dN;
-                for (int i = 0; i < kBl2dN; ++i) {
-                    avg_[row + static_cast<std::size_t>(i)] +=
-                        std::norm(psi_(i, j, 0));
-                }
-            });
+        if (eng_ok_) {
+            if (eng_dirty_) {
+                eng_.upload_state(psi_.data());
+                eng_dirty_ = false;
+            }
+            int left = n;
+            while (left > 0) {
+                const int chunk = std::min(left, 4);  // sample the avg 4x/tick
+                eng_.step(chunk);
+                eng_.readback(rb_);
+                store_readback();
+                accumulate_occupancy();
+                ++avg_steps_;  // one time-average sample per chunk
+                left -= chunk;
+            }
+        } else {
+            for (int s = 0; s < n; ++s) {
+                prop_->step(psi_, 1);
+                accumulate_occupancy();
+                ++avg_steps_;  // one sample per step
+            }
         }
-        avg_steps_ += n;
         sim_time_ += n * kBl2dDt;
         track_peak();
     }
 
 private:
+    void store_readback() {
+        std::vector<std::complex<double>>& d = psi_.data();
+        for (std::size_t i = 0; i < d.size(); ++i) {
+            d[i] = std::complex<double>{static_cast<double>(rb_[2 * i]),
+                                        static_cast<double>(rb_[2 * i + 1])};
+        }
+    }
+    void accumulate_occupancy() {
+        ses::parallel_for(kBl2dN, [&](int j) {
+            const std::size_t row = static_cast<std::size_t>(j) * kBl2dN;
+            for (int i = 0; i < kBl2dN; ++i) {
+                avg_[row + static_cast<std::size_t>(i)] +=
+                    std::norm(psi_(i, j, 0));
+            }
+        });
+    }
+
     void rebuild_potential() {
         const double hl = stadium_ ? kBl2dHalfLen : 0.0;
         std::vector<double> v(
@@ -268,7 +316,11 @@ private:
     }
 
     std::vector<double> v_;
-    std::unique_ptr<ses::SplitOperator3D> prop_;
+    std::unique_ptr<ses::SplitOperator3D> prop_;  // CPU fallback
+    ses_vk::Engine eng_;                          // GPU: planar split-operator
+    bool eng_ok_ = false;
+    bool eng_dirty_ = true;
+    std::vector<float> rb_;                        // readback scratch
     ses::Heightfield hf_;
     bool mesh_dirty_ = false;
     ses::Field3D scar_{phys_grid_};
