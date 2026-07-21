@@ -59,6 +59,7 @@
 #include <fft_line512_spv.h>
 #include <spin_site_gate_spv.h>
 #include <spin_bond_gate_spv.h>
+#include <spin_fused_gate_spv.h>
 
 #include <algorithm>
 #include <array>
@@ -1297,6 +1298,126 @@ bool check_spin_bloch(ses_vk::DeviceContext& ctx) {
     std::printf("spin bloch reduce (raw Vulkan, 16 sites): max |gpu - cpu| = "
                 "%.3e  [%s]\n",
                 max_err, pass ? "PASS" : "FAIL");
+    return pass;
+}
+
+// GPU fused k-qubit gate (spin_fused_gate.comp) vs CPU ses::apply_fused, on a
+// scattered k=4 window {1,4,9,14} built by fusing site.bond.site -- exercises
+// the orbit gather/matmul/scatter that Stage 2 of the canonical path rests on.
+bool check_spin_fused_gate(ses_vk::DeviceContext& ctx) {
+    struct alignas(16) FusedParams {
+        std::uint32_t n_orbits, k, qpack, pad;
+    };
+    const std::size_t dim = ses::kExactDim;
+    std::vector<ses::FusedGate> raw = {
+        ses::site_fused_gate(1, 0.3, -0.4, 0.85, 0.6),
+        ses::bond_fused_gate(4, 9, 0.22),
+        ses::site_fused_gate(14, 0.5, -0.5, 0.7, 0.4),
+    };
+    const std::vector<ses::FusedGate> fused = ses::fuse_gates(raw, 4);
+    if (fused.size() != 1 || fused[0].qubits.size() != 4) {
+        std::printf("spin fused gate: setup FAIL\n");
+        return false;
+    }
+    const ses::FusedGate& fg = fused[0];
+    const std::size_t k = fg.qubits.size();
+    const std::size_t dk = std::size_t{1} << k;
+
+    ses::SpinState16 cpu;
+    cpu.c.resize(dim);
+    double nrm = 0.0;
+    for (std::size_t m = 0; m < dim; ++m) {
+        cpu.c[m] = std::complex<double>{std::sin(0.3 * m + 1.0),
+                                        std::cos(0.17 * m) - 0.2};
+        nrm += std::norm(cpu.c[m]);
+    }
+    const double iv = 1.0 / std::sqrt(nrm);
+    for (auto& z : cpu.c) {
+        z *= iv;
+    }
+    std::vector<float> in(dim * 2);
+    for (std::size_t m = 0; m < dim; ++m) {
+        in[2 * m] = static_cast<float>(cpu.c[m].real());
+        in[2 * m + 1] = static_cast<float>(cpu.c[m].imag());
+    }
+    ses::apply_fused(cpu, fg);  // reference (input snapshot already taken)
+
+    std::vector<float> gm(dk * dk * 2);
+    for (std::size_t i = 0; i < dk * dk; ++i) {
+        gm[2 * i] = static_cast<float>(fg.mat[i].real());
+        gm[2 * i + 1] = static_cast<float>(fg.mat[i].imag());
+    }
+    FusedParams fp{};
+    fp.n_orbits = static_cast<std::uint32_t>(dim >> k);
+    fp.k = static_cast<std::uint32_t>(k);
+    fp.qpack = 0;
+    for (std::size_t b = 0; b < k; ++b) {
+        fp.qpack |= (static_cast<std::uint32_t>(fg.qubits[b]) & 0xFu)
+                    << (4u * b);
+    }
+
+    const VkDeviceSize sbytes = dim * 2 * sizeof(float);
+    const VkDeviceSize gbytes = gm.size() * sizeof(float);
+    ses_vk::Kernel fk;
+    ses_vk::Buffer data{}, staging{}, gmat{}, ubo{};
+    Scope s(ctx);
+    s.kernels = {&fk};
+    s.buffers = {&data, &staging, &gmat, &ubo};
+    if (!fk.create(ctx, k_spin_fused_gate_spv, k_spin_fused_gate_spv_size,
+                   {{0, kStorage}, {1, kStorage}, {2, kUniform}})) {
+        return false;
+    }
+    if (!ctx.create_device_buffer(sbytes, &data) ||
+        !ctx.create_host_buffer(sbytes,
+                                VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                &staging) ||
+        !ctx.create_host_buffer(gbytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                &gmat) ||
+        !ctx.create_host_buffer(sizeof(FusedParams),
+                                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &ubo)) {
+        return false;
+    }
+    std::memcpy(staging.mapped, in.data(), sbytes);
+    flush(ctx, staging);
+    std::memcpy(gmat.mapped, gm.data(), gbytes);
+    flush(ctx, gmat);
+    std::memcpy(ubo.mapped, &fp, sizeof(fp));
+    flush(ctx, ubo);
+    if (!s.arena.create(ctx, 1, 2, 1)) {
+        return false;
+    }
+    VkDescriptorSet set = s.arena.allocate(ctx, fk.set_layout());
+    if (set == VK_NULL_HANDLE) {
+        return false;
+    }
+    s.arena.write_buffer(ctx, set, 0, kStorage, data.buf);
+    s.arena.write_buffer(ctx, set, 1, kStorage, gmat.buf, gbytes);
+    s.arena.write_buffer(ctx, set, 2, kUniform, ubo.buf, sizeof(FusedParams));
+
+    if (!s.shot.begin(ctx)) {
+        return false;
+    }
+    record_uploads(s.shot.cb(), staging, {{&data, 0, sbytes}});
+    fk.bind(s.shot.cb(), set);
+    vkCmdDispatch(s.shot.cb(), (fp.n_orbits + 63u) / 64u, 1, 1);
+    record_readback(s.shot.cb(), data, staging, sbytes);
+    if (!s.shot.submit_and_wait(ctx)) {
+        return false;
+    }
+    invalidate(ctx, staging);
+
+    const float* out = static_cast<const float*>(staging.mapped);
+    double max_err = 0.0;
+    for (std::size_t m = 0; m < dim; ++m) {
+        max_err = std::max(max_err, std::abs(out[2 * m] - cpu.c[m].real()));
+        max_err =
+            std::max(max_err, std::abs(out[2 * m + 1] - cpu.c[m].imag()));
+    }
+    const bool pass = max_err < 1e-5;
+    std::printf("spin fused gate k=%zu (raw Vulkan, 2^16): max |gpu - cpu| = "
+                "%.3e  [%s]\n",
+                k, max_err, pass ? "PASS" : "FAIL");
     return pass;
 }
 
@@ -3076,6 +3197,7 @@ int main() {
     failures += check_spin_step(ctx) ? 0 : 1;
     failures += check_spin_engine_step(ctx) ? 0 : 1;
     failures += check_spin_bloch(ctx) ? 0 : 1;
+    failures += check_spin_fused_gate(ctx) ? 0 : 1;
     failures += check_engine_step(ctx) ? 0 : 1;
     failures += check_engine_planar(ctx) ? 0 : 1;
     failures += check_engine_absorber(ctx) ? 0 : 1;
