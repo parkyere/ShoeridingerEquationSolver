@@ -15,6 +15,7 @@ import ses.imaginary_time;
 import ses.observables;
 import ses.propagator;
 import ses.parallel;
+import ses.vk.engine_blobs;
 
 
 // Quantum corral (Crommie, Lutz & Eigler, IBM 1993): 48 Fe adatoms on
@@ -58,6 +59,34 @@ public:
         : Lattice2DDirectorBase(kCr2dBox, kCr2dN, kCr2dNz, kCr2dZHalf) {
         rebuild_potential();
         start_relax(0);
+    }
+
+    // B = 0 spectral scene with the Cu(111) effective mass m* = 0.38: GPU is
+    // the mass-aware split-operator Engine (real time, damp absorber) + its
+    // deflated ITP (relax). Not the base Peierls engine. The relax tables come
+    // from the CPU ITP (mass baked); the disc-cut projection runs on the CPU
+    // between chunks (re-upload). vkcheck: check_engine_planar_mass + _relax +
+    // _deflation + _project.
+    void init_compute(ses_vk::DeviceContext& ctx, bool device_ok,
+                      std::int64_t /*free_vram*/) override {
+        compute_attempted_ = true;
+        if (device_ok &&
+            eng_.initialize(ctx, phys_grid_, ses_vk::engine_blobs(kCr2dN), v_,
+                            kCr2dDt, psi_.data(), kCr2dMass)) {
+            eng_.set_absorber(damp_);  // real-time fence + open boundary
+            eng_ok_ = true;
+            eng_dirty_ = false;
+        }
+    }
+    void release_gpu() override {
+        for (int h : defl_) {
+            eng_.release_state(h);
+        }
+        defl_.clear();
+        eng_.destroy();
+        eng_ok_ = false;
+        eng_dirty_ = true;
+        relax_tables_stage_ = -1;
     }
 
     CorralApi* corral() override { return this; }
@@ -112,6 +141,7 @@ public:
             }
         });
         ses::normalize(psi_);
+        eng_dirty_ = true;  // packet built on the CPU: re-upload before stepping
         track_peak();
         mark_fired();
     }
@@ -138,6 +168,7 @@ public:
             }
         });
         ses::normalize(psi_);
+        eng_dirty_ = true;  // wave built on the CPU: re-upload before stepping
         track_peak();
         mark_fired();
         title_dirty_ = true;
@@ -146,6 +177,7 @@ public:
     void reset_simulation() override {
         captured_.clear();
         energies_.clear();
+        release_gpu_deflation();
         start_relax(0);
     }
 
@@ -237,19 +269,41 @@ protected:
             // Dirichlet problem; without it the leaky fence drains relax into
             // the outside continuum and no plateau forms. Real time (F) is
             // the leaky H, unprojected.
-            std::vector<const ses::Field3D*> lower;
-            lower.reserve(captured_.size());
-            for (const ses::Field3D& s : captured_) {
-                lower.push_back(&s);
-            }
-            int left = 4 * n;  // relax gets 4x the tick budget (convergence is the wait)
             const int chunk = fine_ ? 100 : 20;  // tau ~ 0.5 / 1.0 per cut
-            while (left > 0) {
-                const int c = std::min(left, chunk);
-                (fine_ ? itp_fine_ : itp_coarse_)
-                    ->relax_deflated(psi_, lower, c);
-                project_disc();
-                left -= c;
+            int left = 4 * n;  // relax gets 4x the tick budget (the wait)
+            if (eng_ok_) {
+                ensure_gpu_relax_tables();
+                sync_gpu_deflation();
+                if (eng_dirty_) {
+                    eng_.upload_state(psi_.data());
+                    eng_dirty_ = false;
+                }
+                while (left > 0) {
+                    const int c = std::min(left, chunk);
+                    if (defl_.empty()) {
+                        eng_.relax_step(c);
+                    } else {
+                        eng_.relax_deflated_step(defl_, c);
+                    }
+                    eng_.readback(rb_);
+                    store_readback();
+                    project_disc();  // CPU Dirichlet cut + renorm
+                    eng_.upload_state(psi_.data());  // re-sync the projection
+                    left -= c;
+                }
+            } else {
+                std::vector<const ses::Field3D*> lower;
+                lower.reserve(captured_.size());
+                for (const ses::Field3D& s : captured_) {
+                    lower.push_back(&s);
+                }
+                while (left > 0) {
+                    const int c = std::min(left, chunk);
+                    (fine_ ? itp_fine_ : itp_coarse_)
+                        ->relax_deflated(psi_, lower, c);
+                    project_disc();
+                    left -= c;
+                }
             }
             const double e = ses::mean_energy(psi_, v_, kCr2dMass);
             const double tol = fine_ ? kCr2dConvTol : kCr2dCoarseTol;
@@ -267,20 +321,74 @@ protected:
             track_peak();
             return;
         }
-        // Damp (fence + open boundary) then renorm; lost norm = escaped probability.
-        for (int s2 = 0; s2 < n; ++s2) {
-            prop_->step(psi_, 1);
-            ses::parallel_for(static_cast<int>(damp_.size()), [&](int i) {
-                psi_.data()[static_cast<std::size_t>(i)] *=
-                    damp_[static_cast<std::size_t>(i)];
-            });
+        // Damp (fence + open boundary); the surviving norm = escaped fraction.
+        if (eng_ok_) {
+            if (eng_dirty_) {
+                eng_.upload_state(psi_.data());
+                eng_dirty_ = false;
+            }
+            int left = n;
+            while (left > 0) {
+                const int c = std::min(left, 8);
+                eng_.step(c, true);  // absorb=true applies damp_ each step
+                left -= c;
+            }
+            eng_.readback(rb_);
+            store_readback();
+            ses::normalize(psi_);  // display/confinement copy (GPU state left as is)
+        } else {
+            for (int s2 = 0; s2 < n; ++s2) {
+                prop_->step(psi_, 1);
+                ses::parallel_for(static_cast<int>(damp_.size()), [&](int i) {
+                    psi_.data()[static_cast<std::size_t>(i)] *=
+                        damp_[static_cast<std::size_t>(i)];
+                });
+            }
+            ses::normalize(psi_);
         }
-        ses::normalize(psi_);
         sim_time_ += n * kCr2dDt;
         track_peak();
     }
 
 private:
+    void store_readback() {
+        std::vector<std::complex<double>>& d = psi_.data();
+        for (std::size_t i = 0; i < d.size(); ++i) {
+            d[i] = std::complex<double>{static_cast<double>(rb_[2 * i]),
+                                        static_cast<double>(rb_[2 * i + 1])};
+        }
+    }
+    // Load the coarse or fine ITP weights (m* baked in) into the engine.
+    void ensure_gpu_relax_tables() {
+        const int want = fine_ ? 1 : 0;
+        if (relax_tables_stage_ == want) {
+            return;
+        }
+        const ses::ImaginaryTimePropagator3D& itp =
+            fine_ ? *itp_fine_ : *itp_coarse_;
+        eng_.set_relax_tables(itp.half_potential_weight(),
+                              itp.kinetic_weight(),
+                              fine_ ? kCr2dFineDtau : kCr2dCoarseDtau,
+                              phys_grid_.cell_volume());
+        relax_tables_stage_ = want;
+    }
+    // GPU deflation buffers track captured_ (the Gram-Schmidt lower states).
+    void sync_gpu_deflation() {
+        while (defl_.size() < captured_.size()) {
+            defl_.push_back(
+                eng_.create_state_buffer(captured_[defl_.size()].data()));
+        }
+    }
+    void release_gpu_deflation() {
+        if (!eng_ok_) {
+            return;
+        }
+        for (int h : defl_) {
+            eng_.release_state(h);
+        }
+        defl_.clear();
+    }
+
     void rebuild_potential() {
         const double pi = 3.14159265358979323846;
         std::vector<double> v(
@@ -325,6 +433,12 @@ private:
             phys_grid_, v_, kCr2dFineDtau, kCr2dMass);
         captured_.clear();
         energies_.clear();
+        if (eng_ok_) {
+            eng_.set_potential(v_);       // real-time fence
+            eng_.set_absorber(damp_);     // real-time damp
+            release_gpu_deflation();      // captured basis dropped
+            relax_tables_stage_ = -1;     // itp weights changed with v_
+        }
     }
 
     void start_relax(int k) {
@@ -346,6 +460,7 @@ private:
         disp_peak_ = 0.0;  // re-snap surface normalizer
         conv_streak_ = 0;
         last_e_ = 1e30;
+        eng_dirty_ = true;  // seed built on the CPU: re-upload before relaxing
         mark_fired();
     }
 
@@ -404,6 +519,13 @@ private:
     int conv_streak_ = 0;
     bool relaxing_ = false;
     bool fine_ = false;  // anneal stage: coarse -> fine
+
+    ses_vk::Engine eng_;           // GPU: mass-aware split-operator + deflated ITP
+    bool eng_ok_ = false;
+    bool eng_dirty_ = true;
+    std::vector<float> rb_;        // readback scratch
+    std::vector<int> defl_;        // GPU deflation handles (parallel to captured_)
+    int relax_tables_stage_ = -1;  // -1 none, 0 coarse, 1 fine
 };
 
 }  // namespace ses_shell
