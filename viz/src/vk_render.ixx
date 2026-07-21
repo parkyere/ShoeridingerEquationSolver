@@ -104,7 +104,8 @@ public:
         bool fill = false;           // triangle strip instead of line strip
         const float* rgba = nullptr;  // 4 * count floats, premultiplied
     };
-    static constexpr int kMaxOverlayCurves = 6;
+    // 3 curves (2 rings + arrow) per spin site; the 4x4 spin lattice needs 48.
+    static constexpr int kMaxOverlayCurves = 64;
 
     // A nucleus marker ball (world space), drawn in both views: the mesh
     // pipeline in Surface, the raymarcher in Cloud.

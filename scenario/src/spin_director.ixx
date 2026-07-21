@@ -202,7 +202,13 @@ public:
     const std::vector<ses::Rgb>& colors() const override {
         return no_colors_;
     }
-    int marker_count() const override { return 0; }
+    // A glassy Bloch sphere surface at the origin (same style as the lattice
+    // sites), so the single spin reads as a sphere, not bare wireframe rings.
+    int marker_count() const override { return 1; }
+    SceneMarker marker(int /*i*/) const override {
+        return {0.0f, 0.0f, 0.0f, static_cast<float>(kSpR),
+                0.55f, 0.75f, 0.95f};
+    }
 
     std::string title_text() override {
         std::string s = strf(
