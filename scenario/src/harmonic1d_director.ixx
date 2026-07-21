@@ -160,7 +160,7 @@ public:
     bool loss_on() const override { return kappa_ > 0.0; }
     long long jump_count() const override { return jumps_; }
 
-    // Lazy spectrum strip (0..100 eV): recomputed only on state mutation,
+    // Lazy spectrum strip (0..200 eV): recomputed only on state mutation,
     // never by unitary evolution. CONTRACT: tests/ho_spectrum_test.cpp.
     int spectrum_count() override {
         ensure_spectrum();
@@ -273,7 +273,7 @@ private:
             return;
         }
         spec_dirty_ = false;
-        spec_ = ses::ho1d_spectrum(psi_, omega_, 100.0 / 27.211386);
+        spec_ = ses::ho1d_spectrum(psi_, omega_, 200.0 / 27.211386);
     }
 
     // no-jump damping ITP depends on omega & kappa; rebuild on change

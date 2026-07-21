@@ -378,7 +378,7 @@ private:
         }
         spec_dirty_ = false;
         spec_ = ses::fock_darwin_spectrum(psi_, w0_, b_,
-                                          100.0 / 27.211386);
+                                          200.0 / 27.211386);
     }
 
     void rebuild_prop() {

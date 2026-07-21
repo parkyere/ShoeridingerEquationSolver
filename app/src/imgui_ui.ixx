@@ -148,19 +148,21 @@ void draw_time_scale(ShellT& shell, UiState& ui) {
     }
 }
 
-// Rainbow is an ENERGY-SCALE decoration, not physical color (most H lines are UV/IR).
-inline void draw_spectrometer(ses_shell::HydrogenApi& hy) {
-    const double emax = hy.spectro_max_ev();
-    if (emax <= 0.0) {
-        return;  // not an emission scene (the trap shares this Api)
-    }
+// Vertical energy spectrometer chrome: a right-side floating window with a
+// rainbow ENERGY-SCALE decoration (red = bottom/low E, violet = top/high E;
+// not physical color -- most H lines are UV/IR) and 0..emax axis ticks.
+// plot(dl, bx, bw, by, bh, emax) stamps the scene's spectral lines as
+// horizontal ticks over the bar (low E at the bottom); footer sits below it.
+template <typename PlotFn>
+inline void draw_energy_spectrometer(const char* title, double emax,
+                                     const char* footer, PlotFn plot) {
     const ImGuiIO& io = ImGui::GetIO();
     const float win_w = 190.0f;
     const float win_h = io.DisplaySize.y * 0.78f;
     ImGui::SetNextWindowPos(
         ImVec2(io.DisplaySize.x - win_w - 10.0f, 48.0f), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(win_w, win_h), ImGuiCond_Always);
-    ImGui::Begin("Spectrometer", nullptr,
+    ImGui::Begin(title, nullptr,
                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
                      ImGuiWindowFlags_NoMove);
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -194,40 +196,58 @@ inline void draw_spectrometer(ses_shell::HydrogenApi& hy) {
         dl->AddText(ImVec2(bx + bw + 6, y - 7), IM_COL32(180, 180, 190, 200),
                     buf);
     }
-    // Emitted lines, deduplicated to 0.01 eV buckets (repeats brighten).
-    const int n = hy.spectro_count();
-    int cents[64];
-    int counts[64];
-    int distinct = 0;
-    for (int i = 0; i < n; ++i) {
-        const int c = static_cast<int>(hy.spectro_ev(i) * 100.0 + 0.5);
-        int k = 0;
-        while (k < distinct && cents[k] != c) {
-            ++k;
-        }
-        if (k == distinct && distinct < 64) {
-            cents[distinct] = c;
-            counts[distinct] = 0;
-            ++distinct;
-        }
-        if (k < 64) {
-            ++counts[k];
-        }
-    }
-    for (int k = 0; k < distinct; ++k) {
-        const double ev = cents[k] / 100.0;
-        const float y = by + bh * static_cast<float>(1.0 - ev / emax);
-        const int a = counts[k] > 2 ? 255 : 160 + 32 * counts[k];
-        dl->AddRectFilled(ImVec2(bx - 3, y - 1),
-                          ImVec2(bx + bw + 3, y + 1),
-                          IM_COL32(255, 255, 255, a));
-        std::snprintf(buf, sizeof(buf), "%.2f eV x%d", ev, counts[k]);
-        dl->AddText(ImVec2(bx + bw + 34, y - 7),
-                    IM_COL32(255, 255, 255, 230), buf);
-    }
+    plot(dl, bx, bw, by, bh, emax);
     ImGui::Dummy(ImVec2(win_w - 20.0f, bh + 20.0f));
-    ImGui::TextDisabled("photons: %d", n);
+    ImGui::TextDisabled("%s", footer);
     ImGui::End();
+}
+
+// Hydrogen emission spectrometer: discrete emitted-photon lines over time.
+inline void draw_spectrometer(ses_shell::HydrogenApi& hy) {
+    const double emax = hy.spectro_max_ev();
+    if (emax <= 0.0) {
+        return;  // not an emission scene (the trap shares this Api)
+    }
+    char footer[32];
+    std::snprintf(footer, sizeof(footer), "photons: %d", hy.spectro_count());
+    draw_energy_spectrometer(
+        "Spectrometer", emax, footer,
+        [&hy](ImDrawList* dl, float bx, float bw, float by, float bh,
+              double emax_ev) {
+            // Emitted lines, deduplicated to 0.01 eV buckets (repeats brighten).
+            const int n = hy.spectro_count();
+            int cents[64];
+            int counts[64];
+            int distinct = 0;
+            for (int i = 0; i < n; ++i) {
+                const int c = static_cast<int>(hy.spectro_ev(i) * 100.0 + 0.5);
+                int k = 0;
+                while (k < distinct && cents[k] != c) {
+                    ++k;
+                }
+                if (k == distinct && distinct < 64) {
+                    cents[distinct] = c;
+                    counts[distinct] = 0;
+                    ++distinct;
+                }
+                if (k < 64) {
+                    ++counts[k];
+                }
+            }
+            char lbl[32];
+            for (int k = 0; k < distinct; ++k) {
+                const double ev = cents[k] / 100.0;
+                const float y =
+                    by + bh * static_cast<float>(1.0 - ev / emax_ev);
+                const int a = counts[k] > 2 ? 255 : 160 + 32 * counts[k];
+                dl->AddRectFilled(ImVec2(bx - 3, y - 1),
+                                  ImVec2(bx + bw + 3, y + 1),
+                                  IM_COL32(255, 255, 255, a));
+                std::snprintf(lbl, sizeof(lbl), "%.2f eV x%d", ev, counts[k]);
+                dl->AddText(ImVec2(bx + bw + 34, y - 7),
+                            IM_COL32(255, 255, 255, 230), lbl);
+            }
+        });
 }
 
 template <typename ShellT>
@@ -380,40 +400,42 @@ void draw_generic_panel(ShellT& shell, UiState& ui,
     ImGui::End();
 }
 
-// brightness = sqrt(weight): faint components still read.
+// State-decomposition spectrum |c_n|^2 over the eigenbasis, drawn like the
+// hydrogen spectrometer: right-side vertical window, 0..200 eV rising bottom
+// -> top. brightness = sqrt(weight): faint components still read.
+inline constexpr double kStateSpectrumMaxEv = 200.0;
 template <typename ApiT>
-void draw_ho_spectrum_strip(ApiT& api) {
-    ImGui::TextUnformatted("State spectrum 0-100 eV (linear combination)");
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    const float w = ImGui::GetContentRegionAvail().x;
-    const float h = 34.0f;
-    dl->AddRectFilled(ImVec2(p.x, p.y), ImVec2(p.x + w, p.y + h),
-                      IM_COL32(12, 12, 18, 255));
-    const int n = api.spectrum_count();
-    double wmax = 1e-12;
-    for (int i = 0; i < n; ++i) {
-        wmax = std::max(wmax, api.spectrum_weight(i));
-    }
-    for (int i = 0; i < n; ++i) {
-        const double ev = api.spectrum_ev(i);
-        if (ev > 100.0) {
-            continue;
-        }
-        const float b =
-            static_cast<float>(std::sqrt(api.spectrum_weight(i) / wmax));
-        if (b < 0.02f) {
-            continue;
-        }
-        const float x = p.x + w * static_cast<float>(ev / 100.0);
-        dl->AddLine(ImVec2(x, p.y + 2.0f), ImVec2(x, p.y + h - 2.0f),
-                    IM_COL32(90 + static_cast<int>(160.0f * b),
-                             220, 255, 40 + static_cast<int>(215.0f * b)),
-                    2.0f);
-    }
-    dl->AddRect(ImVec2(p.x, p.y), ImVec2(p.x + w, p.y + h),
-                IM_COL32(70, 70, 90, 255));
-    ImGui::Dummy(ImVec2(w, h + 4.0f));
+void draw_state_spectrometer(ApiT& api) {
+    char footer[40];
+    std::snprintf(footer, sizeof(footer), "0-%.0f eV  levels: %d",
+                  kStateSpectrumMaxEv, api.spectrum_count());
+    draw_energy_spectrometer(
+        "State spectrum", kStateSpectrumMaxEv, footer,
+        [&api](ImDrawList* dl, float bx, float bw, float by, float bh,
+               double emax_ev) {
+            const int n = api.spectrum_count();
+            double wmax = 1e-12;
+            for (int i = 0; i < n; ++i) {
+                wmax = std::max(wmax, api.spectrum_weight(i));
+            }
+            for (int i = 0; i < n; ++i) {
+                const double ev = api.spectrum_ev(i);
+                if (ev > emax_ev) {
+                    continue;
+                }
+                const float b = static_cast<float>(
+                    std::sqrt(api.spectrum_weight(i) / wmax));
+                if (b < 0.02f) {
+                    continue;
+                }
+                const float y =
+                    by + bh * static_cast<float>(1.0 - ev / emax_ev);
+                dl->AddRectFilled(
+                    ImVec2(bx - 3, y - 1), ImVec2(bx + bw + 3, y + 1),
+                    IM_COL32(90 + static_cast<int>(160.0f * b), 220, 255,
+                             40 + static_cast<int>(215.0f * b)));
+            }
+        });
 }
 
 template <typename ShellT>
@@ -480,13 +502,13 @@ void draw_ladder1d_panel(ShellT& shell, UiState& ui, ses_shell::Ladder1dApi& ld)
                           "n <= %d.",
                           ld.max_level());
     }
-    draw_ho_spectrum_strip(ld);
     draw_time_scale(shell, ui);
     ImGui::Separator();
     ImGui::PushTextWrapPos(0.0f);
     ImGui::TextUnformatted(shell.status_text().c_str());
     ImGui::PopTextWrapPos();
     ImGui::End();
+    draw_state_spectrometer(ld);  // right-side vertical strip (own window)
 }
 
 template <typename ShellT>
@@ -1119,13 +1141,13 @@ void draw_qdot_panel(ShellT& shell, UiState& ui, ses_shell::QdotApi& qd) {
     ImGui::Text("E = %.3f eV vs hbar*Omega = %.3f eV%s",
                 qd.energy_meas() * kHaToEv, qd.energy_pred() * kHaToEv,
                 qd.relaxing() ? " (relaxing...)" : "");
-    draw_ho_spectrum_strip(qd);
     draw_time_scale(shell, ui);
     ImGui::Separator();
     ImGui::PushTextWrapPos(0.0f);
     ImGui::TextUnformatted(shell.status_text().c_str());
     ImGui::PopTextWrapPos();
     ImGui::End();
+    draw_state_spectrometer(qd);  // right-side vertical strip (own window)
 }
 
 }  // namespace app
