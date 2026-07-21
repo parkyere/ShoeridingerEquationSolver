@@ -2132,6 +2132,63 @@ bool check_lattice2d_relax(ses_vk::DeviceContext& ctx) {
     return pass;
 }
 
+// GPU set_solenoid + set_absorber vs CPU (PeierlsLattice2D::step + per-step mask
+// multiply): the localized-flux string gauge and the boundary absorber must
+// match the oracle. fp32.
+bool check_lattice2d_absorb_solenoid(ses_vk::DeviceContext& ctx) {
+    const ses::Grid1D axis{-8.0, 8.0, 64};
+    const ses::Grid3D g{axis, axis, ses::Grid1D{0.0, 2.0, 1}};
+    const std::vector<double> v(static_cast<std::size_t>(g.size()), 0.0);
+    const double dt = 0.02;
+    const double phi = 1.5707963267948966;  // pi/2
+    const std::vector<double> mask = ses::absorbing_mask(g, 3.0);
+    ses::Field3D psi0 = ses::gaussian_wavepacket(
+        g, ses::Vec3d{-3.0, 0.0, 0.0}, ses::Vec3d{1.5, 1.5, 1.5},
+        ses::Vec3d{2.0, 0.0, 0.0});
+
+    ses::PeierlsLattice2D cpu_prop{g, v, dt};
+    cpu_prop.set_solenoid(phi, 0.0, 0.0);
+    ses::Field3D cpu = psi0;
+    for (int s = 0; s < 20; ++s) {
+        cpu_prop.step(cpu, 1);
+        for (int j = 0; j < g.y.n; ++j) {
+            for (int i = 0; i < g.x.n; ++i) {
+                cpu(i, j, 0) *= mask[static_cast<std::size_t>(g.flat(i, j, 0))];
+            }
+        }
+    }
+
+    ses_vk::Lattice2DEngine eng;
+    if (!eng.initialize(ctx)) {
+        std::printf("lattice2d absorb+solenoid: engine init FAIL\n");
+        return false;
+    }
+    eng.set_lattice(g, v, dt);
+    eng.set_solenoid(phi, 0.0, 0.0);
+    eng.set_absorber(mask);
+    eng.upload(psi0.data());
+    eng.step(20);
+    eng.download();
+    const float* out = eng.state();
+
+    double max_err = 0.0;
+    double max_mag = 0.0;
+    for (std::size_t i = 0; i < cpu.data().size(); ++i) {
+        max_err = std::max(max_err, std::abs(out[2 * i] - cpu.data()[i].real()));
+        max_err =
+            std::max(max_err, std::abs(out[2 * i + 1] - cpu.data()[i].imag()));
+        max_mag = std::max(max_mag, std::abs(cpu.data()[i].real()));
+        max_mag = std::max(max_mag, std::abs(cpu.data()[i].imag()));
+    }
+    const double tol = 3e-4 + 5e-5 * max_mag;
+    const bool pass = max_err < tol;
+    std::printf(
+        "lattice2d 20 steps (solenoid pi/2 + absorber): max |gpu - cpu| = %.3e "
+        "(tol %.3e)  [%s]\n",
+        max_err, tol, pass ? "PASS" : "FAIL");
+    return pass;
+}
+
 bool check_engine_step(ses_vk::DeviceContext& ctx) {
     const ses::Grid1D axis{-4.0, 4.0, 8};
     const ses::Grid3D g{axis, axis, axis};
@@ -3742,6 +3799,7 @@ int main() {
     failures += check_spin_chebyshev(ctx) ? 0 : 1;
     failures += check_lattice2d_step(ctx) ? 0 : 1;
     failures += check_lattice2d_relax(ctx) ? 0 : 1;
+    failures += check_lattice2d_absorb_solenoid(ctx) ? 0 : 1;
     failures += check_engine_step(ctx) ? 0 : 1;
     failures += check_engine_planar(ctx) ? 0 : 1;
     failures += check_engine_absorber(ctx) ? 0 : 1;

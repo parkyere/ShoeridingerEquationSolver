@@ -15,6 +15,7 @@ module;
 #include <norm_peak_spv.h>
 #include <norm_finalize_spv.h>
 #include <scale_buf_spv.h>
+#include <damp_mul_spv.h>
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -67,7 +68,9 @@ public:
             !normfinal_k_.create(ctx, k_norm_finalize_spv,
                                  k_norm_finalize_spv_size, ssb_ubo_ssb) ||
             !scalebuf_k_.create(ctx, k_scale_buf_spv, k_scale_buf_spv_size,
-                                ssb_ubo_ssb)) {
+                                ssb_ubo_ssb) ||
+            !damp_k_.create(ctx, k_damp_mul_spv, k_damp_mul_spv_size,
+                            ssb_ssb_ubo)) {
             return false;
         }
         // 15 sets (RT: phase+2sx+2sy; IT: phase+2sx+2sy; 3 norm); headroom.
@@ -89,6 +92,7 @@ public:
         normpeak_k_.destroy(*ctx_);
         normfinal_k_.destroy(*ctx_);
         scalebuf_k_.destroy(*ctx_);
+        damp_k_.destroy(*ctx_);
         free_lattice();
         ctx_ = nullptr;
         ready_ = false;
@@ -178,6 +182,53 @@ public:
         upload_complex(link_x_, lx);
     }
 
+    // Localized flux (double-slit solenoid) via the string gauge: x-links on one
+    // column above/below (is,js) carry e^{-+i phi}. Mirrors PeierlsLattice2D.
+    void set_solenoid(double phi, double xs, double ys, bool cut_up = true) {
+        if (n_cells_ == 0) {
+            return;
+        }
+        std::vector<std::complex<double>> lx(static_cast<std::size_t>(n_cells_),
+                                             std::complex<double>{1.0, 0.0});
+        int is = -1;
+        for (int i = 0; i + 1 < nx_; ++i) {
+            if (g_->x.coord(i) <= xs && xs < g_->x.coord(i + 1)) {
+                is = i;
+            }
+        }
+        int js = -1;
+        for (int j = 0; j + 1 < ny_; ++j) {
+            if (g_->y.coord(j) <= ys && ys < g_->y.coord(j + 1)) {
+                js = j;
+            }
+        }
+        if (is >= 0 && js >= 0) {
+            const std::complex<double> up{std::cos(phi), -std::sin(phi)};
+            const std::complex<double> dn{std::cos(phi), std::sin(phi)};
+            if (cut_up) {
+                for (int j = js + 1; j < ny_; ++j) {
+                    lx[static_cast<std::size_t>(j * nx_ + is)] = up;
+                }
+            } else {
+                for (int j = 0; j <= js; ++j) {
+                    lx[static_cast<std::size_t>(j * nx_ + is)] = dn;
+                }
+            }
+        }
+        upload_complex(link_x_, lx);
+    }
+
+    // Real absorbing mask (interior 1, taper to 0 at walls) applied after each
+    // real-time step. Empty / not-called => no absorber. Not used during relax.
+    void set_absorber(const std::vector<double>& mask) {
+        if (n_cells_ == 0 || static_cast<int>(mask.size()) != n_cells_) {
+            return;
+        }
+        upload_real(mask_, mask);
+        has_absorber_ = true;
+    }
+    void clear_absorber() { has_absorber_ = false; }
+
     void upload(const std::vector<std::complex<double>>& psi) {
         upload_complex(state_, psi);
     }
@@ -213,6 +264,11 @@ public:
         VkCommandBuffer cb = shot.cb();
         for (int s = 0; s < n; ++s) {
             palindrome(cb, phase_set_, sx_set_, sy_set_);
+            if (has_absorber_) {
+                damp_k_.bind(cb, damp_set_);
+                vkCmdDispatch(cb, cell_groups(), 1, 1);
+                barrier_compute_to_compute(cb);
+            }
         }
         shot.submit_and_wait(*ctx_);
     }
@@ -320,6 +376,25 @@ private:
         shot.submit_and_wait(*ctx_);
     }
 
+    void upload_real(Buffer& dst, const std::vector<double>& src) {
+        float* p = static_cast<float*>(staging_.mapped);
+        for (std::size_t i = 0; i < src.size(); ++i) {
+            p[i] = static_cast<float>(src[i]);
+        }
+        vmaFlushAllocation(ctx_->allocator, staging_.alloc, 0, VK_WHOLE_SIZE);
+        OneShot shot;
+        if (!shot.begin_compute(*ctx_)) {
+            return;
+        }
+        VkCommandBuffer cb = shot.cb();
+        const VkBufferCopy r{0, 0,
+                             static_cast<VkDeviceSize>(src.size()) *
+                                 sizeof(float)};
+        vkCmdCopyBuffer(cb, staging_.buf, dst.buf, 1, &r);
+        barrier_transfer_to_compute(cb);
+        shot.submit_and_wait(*ctx_);
+    }
+
     bool alloc_lattice(int cells) {
         const VkDeviceSize bytes =
             static_cast<VkDeviceSize>(cells) * 2 * sizeof(float);
@@ -332,6 +407,8 @@ private:
                ctx_->create_device_buffer(2 * kGroups * sizeof(float),
                                           &partials_) &&
                ctx_->create_device_buffer(sizeof(float), &renorm_) &&
+               ctx_->create_device_buffer(
+                   static_cast<VkDeviceSize>(cells) * sizeof(float), &mask_) &&
                ctx_->create_host_buffer(bytes,
                                         VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                                             VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -382,6 +459,9 @@ private:
         scale_set_ = arena_.allocate(*ctx_, scalebuf_k_.set_layout());
         write_reduce(scale_set_, state_.buf, sc_ubo_.buf, sizeof(NParams),
                      renorm_.buf);
+        // damp layout matches the sweeps: {0:state, 1:mask, 2:ubo{n}}.
+        damp_set_ = arena_.allocate(*ctx_, damp_k_.set_layout());
+        write3(damp_set_, mask_.buf, np_ubo_.buf, sizeof(NParams));
     }
 
     // 3-binding sweep/phase layout: 0 = state (RW), 1 = aux SSBO, 2 = params UBO.
@@ -411,12 +491,13 @@ private:
             return;
         }
         for (Buffer* b : {&state_, &link_x_, &link_y_, &hv_rt_, &hv_it_,
-                          &partials_, &renorm_, &staging_, &phase_ubo_, &np_ubo_,
-                          &nf_ubo_, &sc_ubo_, &sx_ubo_[0], &sx_ubo_[1],
+                          &partials_, &renorm_, &mask_, &staging_, &phase_ubo_,
+                          &np_ubo_, &nf_ubo_, &sc_ubo_, &sx_ubo_[0], &sx_ubo_[1],
                           &sy_ubo_[0], &sy_ubo_[1], &sx_it_ubo_[0],
                           &sx_it_ubo_[1], &sy_it_ubo_[0], &sy_it_ubo_[1]}) {
             ctx_->destroy_buffer(b);
         }
+        has_absorber_ = false;
         n_cells_ = 0;
     }
 
@@ -433,7 +514,9 @@ private:
     Kernel normpeak_k_;
     Kernel normfinal_k_;
     Kernel scalebuf_k_;
+    Kernel damp_k_;
     DescriptorArena arena_;
+    bool has_absorber_ = false;
 
     Buffer state_;
     Buffer link_x_;
@@ -442,6 +525,7 @@ private:
     Buffer hv_it_;
     Buffer partials_;
     Buffer renorm_;
+    Buffer mask_;
     Buffer staging_;
     Buffer phase_ubo_;
     Buffer np_ubo_;
@@ -461,6 +545,7 @@ private:
     VkDescriptorSet normpeak_set_ = VK_NULL_HANDLE;
     VkDescriptorSet normfinal_set_ = VK_NULL_HANDLE;
     VkDescriptorSet scale_set_ = VK_NULL_HANDLE;
+    VkDescriptorSet damp_set_ = VK_NULL_HANDLE;
 };
 
 }  // namespace ses_vk
