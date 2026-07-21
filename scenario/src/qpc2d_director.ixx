@@ -1,5 +1,6 @@
 module;
 #include <cstddef>
+#include <cstdint>
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -13,6 +14,7 @@ import ses.heightfield;
 import ses.propagator;
 import ses.field;
 import ses.parallel;
+import ses.vk.engine_blobs;
 
 
 // Quantum point contact: transmission staircase vs gap width.
@@ -81,6 +83,24 @@ public:
         fire();
     }
 
+    // B = 0 spectral scene: GPU is the split-operator Engine at nz = 1 (VkFFT
+    // 2D), certified by vkcheck check_engine_planar. The right-edge CAP tally
+    // (transmitted fraction) is a delicate contract, so the CAP + tally stay on
+    // the CPU exactly as before; only the propagation moves to the GPU.
+    void init_compute(ses_vk::DeviceContext& ctx, bool device_ok,
+                      std::int64_t /*free_vram*/) override {
+        compute_attempted_ = true;
+        eng_ok_ = device_ok &&
+                  eng_.initialize(ctx, phys_grid_, ses_vk::engine_blobs(kQp2dN),
+                                  v_, kQp2dDt, psi_.data());
+        eng_dirty_ = false;
+    }
+    void release_gpu() override {
+        eng_.destroy();
+        eng_ok_ = false;
+        eng_dirty_ = true;
+    }
+
     QpcApi* qpc() override { return this; }
 
     // ---- QpcApi ----
@@ -106,6 +126,7 @@ public:
         ses::normalize(psi_);
         transmitted_ = 0.0;
         disp_peak_ = 0.0;
+        eng_dirty_ = true;  // psi_ edited on the CPU: re-upload before stepping
         track_peak();
         mark_fired();
     }
@@ -173,34 +194,58 @@ protected:
         }
     }
 
-    // right-of-wall CAP absorption tallied as transmitted fraction.
+    // right-of-wall CAP absorption tallied as transmitted fraction. The GPU
+    // does the propagation; the CAP edits psi_ on the CPU each step (contract
+    // parity), so re-upload before the next GPU step.
     void do_steps(int n) override {
-        const double cell = phys_grid_.x.spacing() *
-                            phys_grid_.y.spacing() *
-                            phys_grid_.z.spacing();
-        for (int s = 0; s < n; ++s) {
-            prop_->step(psi_, 1);
-            double gained = 0.0;
-            for (int j = 0; j < kQp2dN; ++j) {
-                const std::size_t row =
-                    static_cast<std::size_t>(j) * kQp2dN;
-                for (int i = 0; i < kQp2dN; ++i) {
-                    const std::size_t c = row + static_cast<std::size_t>(i);
-                    const double m = cap_[c];
-                    if (m < 1.0 && phys_grid_.x.coord(i) > kQp2dWallHi) {
-                        gained +=
-                            std::norm(psi_.data()[c]) * (1.0 - m * m) * cell;
-                    }
-                    psi_.data()[c] *= m;
-                }
+        if (eng_ok_) {
+            if (eng_dirty_) {
+                eng_.upload_state(psi_.data());
+                eng_dirty_ = false;
             }
-            transmitted_ += gained;
+            for (int s = 0; s < n; ++s) {
+                eng_.step(1);
+                eng_.readback(rb_);
+                store_readback();
+                apply_cap_and_tally();
+                eng_.upload_state(psi_.data());  // psi_ damped: re-sync
+            }
+        } else {
+            for (int s = 0; s < n; ++s) {
+                prop_->step(psi_, 1);
+                apply_cap_and_tally();
+            }
         }
         sim_time_ += n * kQp2dDt;
         track_peak();
     }
 
 private:
+    void store_readback() {
+        std::vector<std::complex<double>>& d = psi_.data();
+        for (std::size_t i = 0; i < d.size(); ++i) {
+            d[i] = std::complex<double>{static_cast<double>(rb_[2 * i]),
+                                        static_cast<double>(rb_[2 * i + 1])};
+        }
+    }
+
+    void apply_cap_and_tally() {
+        const double cell = phys_grid_.x.spacing() * phys_grid_.y.spacing() *
+                            phys_grid_.z.spacing();
+        double gained = 0.0;
+        for (int j = 0; j < kQp2dN; ++j) {
+            const std::size_t row = static_cast<std::size_t>(j) * kQp2dN;
+            for (int i = 0; i < kQp2dN; ++i) {
+                const std::size_t c = row + static_cast<std::size_t>(i);
+                const double m = cap_[c];
+                if (m < 1.0 && phys_grid_.x.coord(i) > kQp2dWallHi) {
+                    gained += std::norm(psi_.data()[c]) * (1.0 - m * m) * cell;
+                }
+                psi_.data()[c] *= m;
+            }
+        }
+        transmitted_ += gained;
+    }
     void build_cap() {
         cap_.assign(static_cast<std::size_t>(phys_grid_.size()), 1.0);
         for (int j = 0; j < kQp2dN; ++j) {
@@ -231,6 +276,9 @@ private:
                            kQp2dWallV, kQp2dLip);
         prop_ = std::make_unique<ses::SplitOperator3D>(phys_grid_, v_,
                                                        kQp2dDt);
+        if (eng_ok_) {
+            eng_.set_potential(v_);  // gap changed: refresh the GPU potential
+        }
         wall_curve_.clear();
         auto slab = [&](double y0, double y1) {
             const float x0 = static_cast<float>(kQp2dWallLo);
@@ -256,7 +304,11 @@ private:
 
     std::vector<double> v_;
     std::vector<double> cap_;
-    std::unique_ptr<ses::SplitOperator3D> prop_;
+    std::unique_ptr<ses::SplitOperator3D> prop_;  // CPU fallback
+    ses_vk::Engine eng_;                          // GPU: planar split-operator
+    bool eng_ok_ = false;
+    bool eng_dirty_ = true;
+    std::vector<float> rb_;                        // readback scratch
     ses::Heightfield hf_;
     std::vector<float> wall_curve_;
     bool mesh_dirty_ = false;
