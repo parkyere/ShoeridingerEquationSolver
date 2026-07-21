@@ -43,6 +43,63 @@ double total_sz(const ses::SpinState16& s) {
     return t;
 }
 
+ses::SpinState16 seed_tilted() {
+    ses::SpinLattice l;
+    l.nx = ses::kExactSide;
+    l.ny = ses::kExactSide;
+    l.s.resize(ses::kExactSites);
+    for (int y = 0; y < ses::kExactSide; ++y) {
+        for (int x = 0; x < ses::kExactSide; ++x) {
+            const double sgn = ((x + y) & 1) != 0 ? -1.0 : 1.0;
+            l.s[static_cast<std::size_t>(y * ses::kExactSide + x)] =
+                ses::spinor_from_bloch(0.6, 0.0, sgn * 0.8);
+        }
+    }
+    return ses::exact_from_product(l);
+}
+
+double max_amp_diff(const ses::SpinState16& a, const ses::SpinState16& b) {
+    double m = 0.0;
+    for (std::size_t i = 0; i < a.c.size(); ++i) {
+        const double d = std::abs(a.c[i] - b.c[i]);
+        if (d > m) {
+            m = d;
+        }
+    }
+    return m;
+}
+
+// Fusion Stage 1: apply_fused (gather/matmul/scatter) must reproduce the
+// hand-written gates, and the fused-gate step must reproduce exact_step.
+TEST(SpinFuse, SiteGateMatchesExactRotate) {
+    ses::SpinState16 a = seed_tilted();
+    ses::SpinState16 b = a;
+    ses::exact_site_rotate(a, 5, 0.3, -0.4, 0.85, 0.21);
+    ses::apply_fused(b, ses::site_fused_gate(5, 0.3, -0.4, 0.85, 0.21));
+    EXPECT_LT(max_amp_diff(a, b), 1e-12);
+}
+
+TEST(SpinFuse, BondGateMatchesExactBond) {
+    ses::SpinState16 a = seed_tilted();
+    ses::SpinState16 b = a;
+    ses::exact_bond_gate(a, 6, 7, 0.17);
+    ses::apply_fused(b, ses::bond_fused_gate(6, 7, 0.17));
+    EXPECT_LT(max_amp_diff(a, b), 1e-12);
+}
+
+TEST(SpinFuse, FusedStepMatchesExactStep) {
+    const double bx = 0.1, by = -0.05, bz = 0.2, jj = 0.5, dt = 0.05;
+    ses::SpinState16 a = seed_tilted();
+    ses::SpinState16 b = a;
+    const std::vector<ses::FusedGate> gs =
+        ses::step_gates(bx, by, bz, jj, dt);
+    for (int k = 0; k < 20; ++k) {
+        ses::exact_step(a, bx, by, bz, jj, dt);
+        ses::fused_step(b, gs);
+    }
+    EXPECT_LT(max_amp_diff(a, b), 1e-10);
+}
+
 TEST(SpinExact, ProductBootRoundTripsTheArrows) {
     ses::SpinLattice l;
     l.nx = ses::kExactSide;

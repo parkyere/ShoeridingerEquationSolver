@@ -247,4 +247,112 @@ inline int exact_measure_z(SpinState16& s, int site, double u) {
     return outcome;
 }
 
+// ---- Gate fusion (Stage 1 of the canonical state-vector path) ----
+// A dense gate on up to k qubits: (1<<k)x(1<<k) row-major matrix + ascending
+// qubit list. apply_fused = per orbit gather 2^k amplitudes, matmul, scatter --
+// the CPU truth the GPU shared-memory-blocked kernel will mirror. Basis bit b of
+// the local index selects qubits[b]; local 0 = site up (grid bit clear).
+struct FusedGate {
+    std::vector<int> qubits;
+    std::vector<std::complex<double>> mat;
+};
+
+inline std::size_t fused_scatter_index(std::size_t base, std::size_t a,
+                                       const std::vector<int>& qubits) {
+    std::size_t idx = base;
+    for (std::size_t b = 0; b < qubits.size(); ++b) {
+        if ((a >> b) & 1u) {
+            idx |= std::size_t{1} << qubits[b];
+        }
+    }
+    return idx;
+}
+
+inline void apply_fused(SpinState16& s, const FusedGate& g) {
+    const std::size_t k = g.qubits.size();
+    const std::size_t dk = std::size_t{1} << k;
+    std::size_t gmask = 0;
+    for (int q : g.qubits) {
+        gmask |= std::size_t{1} << q;
+    }
+    std::vector<std::complex<double>> in(dk), out(dk);
+    for (std::size_t base = 0; base < kExactDim; ++base) {
+        if ((base & gmask) != 0) {
+            continue;  // orbit representatives: all gate bits clear
+        }
+        for (std::size_t a = 0; a < dk; ++a) {
+            in[a] = s.c[fused_scatter_index(base, a, g.qubits)];
+        }
+        for (std::size_t r = 0; r < dk; ++r) {
+            std::complex<double> acc{};
+            for (std::size_t c = 0; c < dk; ++c) {
+                acc += g.mat[r * dk + c] * in[c];
+            }
+            out[r] = acc;
+        }
+        for (std::size_t a = 0; a < dk; ++a) {
+            s.c[fused_scatter_index(base, a, g.qubits)] = out[a];
+        }
+    }
+}
+
+// Single-site rotation as a 1-qubit gate (matches exact_site_rotate).
+inline FusedGate site_fused_gate(int site, double nx, double ny, double nz,
+                                 double angle) {
+    const SiteGate u = site_gate_matrix(nx, ny, nz, angle);
+    return FusedGate{{site}, {u.a00, u.a01, u.a10, u.a11}};
+}
+
+// Bond exp(+i theta sigma.sigma) as a 2-qubit gate (matches exact_bond_gate):
+// parallel |00>,|11> -> phase; antiparallel |01>,|10> -> [[diag,off],[off,diag]].
+inline FusedGate bond_fused_gate(int si, int sj, double theta) {
+    const BondGate b = bond_gate_params(theta);
+    const int lo = std::min(si, sj);
+    const int hi = std::max(si, sj);
+    std::vector<std::complex<double>> m(16, std::complex<double>{0.0, 0.0});
+    m[0 * 4 + 0] = b.phase;  // |00>
+    m[3 * 4 + 3] = b.phase;  // |11>
+    m[1 * 4 + 1] = b.diag;   // antiparallel 2x2
+    m[1 * 4 + 2] = b.off;
+    m[2 * 4 + 1] = b.off;
+    m[2 * 4 + 2] = b.diag;
+    return FusedGate{{lo, hi}, std::move(m)};
+}
+
+// The exact_step gate list, unfused (site sweeps + palindromic bond sweeps).
+inline std::vector<FusedGate> step_gates(double bx, double by, double bz,
+                                         double j, double dt) {
+    const double bmag = std::sqrt(bx * bx + by * by + bz * bz);
+    std::vector<FusedGate> gs;
+    int bonds[2 * kExactSites][2];
+    const int nb = exact_bonds(bonds);
+    const double nx = bmag > 0.0 ? bx / bmag : 0.0;
+    const double ny = bmag > 0.0 ? by / bmag : 0.0;
+    const double nz = bmag > 0.0 ? bz / bmag : 0.0;
+    const double a = bmag * 0.5 * dt;
+    if (bmag > 0.0) {
+        for (int i = 0; i < kExactSites; ++i) {
+            gs.push_back(site_fused_gate(i, nx, ny, nz, a));
+        }
+    }
+    for (int k = 0; k < nb; ++k) {
+        gs.push_back(bond_fused_gate(bonds[k][0], bonds[k][1], 0.5 * j * dt));
+    }
+    for (int k = nb - 1; k >= 0; --k) {
+        gs.push_back(bond_fused_gate(bonds[k][0], bonds[k][1], 0.5 * j * dt));
+    }
+    if (bmag > 0.0) {
+        for (int i = 0; i < kExactSites; ++i) {
+            gs.push_back(site_fused_gate(i, nx, ny, nz, a));
+        }
+    }
+    return gs;
+}
+
+inline void fused_step(SpinState16& s, const std::vector<FusedGate>& gs) {
+    for (const FusedGate& g : gs) {
+        apply_fused(s, g);
+    }
+}
+
 }  // namespace ses
