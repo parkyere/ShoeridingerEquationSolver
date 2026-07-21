@@ -71,30 +71,37 @@ public:
             return false;
         }
         const int n_sites = ses::kExactSites;
-        const int n_sets = n_sites + nbonds_;
-        // +1 set for the reduce (it binds 2 storage + 1 uniform).
+        // 2*sites (half + full angle field) + bonds; +1 more set for the reduce.
+        const int n_sets = 2 * n_sites + nbonds_;
         if (!arena_.create(ctx, static_cast<std::uint32_t>(n_sets + 1),
                            static_cast<std::uint32_t>(n_sets + 2),
                            static_cast<std::uint32_t>(n_sets + 1))) {
             return false;
         }
         site_ubo_.resize(static_cast<std::size_t>(n_sites));
+        site_ubo_full_.resize(static_cast<std::size_t>(n_sites));
         bond_ubo_.resize(static_cast<std::size_t>(nbonds_));
         site_set_.assign(static_cast<std::size_t>(n_sites), VK_NULL_HANDLE);
+        site_set_full_.assign(static_cast<std::size_t>(n_sites), VK_NULL_HANDLE);
         bond_set_.assign(static_cast<std::size_t>(nbonds_), VK_NULL_HANDLE);
         for (int i = 0; i < n_sites; ++i) {
-            if (!ctx.create_host_buffer(sizeof(SiteParams),
-                                        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                                        &site_ubo_[static_cast<std::size_t>(i)]))
-                return false;
             const std::size_t si = static_cast<std::size_t>(i);
-            site_set_[si] = arena_.allocate(ctx, site_k_.set_layout());
-            if (site_set_[si] == VK_NULL_HANDLE) return false;
-            arena_.write_buffer(ctx, site_set_[si], 0,
-                                VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, state_.buf);
-            arena_.write_buffer(ctx, site_set_[si], 1,
-                                VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                                site_ubo_[si].buf, sizeof(SiteParams));
+            for (int full = 0; full < 2; ++full) {
+                Buffer& ubo = full ? site_ubo_full_[si] : site_ubo_[si];
+                VkDescriptorSet& set = full ? site_set_full_[si] : site_set_[si];
+                if (!ctx.create_host_buffer(sizeof(SiteParams),
+                                            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                            &ubo))
+                    return false;
+                set = arena_.allocate(ctx, site_k_.set_layout());
+                if (set == VK_NULL_HANDLE) return false;
+                arena_.write_buffer(ctx, set, 0,
+                                    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                    state_.buf);
+                arena_.write_buffer(ctx, set, 1,
+                                    VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, ubo.buf,
+                                    sizeof(SiteParams));
+            }
         }
         for (int i = 0; i < nbonds_; ++i) {
             if (!ctx.create_host_buffer(sizeof(BondParams),
@@ -150,8 +157,10 @@ public:
             return;
         }
         for (Buffer& b : site_ubo_) ctx_->destroy_buffer(&b);
+        for (Buffer& b : site_ubo_full_) ctx_->destroy_buffer(&b);
         for (Buffer& b : bond_ubo_) ctx_->destroy_buffer(&b);
         site_ubo_.clear();
+        site_ubo_full_.clear();
         bond_ubo_.clear();
         arena_.destroy(*ctx_);
         site_k_.destroy(*ctx_);
@@ -174,18 +183,26 @@ public:
         const double bmag = std::sqrt(bx * bx + by * by + bz * bz);
         has_field_ = bmag > 0.0;
         if (has_field_) {
-            const ses::SiteGate g = ses::site_gate_matrix(
-                bx / bmag, by / bmag, bz / bmag, bmag * 0.5 * dt);
+            const double nx = bx / bmag, ny = by / bmag, nz = bz / bmag;
+            // half = per-step-end sweep; full = merged step-boundary (2x angle).
+            const ses::SiteGate g =
+                ses::site_gate_matrix(nx, ny, nz, bmag * 0.5 * dt);
+            const ses::SiteGate gf =
+                ses::site_gate_matrix(nx, ny, nz, bmag * dt);
             for (int i = 0; i < ses::kExactSites; ++i) {
-                SiteParams sp{};
-                sp.half_n = static_cast<std::uint32_t>(dim_ / 2);
-                sp.site = static_cast<std::uint32_t>(i);
-                fill_c(sp.row0, g.a00);
-                fill_c(sp.row0 + 2, g.a01);
-                fill_c(sp.row1, g.a10);
-                fill_c(sp.row1 + 2, g.a11);
-                write_ubo(site_ubo_[static_cast<std::size_t>(i)], &sp,
-                          sizeof(sp));
+                for (int full = 0; full < 2; ++full) {
+                    const ses::SiteGate& u = full ? gf : g;
+                    SiteParams sp{};
+                    sp.half_n = static_cast<std::uint32_t>(dim_ / 2);
+                    sp.site = static_cast<std::uint32_t>(i);
+                    fill_c(sp.row0, u.a00);
+                    fill_c(sp.row0 + 2, u.a01);
+                    fill_c(sp.row1, u.a10);
+                    fill_c(sp.row1 + 2, u.a11);
+                    write_ubo(full ? site_ubo_full_[static_cast<std::size_t>(i)]
+                                   : site_ubo_[static_cast<std::size_t>(i)],
+                              &sp, sizeof(sp));
+                }
             }
         }
         const ses::BondGate bg = ses::bond_gate_params(0.5 * j * dt);
@@ -233,13 +250,16 @@ public:
         }
         VkCommandBuffer cb = shot.cb();
         bool first = true;
-        for (int k = 0; k < n; ++k) {
-            if (has_field_) {
-                for (int s = 0; s < ses::kExactSites; ++s) {
-                    dispatch_site(cb, s, first);
-                    first = false;
-                }
+        // Strang palindrome over n steps, field half-sweeps MERGED at internal
+        // boundaries: (1/2)F [ B_fwd B_rev (F | (1/2)F) ]^n, using
+        // exp(θH)exp(θH)=exp(2θH) so 2 half-sweeps collapse to 1 full-sweep.
+        if (has_field_) {
+            for (int s = 0; s < ses::kExactSites; ++s) {
+                dispatch_site(cb, s, first, site_set_);  // leading half-sweep
+                first = false;
             }
+        }
+        for (int k = 0; k < n; ++k) {
             for (int b = 0; b < nbonds_; ++b) {
                 dispatch_bond(cb, b, first);
                 first = false;
@@ -249,8 +269,11 @@ public:
                 first = false;
             }
             if (has_field_) {
+                // full-angle sweep between steps; half-angle only at the last.
+                const std::vector<VkDescriptorSet>& sets =
+                    (k + 1 < n) ? site_set_full_ : site_set_;
                 for (int s = 0; s < ses::kExactSites; ++s) {
-                    dispatch_site(cb, s, first);
+                    dispatch_site(cb, s, first, sets);
                     first = false;
                 }
             }
@@ -313,11 +336,12 @@ private:
         std::memcpy(b.mapped, src, sz);
         vmaFlushAllocation(ctx_->allocator, b.alloc, 0, VK_WHOLE_SIZE);
     }
-    void dispatch_site(VkCommandBuffer cb, int s, bool first) {
+    void dispatch_site(VkCommandBuffer cb, int s, bool first,
+                       const std::vector<VkDescriptorSet>& sets) {
         if (!first) {
             barrier_compute_to_compute(cb);
         }
-        site_k_.bind(cb, site_set_[static_cast<std::size_t>(s)]);
+        site_k_.bind(cb, sets[static_cast<std::size_t>(s)]);
         vkCmdDispatch(cb, half_groups_, 1, 1);
     }
     void dispatch_bond(VkCommandBuffer cb, int b, bool first) {
@@ -351,9 +375,11 @@ private:
     Kernel bond_k_;
     Kernel reduce_k_;
     DescriptorArena arena_;
-    std::vector<Buffer> site_ubo_;
+    std::vector<Buffer> site_ubo_;       // half-angle field (step-end sweeps)
+    std::vector<Buffer> site_ubo_full_;  // full-angle field (merged step-boundary)
     std::vector<Buffer> bond_ubo_;
     std::vector<VkDescriptorSet> site_set_;
+    std::vector<VkDescriptorSet> site_set_full_;
     std::vector<VkDescriptorSet> bond_set_;
     Buffer bloch_dev_{};
     Buffer bloch_host_{};
