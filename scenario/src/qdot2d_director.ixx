@@ -36,6 +36,9 @@ constexpr int kQd2dTrailCap = 900;
 // STM height surface: peak-snap then 0.98-decay (decay-only boots ~100x high, blacks the cloud out).
 constexpr double kQd2dSurfH = 6.0;
 constexpr int kQd2dMeshStride = 1;
+// Crop the surface mesh to the |psi|^2 >= eps*peak box: the dot fills only a
+// few bohr of the +-20 box, so this cuts the 512^2 triangle count ~20x+.
+constexpr double kQd2dSurfEps = 1e-4;
 constexpr double kQd2dEScale = 0.5;
 constexpr double kQd2dParaTop = 11.0;
 constexpr int kQd2dParaRings = 14;
@@ -288,7 +291,7 @@ protected:
         disp_peak_ = disp_peak_ <= 0.0 ? cur
                                        : std::max(cur, 0.98 * disp_peak_);
         hf_ = ses::heightfield_surface(psi_, kQd2dSurfH, disp_peak_,
-                                       kQd2dMeshStride);
+                                       kQd2dMeshStride, kQd2dSurfEps);
         mesh_dirty_ = true;
     }
 
