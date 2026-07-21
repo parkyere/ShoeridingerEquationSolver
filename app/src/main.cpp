@@ -948,7 +948,7 @@ int main(int argc, char* argv[]) {
     add("face-z", "boot straight into the z-facing (textbook) view");
     add("flow", "start with the probability-flow streaklines on");
     for (const char* flag :
-         {"dump-frame", "dump-frame-late", "dump-frame-near",
+         {"dump-frame", "dump-frame-late", "dump-frame-mid", "dump-frame-near",
           "dump-frame-slice", "dump-frame-surface", "dump-frame-switch"}) {
         add(flag, "render verification arc (offscreen frame dump)");
     }

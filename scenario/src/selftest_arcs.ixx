@@ -98,6 +98,24 @@ void register_verification_arcs(ShellT* shell) {
         });
     }
 
+    // Mid-evolution (t = 25 au): interference scenes with the packet still in
+    // flight -- fringes on screen, before the absorber eats the cloud.
+    if (shell->has_arg("--dump-frame-mid")) {
+        run_when_manifold_ready(shell, [shell] {
+            shell->set_time_scale(16);
+            selftest_wait_sim_time(shell, 25.0, 0, [shell](bool ok_wait) {
+                const bool ok =
+                    ok_wait && shell->dump_frame_bmp("frame_dump_mid.bmp");
+                std::fprintf(stderr,
+                             "dump-frame-mid: %ux%u (t = %.2f au)  [%s]\n",
+                             shell->frame_width(), shell->frame_height(),
+                             shell->director().sim_time(),
+                             ok ? "PASS" : "FAIL");
+                shell->request_exit(ok ? 0 : 1);
+            });
+        });
+    }
+
     // From inside the box: the volume pass rasterizes the proxy back faces
     // (front-face culled), which only an interior eye exercises.
     if (shell->has_arg("--dump-frame-near")) {
